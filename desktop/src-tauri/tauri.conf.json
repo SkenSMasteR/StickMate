@@ -34,6 +34,17 @@
         "minHeight": 600,
         "center": true,
         "visible": false
+      },
+      {
+        "label": "editor",
+        "url": "/",
+        "decorations": false,
+        "width": 1400,
+        "height": 900,
+        "minWidth": 1000,
+        "minHeight": 700,
+        "center": true,
+        "visible": false
       }
     ],
     "security": {

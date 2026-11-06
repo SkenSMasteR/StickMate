@@ -42,7 +42,7 @@ export default function Hub({
   onOpenEditor
 }: {
   onSignInRequest: () => void;
-  onOpenEditor: () => void;
+  onOpenEditor: (id?: string) => void;
 }) {
   const { t } = useI18n();
   const { resolvedTheme } = useTheme();
@@ -143,16 +143,20 @@ export default function Hub({
                   variant="ghost"
                   size="sm"
                   className="ml-auto"
-                  onClick={onOpenEditor}
+                  onClick={() => onOpenEditor()}
                 >
                   {t("editor.return")}
                 </Button>
               )}
             </div>
-            {destination === "new" && <New onOpened={onOpenEditor} />}
-            {destination === "projects" && <Projects onOpened={onOpenEditor} />}
+            {destination === "new" && (
+              <New onOpened={(id) => onOpenEditor(id)} />
+            )}
+            {destination === "projects" && (
+              <Projects onOpened={(id) => onOpenEditor(id)} />
+            )}
             {destination === "templates" && (
-              <Templates onOpened={onOpenEditor} />
+              <Templates onOpened={(id) => onOpenEditor(id)} />
             )}
             {destination === "settings" && (
               <Settings onSignInRequest={onSignInRequest} />

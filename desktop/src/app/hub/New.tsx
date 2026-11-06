@@ -24,7 +24,7 @@ const presets = [
 
 const frameRates = [24, 30, 60];
 
-export default function New({ onOpened }: { onOpened: () => void }) {
+export default function New({ onOpened }: { onOpened: (id: string) => void }) {
   const { t } = useI18n();
   const { create } = useWorkspace();
   const [preset, setPreset] = useState<number | null>(0);
@@ -37,7 +37,7 @@ export default function New({ onOpened }: { onOpened: () => void }) {
 
   const submit = async () => {
     setCreating(true);
-    const opened = await create({
+    const id = await create({
       name,
       width,
       height,
@@ -45,8 +45,8 @@ export default function New({ onOpened }: { onOpened: () => void }) {
       background
     });
     setCreating(false);
-    if (opened) {
-      onOpened();
+    if (id) {
+      onOpened(id);
     }
   };
 

@@ -109,7 +109,7 @@ interface WorkspaceValue {
   total: number;
   frames: EvalFrame[];
   transform: Transform;
-  create: (input: NewDocument) => Promise<boolean>;
+  create: (input: NewDocument) => Promise<string | null>;
   open: (id: string) => Promise<boolean>;
   close: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
@@ -212,11 +212,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const create = useCallback(
     async (input: NewDocument) => {
       try {
-        adopt(await docNew(input.name, input.width, input.height, input.fps, input.background));
-        return true;
+        const next = await docNew(input.name, input.width, input.height, input.fps, input.background);
+        adopt(next);
+        return next.id;
       } catch (error) {
         toast.error(String(error));
-        return false;
+        return null;
       }
     },
     [adopt]

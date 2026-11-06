@@ -73,7 +73,7 @@ const templates: Template[] = [
   }
 ];
 
-export default function Templates({ onOpened }: { onOpened: () => void }) {
+export default function Templates({ onOpened }: { onOpened: (id: string) => void }) {
   const { t } = useI18n();
   const { open } = useWorkspace();
   const [busy, setBusy] = useState<string | null>(null);
@@ -92,7 +92,7 @@ export default function Templates({ onOpened }: { onOpened: () => void }) {
         await template.scaffold(doc);
       }
       if (await open(doc.id)) {
-        onOpened();
+        onOpened(doc.id);
       }
     } catch (error) {
       toast.error(String(error));

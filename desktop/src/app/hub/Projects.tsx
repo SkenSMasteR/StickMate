@@ -36,7 +36,7 @@ function formatUpdated(timestamp: number, language: string): string {
   }
 }
 
-export default function Projects({ onOpened }: { onOpened: () => void }) {
+export default function Projects({ onOpened }: { onOpened: (id: string) => void }) {
   const { t, language } = useI18n();
   const { open, remove } = useWorkspace();
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -73,7 +73,7 @@ export default function Projects({ onOpened }: { onOpened: () => void }) {
 
   const openProject = async (id: string) => {
     if (await open(id)) {
-      onOpened();
+      onOpened(id);
     }
   };
 
