@@ -10,8 +10,8 @@ import {
   SelectTrigger,
   SelectValue
 } from "@/components/ui/select";
+import { useWorkspace } from "@/editor/workspace";
 import { useI18n } from "@/i18n";
-import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 const presets = [
@@ -23,12 +23,31 @@ const presets = [
 
 const frameRates = [24, 30, 60];
 
-export default function New() {
+export default function New({ onOpened }: { onOpened: () => void }) {
   const { t } = useI18n();
-  const [preset, setPreset] = useState(0);
+  const { create } = useWorkspace();
+  const [preset, setPreset] = useState<number | null>(0);
+  const [width, setWidth] = useState(1920);
+  const [height, setHeight] = useState(1080);
   const [frameRate, setFrameRate] = useState("30");
   const [background, setBackground] = useState("#ffffff");
   const [name, setName] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  const submit = async () => {
+    setCreating(true);
+    const opened = await create({
+      name,
+      width,
+      height,
+      fps: Number(frameRate),
+      background
+    });
+    setCreating(false);
+    if (opened) {
+      onOpened();
+    }
+  };
 
   return (
     <div className="flex h-full flex-col gap-6 overflow-y-auto">
@@ -40,7 +59,11 @@ export default function New() {
           {presets.map((item, index) => (
             <Card
               key={item.label}
-              onClick={() => setPreset(index)}
+              onClick={() => {
+                setPreset(index);
+                setWidth(item.width);
+                setHeight(item.height);
+              }}
               className={cn(
                 "cursor-pointer p-4 transition-colors hover:bg-accent hover:text-accent-foreground",
                 index === preset && "border-primary ring-1 ring-primary"
@@ -52,6 +75,34 @@ export default function New() {
               </div>
             </Card>
           ))}
+        </div>
+        <div className="flex flex-wrap items-end gap-6">
+          <div className="flex w-32 flex-col gap-2">
+            <Label>{t("new.width")}</Label>
+            <Input
+              type="number"
+              min={1}
+              max={8192}
+              value={width}
+              onChange={(event) => {
+                setPreset(null);
+                setWidth(Number(event.target.value));
+              }}
+            />
+          </div>
+          <div className="flex w-32 flex-col gap-2">
+            <Label>{t("new.height")}</Label>
+            <Input
+              type="number"
+              min={1}
+              max={8192}
+              value={height}
+              onChange={(event) => {
+                setPreset(null);
+                setHeight(Number(event.target.value));
+              }}
+            />
+          </div>
         </div>
       </div>
 
@@ -96,12 +147,8 @@ export default function New() {
       </div>
 
       <div>
-        <Button
-          onClick={() => {
-            toast(t("new.created"));
-          }}
-        >
-          {t("new.create")}
+        <Button disabled={creating} onClick={() => void submit()}>
+          {creating ? t("new.creating") : t("new.create")}
         </Button>
       </div>
     </div>

@@ -3,8 +3,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ThemeProvider, useTheme } from "next-themes";
 import Main from "@/app/App";
 import { Toaster } from "@/components/ui/sonner";
+import { WorkspaceProvider } from "@/editor/workspace";
 import { I18nProvider } from "@/i18n";
 import type { Language } from "@/i18n";
+import { ConfirmProvider } from "@/lib/confirm";
 import { PrefsProvider, usePrefs } from "@/lib/prefs";
 import Splash from "@/splash/Splash";
 
@@ -43,7 +45,11 @@ function MainWithI18n() {
         void update({ language });
       }}
     >
-      <Main />
+      <ConfirmProvider>
+        <WorkspaceProvider>
+          <Main />
+        </WorkspaceProvider>
+      </ConfirmProvider>
     </I18nProvider>
   );
 }

@@ -22,12 +22,14 @@ import {
   SidebarTrigger
 } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
+import { Button } from "@/components/ui/button";
 import {
   Breadcrumb,
   BreadcrumbItem,
   BreadcrumbList,
   BreadcrumbPage
 } from "@/components/ui/breadcrumb";
+import { useWorkspace } from "@/editor/workspace";
 import { useI18n } from "@/i18n";
 import logoDark from "@/assets/logo-dark.png";
 import Titlebar from "@/app/Titlebar";
@@ -41,11 +43,14 @@ type Destination = "new" | "projects" | "templates" | "settings";
 const providerStyle = { "--sidebar-width": "18rem" } as CSSProperties;
 
 export default function Hub({
-  onSignInRequest
+  onSignInRequest,
+  onOpenEditor
 }: {
   onSignInRequest: () => void;
+  onOpenEditor: () => void;
 }) {
   const { t } = useI18n();
+  const { ids } = useWorkspace();
   const [destination, setDestination] = useState<Destination>("new");
 
   const items: Array<{ id: Destination; label: string; icon: typeof FilePlus2 }> =
@@ -74,6 +79,16 @@ export default function Hub({
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
+        {ids.length > 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-2"
+            onClick={onOpenEditor}
+          >
+            {t("editor.return")}
+          </Button>
+        )}
       </Titlebar>
       <div className="flex min-h-0 flex-1">
         <Sidebar
@@ -148,9 +163,11 @@ export default function Hub({
         </Sidebar>
         <SidebarInset>
           <div className="flex flex-1 flex-col gap-4 overflow-hidden p-4">
-            {destination === "new" && <New />}
-            {destination === "projects" && <Projects />}
-            {destination === "templates" && <Templates />}
+            {destination === "new" && <New onOpened={onOpenEditor} />}
+            {destination === "projects" && <Projects onOpened={onOpenEditor} />}
+            {destination === "templates" && (
+              <Templates onOpened={onOpenEditor} />
+            )}
             {destination === "settings" && (
               <Settings onSignInRequest={onSignInRequest} />
             )}

@@ -1,4 +1,5 @@
 mod auth;
+mod document;
 mod prefs;
 mod tokens;
 mod updater;
@@ -19,6 +20,12 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(tokens::TokenCache::default())
         .setup(|app| {
+            let recovery = app
+                .path()
+                .app_data_dir()
+                .map_err(|error| error.to_string())?
+                .join("recovery");
+            app.manage(document::DocStore::load(recovery));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
@@ -46,6 +53,33 @@ pub fn run() {
             prefs::prefs_put,
             updater::check_for_update,
             updater::install_update,
+            document::doc_new,
+            document::doc_list,
+            document::doc_recovery_report,
+            document::doc_get,
+            document::doc_close,
+            document::doc_delete,
+            document::doc_rename,
+            document::doc_add_scene,
+            document::doc_rename_scene,
+            document::doc_remove_scene,
+            document::doc_duplicate_scene,
+            document::doc_move_scene,
+            document::doc_add_layer,
+            document::doc_set_layer,
+            document::doc_remove_layer,
+            document::doc_move_layer,
+            document::doc_insert_frame,
+            document::doc_keyframe,
+            document::doc_remove_frame,
+            document::doc_set_tween,
+            document::doc_set_label,
+            document::doc_draw,
+            document::doc_delete_shape,
+            document::doc_set_transform,
+            document::doc_undo,
+            document::doc_redo,
+            document::doc_evaluate,
             app_version
         ])
         .run(tauri::generate_context!())
