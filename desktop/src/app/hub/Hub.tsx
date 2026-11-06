@@ -65,24 +65,9 @@ export default function Hub({
 
   return (
     <SidebarProvider style={providerStyle} className="h-full min-h-0 flex-col">
-      <Titlebar sidebar>
-        {ids.length > 0 && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-2"
-            onClick={onOpenEditor}
-          >
-            {t("editor.return")}
-          </Button>
-        )}
-      </Titlebar>
+      <Titlebar sidebar />
       <div className="flex min-h-0 flex-1">
-        <Sidebar
-          variant="inset"
-          collapsible="icon"
-          className="inset-y-auto top-10 h-[calc(100svh-2.5rem)]"
-        >
+        <Sidebar variant="inset" collapsible="icon">
           <SidebarHeader>
             <SidebarMenu>
               <SidebarMenuItem>
@@ -153,6 +138,16 @@ export default function Hub({
             <div className="flex items-center gap-2">
               <SidebarTrigger className="-ml-1" />
               <h1 className="text-lg font-semibold">{titles[destination]}</h1>
+              {ids.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto"
+                  onClick={onOpenEditor}
+                >
+                  {t("editor.return")}
+                </Button>
+              )}
             </div>
             {destination === "new" && <New onOpened={onOpenEditor} />}
             {destination === "projects" && <Projects onOpened={onOpenEditor} />}

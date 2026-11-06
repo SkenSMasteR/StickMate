@@ -17,7 +17,7 @@ export default function Titlebar({
     <header
       data-tauri-drag-region
       className={cn(
-        "flex h-10 shrink-0 items-center border-b border-border pl-2",
+        "flex h-10 shrink-0 items-center pl-2",
         sidebar ? "bg-sidebar" : "bg-background"
       )}
     >
