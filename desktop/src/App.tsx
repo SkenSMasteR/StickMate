@@ -21,12 +21,14 @@ function windowLabel(): string {
 }
 
 function ThemeSync() {
-  const { prefs } = usePrefs();
+  const { prefs, loaded } = usePrefs();
   const { setTheme } = useTheme();
 
   useEffect(() => {
-    setTheme(prefs.theme);
-  }, [prefs.theme, setTheme]);
+    if (loaded) {
+      setTheme(prefs.theme);
+    }
+  }, [loaded, prefs.theme, setTheme]);
 
   return null;
 }
