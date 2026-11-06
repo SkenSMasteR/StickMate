@@ -206,6 +206,7 @@ impl Scene {
         }
     }
 
+    #[cfg(test)]
     pub fn length(&self) -> u32 {
         self.layers
             .iter()
