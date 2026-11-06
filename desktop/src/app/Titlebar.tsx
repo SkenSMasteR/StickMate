@@ -25,21 +25,19 @@ export default function Titlebar({
         <span className="px-1 text-sm font-semibold">{t("app.name")}</span>
       )}
       <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
-      <div className="flex h-full items-center gap-1 pr-2">
+      <div className="flex h-full">
         <button
-          className="group flex h-full w-9 items-center justify-center"
+          className="flex h-full w-11 items-center justify-center text-muted-foreground hover:bg-accent hover:text-foreground"
           onClick={() => void win.minimize()}
           aria-label={t("titlebar.minimize")}
           title={t("titlebar.minimize")}
         >
-          <span className="flex h-6 w-6 items-center justify-center text-muted-foreground group-hover:bg-accent group-hover:text-foreground">
-            <svg width="10" height="10" viewBox="0 0 10 10">
-              <rect y="4.5" width="10" height="1" fill="currentColor" />
-            </svg>
-          </span>
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <rect y="4.5" width="10" height="1" fill="currentColor" />
+          </svg>
         </button>
         <button
-          className="group flex h-full w-9 items-center justify-center"
+          className="flex h-full w-11 items-center justify-center text-muted-foreground hover:bg-accent hover:text-foreground"
           onClick={async () => {
             const maximized = await win.isMaximized();
             if (maximized) {
@@ -51,34 +49,30 @@ export default function Titlebar({
           aria-label={t("titlebar.maximize")}
           title={t("titlebar.maximize")}
         >
-          <span className="flex h-6 w-6 items-center justify-center text-muted-foreground group-hover:bg-accent group-hover:text-foreground">
-            <svg width="10" height="10" viewBox="0 0 10 10">
-              <rect
-                x="0.5"
-                y="0.5"
-                width="9"
-                height="9"
-                fill="none"
-                stroke="currentColor"
-              />
-            </svg>
-          </span>
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <rect
+              x="0.5"
+              y="0.5"
+              width="9"
+              height="9"
+              fill="none"
+              stroke="currentColor"
+            />
+          </svg>
         </button>
         <button
-          className="group flex h-full w-9 items-center justify-center"
+          className="flex h-full w-11 items-center justify-center text-muted-foreground hover:bg-[#c42b1c] hover:text-white"
           onClick={() => void win.close()}
           aria-label={t("titlebar.close")}
           title={t("titlebar.close")}
         >
-          <span className="flex h-6 w-6 items-center justify-center text-muted-foreground group-hover:bg-[#c42b1c] group-hover:text-white">
-            <svg width="10" height="10" viewBox="0 0 10 10">
-              <path
-                d="M0 0 L10 10 M10 0 L0 10"
-                stroke="currentColor"
-                strokeWidth="1"
-              />
-            </svg>
-          </span>
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <path
+              d="M0 0 L10 10 M10 0 L0 10"
+              stroke="currentColor"
+              strokeWidth="1"
+            />
+          </svg>
         </button>
       </div>
     </header>
