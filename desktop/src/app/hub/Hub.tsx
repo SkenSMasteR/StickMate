@@ -39,12 +39,10 @@ const providerStyle = { "--sidebar-width": "18rem" } as CSSProperties;
 
 export default function Hub({
   onSignInRequest,
-  onOpenEditor,
-  flat = false
+  onOpenEditor
 }: {
   onSignInRequest: () => void;
   onOpenEditor: (id?: string) => void;
-  flat?: boolean;
 }) {
   const { t } = useI18n();
   const { resolvedTheme } = useTheme();
@@ -67,9 +65,9 @@ export default function Hub({
 
   return (
     <SidebarProvider style={providerStyle} className="h-full min-h-0 flex-col">
-      <Titlebar sidebar={!flat} />
+      <Titlebar sidebar />
       <div className="flex min-h-0 flex-1">
-        <Sidebar variant={flat ? "sidebar" : "inset"} collapsible="icon">
+        <Sidebar variant="inset" collapsible="icon">
           <SidebarHeader>
             <SidebarMenu>
               <SidebarMenuItem>
