@@ -83,10 +83,27 @@ pub fn run() {
             app_version
         ])
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                if window.label() == "main" {
-                    window.app_handle().exit(0);
+            let app = window.app_handle();
+            match event {
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    if window.label() == "main" {
+                        let editor_visible = app
+                            .get_webview_window("editor")
+                            .and_then(|w| w.is_visible().ok())
+                            .unwrap_or(false);
+                        if !editor_visible {
+                            app.exit(0);
+                        }
+                    }
                 }
+                tauri::WindowEvent::Destroyed => {
+                    if app.get_webview_window("main").is_none()
+                        && app.get_webview_window("editor").is_none()
+                    {
+                        app.exit(0);
+                    }
+                }
+                _ => {}
             }
         })
         .run(tauri::generate_context!())

@@ -14,17 +14,9 @@ export async function showEditor(docId?: string): Promise<void> {
   }
   await win.show();
   await win.setFocus();
-}
-
-export async function showHub(): Promise<void> {
-  const editor = await WebviewWindow.getByLabel("editor");
-  if (editor) {
-    await editor.hide();
-  }
-  const hub = await WebviewWindow.getByLabel("main");
-  if (hub) {
-    await hub.show();
-    await hub.setFocus();
+  const main = await WebviewWindow.getByLabel("main");
+  if (main) {
+    await main.close();
   }
 }
 
