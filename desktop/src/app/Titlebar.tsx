@@ -21,9 +21,10 @@ export default function Titlebar({
         sidebar ? "bg-sidebar" : "bg-background"
       )}
     >
-      {children ?? (
-        <span className="px-1 text-sm font-semibold">{t("app.name")}</span>
-      )}
+      {children ??
+        (sidebar ? null : (
+          <span className="px-1 text-sm font-semibold">{t("app.name")}</span>
+        ))}
       <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
       <div className="flex h-full">
         <button
