@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { useI18n } from "@/i18n";
 import { useToast } from "@/lib/toast";
 
@@ -33,7 +34,9 @@ function saveProjects(projects: RecentProject[]): void {
 
 function formatLastOpened(timestamp: number, language: string): string {
   try {
-    return new Date(timestamp).toLocaleString(language === "mk" ? "mk-MK" : "en-US");
+    return new Date(timestamp).toLocaleString(
+      language === "mk" ? "mk-MK" : "en-US"
+    );
   } catch {
     return new Date(timestamp).toISOString();
   }
@@ -66,50 +69,42 @@ export default function Projects() {
   };
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto p-6">
-      <h1 className="text-base font-semibold">{t("projects.title")}</h1>
+    <div className="flex h-full flex-col gap-4 overflow-y-auto">
+      <h1 className="text-lg font-semibold">{t("projects.title")}</h1>
 
       {sorted.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-          <p className="text-sm text-[hsl(var(--muted-foreground))]">
-            {t("projects.empty")}
-          </p>
-        </div>
+        <Card className="flex flex-1 items-center justify-center p-12">
+          <p className="text-sm text-muted-foreground">{t("projects.empty")}</p>
+        </Card>
       ) : (
-        <div className="flex flex-col border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-          <div className="grid grid-cols-[1fr_180px_160px] gap-2 border-b border-[hsl(var(--border))] px-4 py-2 text-xs uppercase tracking-wide text-[hsl(var(--muted-foreground))]">
-            <span>{t("projects.name")}</span>
-            <span>{t("projects.lastOpened")}</span>
-            <span />
-          </div>
+        <div className="flex flex-col gap-2">
           {sorted.map((project) => (
-            <div
-              key={project.id}
-              className="grid grid-cols-[1fr_180px_160px] items-center gap-2 border-b border-[hsl(var(--border))] px-4 py-3 last:border-b-0"
-            >
-              <span className="truncate text-sm">{project.name}</span>
-              <span className="text-xs text-[hsl(var(--muted-foreground))]">
-                {formatLastOpened(project.lastOpened, language)}
-              </span>
-              <div className="flex items-center justify-end gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => togglePin(project.id)}
-                >
-                  {project.pinned ? t("projects.unpin") : t("projects.pin")}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    toast(t("projects.opened"));
-                  }}
-                >
-                  {t("projects.open")}
-                </Button>
+            <Card key={project.id} className="flex items-center gap-4 p-4">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">
+                  {project.name}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {formatLastOpened(project.lastOpened, language)}
+                </div>
               </div>
-            </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => togglePin(project.id)}
+              >
+                {project.pinned ? t("projects.unpin") : t("projects.pin")}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  toast(t("projects.opened"));
+                }}
+              >
+                {t("projects.open")}
+              </Button>
+            </Card>
           ))}
         </div>
       )}

@@ -1,9 +1,18 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "@/components/ui/select";
 import { useI18n } from "@/i18n";
 import { useToast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 
 const presets = [
   { label: "1920 x 1080", width: 1920, height: 1080 },
@@ -14,69 +23,64 @@ const presets = [
 
 const frameRates = [24, 30, 60];
 
-export default function Blank() {
+export default function New() {
   const { t } = useI18n();
   const { toast } = useToast();
   const [preset, setPreset] = useState(0);
-  const [frameRate, setFrameRate] = useState(30);
+  const [frameRate, setFrameRate] = useState("30");
   const [background, setBackground] = useState("#ffffff");
   const [name, setName] = useState("");
 
   return (
-    <div className="flex h-full flex-col gap-6 overflow-y-auto p-6">
-      <h1 className="text-base font-semibold">{t("blank.title")}</h1>
+    <div className="flex h-full flex-col gap-6 overflow-y-auto">
+      <h1 className="text-lg font-semibold">{t("new.title")}</h1>
 
       <div className="flex flex-col gap-2">
-        <span className="text-sm text-[hsl(var(--muted-foreground))]">
-          {t("blank.resolution")}
-        </span>
+        <Label>{t("new.resolution")}</Label>
         <div className="grid max-w-2xl grid-cols-2 gap-3 lg:grid-cols-4">
           {presets.map((item, index) => (
-            <button
+            <Card
               key={item.label}
-              className={
-                index === preset
-                  ? "border border-[hsl(var(--foreground))] bg-[hsl(var(--accent))] p-4 text-left"
-                  : "border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 text-left hover:bg-[hsl(var(--accent))]/60"
-              }
               onClick={() => setPreset(index)}
+              className={cn(
+                "cursor-pointer p-4 transition-colors hover:bg-accent hover:text-accent-foreground",
+                index === preset && "border-primary ring-1 ring-primary"
+              )}
             >
               <div className="text-sm font-medium">{item.label}</div>
-              <div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+              <div className="mt-1 text-xs text-muted-foreground">
                 {(item.width / item.height).toFixed(2)}:1
               </div>
-            </button>
+            </Card>
           ))}
         </div>
       </div>
 
       <div className="flex flex-wrap items-end gap-6">
         <div className="flex w-40 flex-col gap-2">
-          <span className="text-sm text-[hsl(var(--muted-foreground))]">
-            {t("blank.frameRate")}
-          </span>
-          <Select
-            value={frameRate}
-            onChange={(event) => setFrameRate(Number(event.target.value))}
-          >
-            {frameRates.map((rate) => (
-              <option key={rate} value={rate}>
-                {rate} fps
-              </option>
-            ))}
+          <Label>{t("new.frameRate")}</Label>
+          <Select value={frameRate} onValueChange={setFrameRate}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {frameRates.map((rate) => (
+                <SelectItem key={rate} value={String(rate)}>
+                  {rate} fps
+                </SelectItem>
+              ))}
+            </SelectContent>
           </Select>
         </div>
 
         <div className="flex w-48 flex-col gap-2">
-          <span className="text-sm text-[hsl(var(--muted-foreground))]">
-            {t("blank.background")}
-          </span>
+          <Label>{t("new.background")}</Label>
           <div className="flex items-center gap-2">
             <input
               type="color"
               value={background}
               onChange={(event) => setBackground(event.target.value)}
-              className="h-9 w-12 cursor-pointer border border-[hsl(var(--input))] bg-transparent p-1"
+              className="h-9 w-12 cursor-pointer rounded-md border border-input bg-transparent p-1"
             />
             <Input
               value={background}
@@ -87,9 +91,7 @@ export default function Blank() {
         </div>
 
         <div className="flex w-56 flex-col gap-2">
-          <span className="text-sm text-[hsl(var(--muted-foreground))]">
-            {t("projects.name")}
-          </span>
+          <Label>{t("projects.name")}</Label>
           <Input value={name} onChange={(event) => setName(event.target.value)} />
         </div>
       </div>
@@ -97,10 +99,10 @@ export default function Blank() {
       <div>
         <Button
           onClick={() => {
-            toast(t("blank.created"));
+            toast(t("new.created"));
           }}
         >
-          {t("blank.create")}
+          {t("new.create")}
         </Button>
       </div>
     </div>

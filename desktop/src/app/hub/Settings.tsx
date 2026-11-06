@@ -1,12 +1,36 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/select";
+import { Card } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { LanguageFlag } from "@/components/flags";
 import { useI18n } from "@/i18n";
 import type { Language } from "@/i18n";
 import { usePrefs } from "@/lib/prefs";
 import type { UpdateChannel } from "@/lib/prefs";
 import { useToast } from "@/lib/toast";
-import { authLogout, checkForUpdate, tokenClear, tokenLoad } from "@/lib/tauri";
+import {
+  authLogout,
+  checkForUpdate,
+  installUpdate,
+  tokenClear,
+  tokenLoad
+} from "@/lib/tauri";
 import type { ThemeName } from "@/theme";
 
 export default function Settings({
@@ -18,6 +42,8 @@ export default function Settings({
   const { prefs, update } = usePrefs();
   const { toast } = useToast();
   const [checking, setChecking] = useState(false);
+  const [pendingVersion, setPendingVersion] = useState<string | null>(null);
+  const [installing, setInstalling] = useState(false);
 
   const signOut = async () => {
     try {
@@ -42,7 +68,7 @@ export default function Settings({
     try {
       const result = await checkForUpdate();
       if (result) {
-        toast(t("settings.updateFound"));
+        setPendingVersion(result);
       } else {
         toast(t("settings.updateNone"));
       }
@@ -53,45 +79,66 @@ export default function Settings({
     }
   };
 
+  const installNow = async () => {
+    setInstalling(true);
+    try {
+      await installUpdate();
+    } catch {
+      toast(t("settings.updateError"));
+      setInstalling(false);
+      setPendingVersion(null);
+    }
+  };
+
   return (
-    <div className="flex h-full flex-col gap-8 overflow-y-auto p-6">
-      <h1 className="text-base font-semibold">{t("settings.title")}</h1>
+    <div className="flex h-full flex-col gap-8 overflow-y-auto">
+      <h1 className="text-lg font-semibold">{t("settings.title")}</h1>
 
       <section className="flex w-full max-w-md flex-col gap-3">
-        <span className="text-sm text-[hsl(var(--muted-foreground))]">
-          {t("settings.language")}
-        </span>
+        <Label>{t("settings.language")}</Label>
         <Select
           value={prefs.language}
-          onChange={(event) => {
-            setLanguage(event.target.value as Language);
-          }}
+          onValueChange={(value) => setLanguage(value as Language)}
         >
-          <option value="en">{t("lang.en")}</option>
-          <option value="mk">{t("lang.mk")}</option>
+          <SelectTrigger className="w-56">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="en">
+              <span className="flex items-center gap-2">
+                <LanguageFlag language="en" />
+                {t("lang.en")}
+              </span>
+            </SelectItem>
+            <SelectItem value="mk">
+              <span className="flex items-center gap-2">
+                <LanguageFlag language="mk" />
+                {t("lang.mk")}
+              </span>
+            </SelectItem>
+          </SelectContent>
         </Select>
       </section>
 
       <section className="flex w-full max-w-md flex-col gap-3">
-        <span className="text-sm text-[hsl(var(--muted-foreground))]">
-          {t("settings.theme")}
-        </span>
+        <Label>{t("settings.theme")}</Label>
         <Select
           value={prefs.theme}
-          onChange={(event) => {
-            void update({ theme: event.target.value as ThemeName });
-          }}
+          onValueChange={(value) => void update({ theme: value as ThemeName })}
         >
-          <option value="dark">{t("settings.theme.dark")}</option>
-          <option value="light">{t("settings.theme.light")}</option>
+          <SelectTrigger className="w-56">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="dark">{t("settings.theme.dark")}</SelectItem>
+            <SelectItem value="light">{t("settings.theme.light")}</SelectItem>
+          </SelectContent>
         </Select>
       </section>
 
       <section className="flex w-full max-w-md flex-col gap-3">
-        <span className="text-sm text-[hsl(var(--muted-foreground))]">
-          {t("settings.account")}
-        </span>
-        <div className="flex items-center justify-between border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-4 py-3">
+        <Label>{t("settings.account")}</Label>
+        <Card className="flex items-center justify-between p-4">
           {prefs.login ? (
             <>
               <span className="text-sm font-medium">{prefs.login}</span>
@@ -101,7 +148,7 @@ export default function Settings({
             </>
           ) : (
             <>
-              <span className="text-sm text-[hsl(var(--muted-foreground))]">
+              <span className="text-sm text-muted-foreground">
                 {t("settings.signedOut")}
               </span>
               <Button size="sm" onClick={onSignInRequest}>
@@ -109,21 +156,28 @@ export default function Settings({
               </Button>
             </>
           )}
-        </div>
+        </Card>
       </section>
 
+      <Separator className="max-w-md" />
+
       <section className="flex w-full max-w-md flex-col gap-3">
-        <span className="text-sm text-[hsl(var(--muted-foreground))]">
-          {t("settings.updateChannel")}
-        </span>
+        <Label>{t("settings.updateChannel")}</Label>
         <Select
           value={prefs.channel}
-          onChange={(event) => {
-            void update({ channel: event.target.value as UpdateChannel });
-          }}
+          onValueChange={(value) =>
+            void update({ channel: value as UpdateChannel })
+          }
         >
-          <option value="stable">{t("settings.channel.stable")}</option>
-          <option value="nightly">{t("settings.channel.nightly")}</option>
+          <SelectTrigger className="w-56">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="stable">{t("settings.channel.stable")}</SelectItem>
+            <SelectItem value="nightly">
+              {t("settings.channel.nightly")}
+            </SelectItem>
+          </SelectContent>
         </Select>
         <div>
           <Button
@@ -135,6 +189,34 @@ export default function Settings({
           </Button>
         </div>
       </section>
+
+      <Dialog
+        open={pendingVersion !== null}
+        onOpenChange={(open) => {
+          if (!open && !installing) {
+            setPendingVersion(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("settings.updateAvailable")}</DialogTitle>
+            <DialogDescription>{t("settings.updatePrompt")}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={installing}
+              onClick={() => setPendingVersion(null)}
+            >
+              {t("settings.updateLater")}
+            </Button>
+            <Button disabled={installing} onClick={() => void installNow()}>
+              {installing ? t("settings.installing") : t("settings.updateInstall")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -2,64 +2,85 @@
 @tailwind components;
 @tailwind utilities;
 
-:root,
-[data-theme="dark"] {
-  --background: 20 14% 7%;
-  --foreground: 0 0% 96%;
-  --card: 20 12% 10%;
-  --card-foreground: 0 0% 96%;
-  --muted: 20 10% 14%;
-  --muted-foreground: 20 6% 62%;
-  --border: 20 10% 18%;
-  --input: 20 10% 18%;
-  --primary: 0 0% 96%;
-  --primary-foreground: 20 14% 7%;
-  --secondary: 20 10% 16%;
-  --secondary-foreground: 0 0% 96%;
-  --accent: 20 10% 16%;
-  --accent-foreground: 0 0% 96%;
-  --destructive: 0 62% 45%;
-  --destructive-foreground: 0 0% 98%;
-  --ring: 20 10% 26%;
-}
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 240 5.9% 10%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 240 10% 3.9%;
+    --radius: 0.5rem;
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
 
-[data-theme="light"] {
-  --background: 0 0% 98%;
-  --foreground: 20 14% 8%;
-  --card: 0 0% 100%;
-  --card-foreground: 20 14% 8%;
-  --muted: 20 10% 93%;
-  --muted-foreground: 20 6% 40%;
-  --border: 20 10% 86%;
-  --input: 20 10% 86%;
-  --primary: 20 14% 8%;
-  --primary-foreground: 0 0% 98%;
-  --secondary: 20 10% 92%;
-  --secondary-foreground: 20 14% 8%;
-  --accent: 20 10% 92%;
-  --accent-foreground: 20 14% 8%;
-  --destructive: 0 62% 45%;
-  --destructive-foreground: 0 0% 98%;
-  --ring: 20 10% 70%;
-}
+  .dark {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 5.9% 10%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 240 4.9% 83.9%;
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
 
-* {
-  border-radius: 0;
-}
+  * {
+    @apply border-border;
+  }
 
-html,
-body,
-#root {
-  height: 100%;
-  margin: 0;
-  padding: 0;
-}
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
 
-body {
-  background-color: hsl(var(--background));
-  color: hsl(var(--foreground));
-  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-  font-size: 14px;
-  overflow: hidden;
-  user-select: none;
+  body {
+    @apply bg-background text-foreground;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    overflow: hidden;
+    user-select: none;
+  }
 }
