@@ -1,0 +1,23 @@
+[Unit]
+Description=StickMate Admin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=stickmate
+Group=stickmate
+WorkingDirectory=/opt/stickmate/current/server
+EnvironmentFile=/etc/stickmate/stickmate.env
+Environment=STICKMATE_DATA_DIR=/opt/stickmate/data
+Environment=STICKMATE_ADMIN_BIND=127.0.0.1
+ExecStart=/opt/stickmate/venv/bin/python /opt/stickmate/current/server/admin.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/stickmate/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

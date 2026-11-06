@@ -1,0 +1,8 @@
+[Unit]
+Description=StickMate Update
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/stickmate/stickmate.env
+ExecStart=/opt/stickmate/current/deploy.sh update

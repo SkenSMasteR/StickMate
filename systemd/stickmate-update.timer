@@ -1,0 +1,10 @@
+[Unit]
+Description=StickMate Update Timer
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+Unit=stickmate-update.service
+
+[Install]
+WantedBy=timers.target
