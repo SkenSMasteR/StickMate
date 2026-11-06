@@ -1,0 +1,36 @@
+name: Server CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - server/**
+      - .github/workflows/server-ci.yml
+  pull_request:
+    paths:
+      - server/**
+      - .github/workflows/server-ci.yml
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      STICKMATE_DATA_DIR: ${{ runner.temp }}/stickmate-data
+      STICKMATE_ADMIN_TOKEN: test-token
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -r server/requirements.txt
+          python -m pip install pytest httpx
+      - name: Run tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$STICKMATE_DATA_DIR"
+          python -m pytest server/tests -q

@@ -1,0 +1,59 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Run tests
+        shell: bash
+        env:
+          STICKMATE_DATA_DIR: ${{ runner.temp }}/stickmate-data
+          STICKMATE_ADMIN_TOKEN: test-token
+        run: |
+          set -euo pipefail
+          python -m pip install -r server/requirements.txt
+          python -m pip install pytest httpx
+          mkdir -p "$STICKMATE_DATA_DIR"
+          python -m pytest server/tests -q
+      - name: Build tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f deploy.sh
+          test -d systemd
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
+          tar \
+            --exclude='server/.venv' \
+            --exclude='__pycache__' \
+            --exclude='.env' \
+            --exclude='*.env' \
+            --exclude='server/data' \
+            --exclude='data' \
+            -czf "stickmate-server-nightly-${SHORT_SHA}.tar.gz" server deploy.sh systemd
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: stickmate-server-nightly-${{ env.SHORT_SHA }}.tar.gz
+      - name: Publish nightly release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release delete nightly --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create nightly "stickmate-server-nightly-${SHORT_SHA}.tar.gz" --repo "$GITHUB_REPOSITORY" --title "Nightly ${SHORT_SHA}" --notes "Nightly server build from ${GITHUB_SHA}." --prerelease --target "$GITHUB_SHA"

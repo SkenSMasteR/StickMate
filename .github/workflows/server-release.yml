@@ -1,0 +1,69 @@
+name: Server Release
+
+on:
+  push:
+    tags:
+      - server-v*
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#server-v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag must be server-vX.Y.Z"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "$VERSION" > server/VERSION
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Run tests
+        shell: bash
+        env:
+          STICKMATE_DATA_DIR: ${{ runner.temp }}/stickmate-data
+          STICKMATE_ADMIN_TOKEN: test-token
+        run: |
+          set -euo pipefail
+          python -m pip install -r server/requirements.txt
+          python -m pip install pytest httpx
+          mkdir -p "$STICKMATE_DATA_DIR"
+          python -m pytest server/tests -q
+      - name: Build tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f deploy.sh
+          test -d systemd
+          tar \
+            --exclude='server/.venv' \
+            --exclude='__pycache__' \
+            --exclude='.env' \
+            --exclude='*.env' \
+            --exclude='server/data' \
+            --exclude='data' \
+            -czf "stickmate-server-${VERSION}.tar.gz" server deploy.sh systemd
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: stickmate-server-${{ env.VERSION }}.tar.gz
+      - name: Create release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" "stickmate-server-${VERSION}.tar.gz" --repo "$GITHUB_REPOSITORY" --title "Server ${VERSION}" --notes "Server release ${VERSION}." --verify-tag
