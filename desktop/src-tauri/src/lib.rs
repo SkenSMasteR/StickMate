@@ -1,0 +1,35 @@
+mod auth;
+mod prefs;
+mod tokens;
+mod updater;
+
+pub const BASE_URL: &str = "https://stickmate.root.sx";
+
+#[tauri::command]
+fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(tokens::TokenCache::default())
+        .invoke_handler(tauri::generate_handler![
+            auth::auth_start,
+            auth::auth_poll,
+            auth::auth_refresh,
+            auth::auth_logout,
+            auth::open_url,
+            tokens::token_save,
+            tokens::token_load,
+            tokens::token_clear,
+            prefs::prefs_get,
+            prefs::prefs_put,
+            updater::check_for_update,
+            updater::install_update,
+            app_version
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

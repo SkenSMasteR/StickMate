@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root,
+[data-theme="dark"] {
+  --background: 20 14% 7%;
+  --foreground: 0 0% 96%;
+  --card: 20 12% 10%;
+  --card-foreground: 0 0% 96%;
+  --muted: 20 10% 14%;
+  --muted-foreground: 20 6% 62%;
+  --border: 20 10% 18%;
+  --input: 20 10% 18%;
+  --primary: 0 0% 96%;
+  --primary-foreground: 20 14% 7%;
+  --secondary: 20 10% 16%;
+  --secondary-foreground: 0 0% 96%;
+  --accent: 20 10% 16%;
+  --accent-foreground: 0 0% 96%;
+  --destructive: 0 62% 45%;
+  --destructive-foreground: 0 0% 98%;
+  --ring: 20 10% 26%;
+}
+
+[data-theme="light"] {
+  --background: 0 0% 98%;
+  --foreground: 20 14% 8%;
+  --card: 0 0% 100%;
+  --card-foreground: 20 14% 8%;
+  --muted: 20 10% 93%;
+  --muted-foreground: 20 6% 40%;
+  --border: 20 10% 86%;
+  --input: 20 10% 86%;
+  --primary: 20 14% 8%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 20 10% 92%;
+  --secondary-foreground: 20 14% 8%;
+  --accent: 20 10% 92%;
+  --accent-foreground: 20 14% 8%;
+  --destructive: 0 62% 45%;
+  --destructive-foreground: 0 0% 98%;
+  --ring: 20 10% 70%;
+}
+
+* {
+  border-radius: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  overflow: hidden;
+  user-select: none;
+}

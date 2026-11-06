@@ -1,4 +1,4 @@
-name: Desktop Release (scaffold ready)
+name: Desktop Release
 
 on:
   push:
@@ -20,24 +20,6 @@ jobs:
         os: [windows-latest, ubuntu-22.04]
     steps:
       - uses: actions/checkout@v7
-      - name: Check desktop source
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -d desktop ] && [ ! -d src-tauri ]; then
-            echo "Desktop source is not present yet."
-            exit 1
-          fi
-      - name: Set build variables
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "VERSION=${GITHUB_REF_NAME#desktop-v}" >> "$GITHUB_ENV"
-          if [ -d desktop ]; then
-            echo "APP_DIR=desktop" >> "$GITHUB_ENV"
-          else
-            echo "APP_DIR=." >> "$GITHUB_ENV"
-          fi
       - uses: actions/setup-node@v7
         with:
           node-version: 20
@@ -49,56 +31,27 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-      - name: Install app dependencies
-        shell: bash
-        working-directory: ${{ env.APP_DIR }}
-        run: |
-          set -euo pipefail
-          npm ci
-      - name: Build app
-        shell: bash
-        working-directory: ${{ env.APP_DIR }}
-        run: |
-          set -euo pipefail
-          npm run tauri build
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: Desktop __VERSION__
+          releaseBody: Desktop release __VERSION__.
+          releaseDraft: false
+          prerelease: false
+          updaterJsonPreferNsis: true
       - name: Collect bundles
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist
-          find "$APP_DIR/src-tauri/target/release/bundle" -type f \( -name '*.msi' -o -name '*.exe' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.dmg' \) -exec cp {} dist/ \;
-          if [ -z "$(ls -A dist)" ]; then
-            echo "No bundles were produced."
-            exit 1
-          fi
+          mkdir -p attest-dist
+          find desktop/src-tauri/target/release/bundle -type f \( -name '*.exe' -o -name '*.msi' -o -name '*.AppImage' -o -name '*.deb' \) -exec cp {} attest-dist/ \;
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: dist/*
-      - name: Upload bundles
-        uses: actions/upload-artifact@v7
-        with:
-          name: desktop-${{ matrix.os }}
-          path: dist/*
-          if-no-files-found: error
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          path: dist
-          merge-multiple: true
-      - name: Create release
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#desktop-v}"
-          files=()
-          while IFS= read -r -d '' f; do
-            files+=("$f")
-          done < <(find dist -type f -print0)
-          gh release create "$GITHUB_REF_NAME" "${files[@]}" --repo "$GITHUB_REPOSITORY" --title "Desktop ${VERSION}" --notes "Desktop release ${VERSION}." --verify-tag
+          subject-path: attest-dist/*

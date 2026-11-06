@@ -1,0 +1,71 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useI18n } from "@/i18n";
+
+export default function Titlebar() {
+  const { t } = useI18n();
+  const win = getCurrentWindow();
+
+  return (
+    <header
+      data-tauri-drag-region
+      className="flex h-10 shrink-0 items-center border-b border-[hsl(var(--border))] bg-[hsl(var(--background))]"
+    >
+      <div
+        data-tauri-drag-region
+        className="flex flex-1 items-center gap-2 px-3 text-sm font-semibold"
+      >
+        {t("app.name")}
+      </div>
+      <div className="flex h-full">
+        <button
+          className="flex h-full w-11 items-center justify-center text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))]"
+          onClick={() => void win.minimize()}
+          aria-label={t("titlebar.minimize")}
+          title={t("titlebar.minimize")}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <rect y="4.5" width="10" height="1" fill="currentColor" />
+          </svg>
+        </button>
+        <button
+          className="flex h-full w-11 items-center justify-center text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))]"
+          onClick={async () => {
+            const maximized = await win.isMaximized();
+            if (maximized) {
+              await win.unmaximize();
+            } else {
+              await win.maximize();
+            }
+          }}
+          aria-label={t("titlebar.maximize")}
+          title={t("titlebar.maximize")}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <rect
+              x="0.5"
+              y="0.5"
+              width="9"
+              height="9"
+              fill="none"
+              stroke="currentColor"
+            />
+          </svg>
+        </button>
+        <button
+          className="flex h-full w-11 items-center justify-center text-[hsl(var(--muted-foreground))] hover:bg-[#c42b1c] hover:text-white"
+          onClick={() => void win.close()}
+          aria-label={t("titlebar.close")}
+          title={t("titlebar.close")}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <path
+              d="M0 0 L10 10 M10 0 L0 10"
+              stroke="currentColor"
+              strokeWidth="1"
+            />
+          </svg>
+        </button>
+      </div>
+    </header>
+  );
+}

@@ -66,4 +66,4 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" "stickmate-server-${VERSION}.tar.gz" --repo "$GITHUB_REPOSITORY" --title "Server ${VERSION}" --notes "Server release ${VERSION}." --verify-tag
+          gh release create "$GITHUB_REF_NAME" "stickmate-server-${VERSION}.tar.gz" --repo "$GITHUB_REPOSITORY" --title "Server ${VERSION}" --notes "Server release ${VERSION}." --verify-tag --latest=false
