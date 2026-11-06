@@ -53,13 +53,19 @@ export default function Main() {
   };
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[hsl(var(--background))]">
-      <Titlebar />
-      {view === "loading" && (
-        <div className="flex-1 bg-[hsl(var(--background))]" />
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-background">
+      {view === "hub" ? (
+        <Hub onSignInRequest={() => setView("signin")} />
+      ) : (
+        <>
+          <Titlebar />
+          {view === "signin" ? (
+            <SignIn onSignedIn={handleSignedIn} />
+          ) : (
+            <div className="flex-1" />
+          )}
+        </>
       )}
-      {view === "signin" && <SignIn onSignedIn={handleSignedIn} />}
-      {view === "hub" && <Hub onSignInRequest={() => setView("signin")} />}
     </div>
   );
 }

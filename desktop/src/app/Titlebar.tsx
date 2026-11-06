@@ -1,24 +1,23 @@
+import type { ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useI18n } from "@/i18n";
 
-export default function Titlebar() {
+export default function Titlebar({ children }: { children?: ReactNode }) {
   const { t } = useI18n();
   const win = getCurrentWindow();
 
   return (
     <header
       data-tauri-drag-region
-      className="flex h-10 shrink-0 items-center border-b border-[hsl(var(--border))] bg-[hsl(var(--background))]"
+      className="flex h-10 shrink-0 items-center border-b border-border bg-background pl-2"
     >
-      <div
-        data-tauri-drag-region
-        className="flex flex-1 items-center gap-2 px-3 text-sm font-semibold"
-      >
-        {t("app.name")}
-      </div>
+      {children ?? (
+        <span className="px-1 text-sm font-semibold">{t("app.name")}</span>
+      )}
+      <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
       <div className="flex h-full">
         <button
-          className="flex h-full w-11 items-center justify-center text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))]"
+          className="flex h-full w-11 items-center justify-center text-muted-foreground hover:bg-accent hover:text-foreground"
           onClick={() => void win.minimize()}
           aria-label={t("titlebar.minimize")}
           title={t("titlebar.minimize")}
@@ -28,7 +27,7 @@ export default function Titlebar() {
           </svg>
         </button>
         <button
-          className="flex h-full w-11 items-center justify-center text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))]"
+          className="flex h-full w-11 items-center justify-center text-muted-foreground hover:bg-accent hover:text-foreground"
           onClick={async () => {
             const maximized = await win.isMaximized();
             if (maximized) {
@@ -52,7 +51,7 @@ export default function Titlebar() {
           </svg>
         </button>
         <button
-          className="flex h-full w-11 items-center justify-center text-[hsl(var(--muted-foreground))] hover:bg-[#c42b1c] hover:text-white"
+          className="flex h-full w-11 items-center justify-center text-muted-foreground hover:bg-[#c42b1c] hover:text-white"
           onClick={() => void win.close()}
           aria-label={t("titlebar.close")}
           title={t("titlebar.close")}
