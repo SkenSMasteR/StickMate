@@ -16,9 +16,23 @@ export default function Main() {
 
     async function checkSession() {
       try {
-        const refreshToken = await tokenLoad("refresh");
+        const refresh = await tokenLoad("refresh");
+        if (refresh) {
+          if (!cancelled) {
+            setView("hub");
+          }
+          return;
+        }
+        const offline = await tokenLoad("offline");
+        if (offline) {
+          if (!cancelled) {
+            setView("hub");
+          }
+          return;
+        }
+        const access = await tokenLoad("access");
         if (!cancelled) {
-          setView(refreshToken ? "hub" : "signin");
+          setView(access ? "hub" : "signin");
         }
       } catch {
         if (!cancelled) {

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { authRefresh, tokenClear, tokenLoad } from "@/lib/tauri";
+import { authRefresh, tokenLoad } from "@/lib/tauri";
 import logoDark from "@/assets/logo-dark.png";
 import "./splash.css";
 
@@ -21,11 +21,7 @@ export default function Splash() {
           await authRefresh(refreshToken);
         }
       } catch {
-        try {
-          await tokenClear();
-        } catch {
-          return;
-        }
+        void 0;
       }
       try {
         const main = await WebviewWindow.getByLabel("main");
