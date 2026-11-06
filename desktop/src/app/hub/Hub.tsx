@@ -76,10 +76,10 @@ export default function Hub({
                     <img
                       src={resolvedTheme === "light" ? logoLight : logoDark}
                       alt=""
-                      className="h-8 w-8 object-contain"
+                      className="h-8 w-8 shrink-0 object-contain"
                       draggable={false}
                     />
-                    <span className="text-sm font-semibold">
+                    <span className="text-sm font-semibold group-data-[collapsible=icon]:hidden">
                       {t("app.name")}
                     </span>
                   </div>
