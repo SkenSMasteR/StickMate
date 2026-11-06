@@ -14,9 +14,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      STICKMATE_DATA_DIR: ${{ runner.temp }}/stickmate-data
-      STICKMATE_ADMIN_TOKEN: test-token
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -30,6 +27,9 @@ jobs:
           python -m pip install pytest httpx
       - name: Run tests
         shell: bash
+        env:
+          STICKMATE_DATA_DIR: ${{ runner.temp }}/stickmate-data
+          STICKMATE_ADMIN_TOKEN: test-token
         run: |
           set -euo pipefail
           mkdir -p "$STICKMATE_DATA_DIR"
