@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { authRefresh, tokenLoad } from "@/lib/tauri";
+import { authRefresh, checkForUpdate, installUpdate, tokenLoad } from "@/lib/tauri";
 import logoDark from "@/assets/logo-dark.png";
 import "./splash.css";
 
@@ -14,7 +14,15 @@ export default function Splash() {
     }
     started.current = true;
 
-    async function restoreAndHandoff() {
+    async function startup() {
+      try {
+        const version = await checkForUpdate();
+        if (version) {
+          await installUpdate();
+        }
+      } catch {
+        void 0;
+      }
       try {
         const refreshToken = await tokenLoad("refresh");
         if (refreshToken) {
@@ -35,7 +43,7 @@ export default function Splash() {
       }
     }
 
-    void restoreAndHandoff();
+    void startup();
   }, []);
 
   return (

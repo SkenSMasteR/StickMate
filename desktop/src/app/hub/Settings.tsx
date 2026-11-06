@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -25,9 +25,11 @@ import { usePrefs } from "@/lib/prefs";
 import type { UpdateChannel } from "@/lib/prefs";
 import { useToast } from "@/lib/toast";
 import {
+  appVersion,
   authLogout,
   checkForUpdate,
   installUpdate,
+  onUpdateProgress,
   tokenClear,
   tokenLoad
 } from "@/lib/tauri";
@@ -44,6 +46,13 @@ export default function Settings({
   const [checking, setChecking] = useState(false);
   const [pendingVersion, setPendingVersion] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
+  const [percent, setPercent] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [version, setVersion] = useState("");
+
+  useEffect(() => {
+    void appVersion().then(setVersion);
+  }, []);
 
   const signOut = async () => {
     try {
@@ -68,6 +77,8 @@ export default function Settings({
     try {
       const result = await checkForUpdate();
       if (result) {
+        setError(null);
+        setPercent(0);
         setPendingVersion(result);
       } else {
         toast(t("settings.updateNone"));
@@ -81,12 +92,15 @@ export default function Settings({
 
   const installNow = async () => {
     setInstalling(true);
+    setPercent(0);
+    setError(null);
+    const unlisten = await onUpdateProgress(setPercent);
     try {
       await installUpdate();
-    } catch {
-      toast(t("settings.updateError"));
+    } catch (cause) {
+      unlisten();
+      setError(String(cause));
       setInstalling(false);
-      setPendingVersion(null);
     }
   };
 
@@ -188,6 +202,9 @@ export default function Settings({
             {checking ? t("settings.checking") : t("settings.checkUpdates")}
           </Button>
         </div>
+        <p className="text-sm text-muted-foreground">
+          {t("settings.version")} {version}
+        </p>
       </section>
 
       <Dialog
@@ -201,8 +218,18 @@ export default function Settings({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t("settings.updateAvailable")}</DialogTitle>
-            <DialogDescription>{t("settings.updatePrompt")}</DialogDescription>
+            <DialogDescription>
+              {t("settings.updatePrompt")} {pendingVersion}
+            </DialogDescription>
           </DialogHeader>
+          {installing && (
+            <p className="text-sm text-muted-foreground">
+              {percent < 100
+                ? `${t("settings.downloading")} ${percent}%`
+                : t("settings.installing")}
+            </p>
+          )}
+          {error && <p className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
             <Button
               variant="outline"
@@ -212,7 +239,7 @@ export default function Settings({
               {t("settings.updateLater")}
             </Button>
             <Button disabled={installing} onClick={() => void installNow()}>
-              {installing ? t("settings.installing") : t("settings.updateInstall")}
+              {t("settings.updateInstall")}
             </Button>
           </DialogFooter>
         </DialogContent>

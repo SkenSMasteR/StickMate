@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 export interface DeviceAuth {
   device_code: string;
@@ -85,4 +86,10 @@ export function checkForUpdate(): Promise<string | null> {
 
 export function installUpdate(): Promise<unknown> {
   return invoke<unknown>("install_update", {});
+}
+
+export function onUpdateProgress(
+  callback: (percent: number) => void
+): Promise<() => void> {
+  return listen<number>("update-progress", (event) => callback(event.payload));
 }
