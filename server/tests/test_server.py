@@ -67,7 +67,7 @@ def test_health(client):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["version"] == "0.1.0"
+    assert body["version"] == core.read_version()
 
 
 def test_public_key(client):
@@ -318,7 +318,7 @@ def test_admin_status_and_audit(admin_client):
     status = admin_client.get("/admin/status").json()
     assert status["accounts"] >= 1
     assert status["active_sessions"] >= 1
-    assert status["version"] == "0.1.0"
+    assert status["version"] == core.read_version()
     rows = admin_client.get("/admin/audit").json()
     assert 1 <= len(rows) <= 100
     actions = {row["action"] for row in rows}
