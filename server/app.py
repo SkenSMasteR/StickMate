@@ -204,11 +204,13 @@ def refresh(body: RefreshBody):
     token_hash = hashlib.sha256(body.refresh_token.encode()).hexdigest()
     with closing(core.db()) as conn, conn:
         session = conn.execute(
-            "SELECT id, account_id, revoked FROM sessions WHERE refresh_hash=?",
+            "SELECT id, account_id, revoked, expires_at FROM sessions WHERE refresh_hash=?",
             (token_hash,),
         ).fetchone()
         if session is None or session["revoked"]:
             raise HTTPException(status_code=401, detail="invalid refresh token")
+        if session["expires_at"] and core.is_expired(session["expires_at"]):
+            raise HTTPException(status_code=401, detail="refresh token expired")
         account = conn.execute(
             "SELECT id, suspended FROM accounts WHERE id=?",
             (session["account_id"],),

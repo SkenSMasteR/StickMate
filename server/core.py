@@ -6,7 +6,7 @@ import os
 import secrets
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from cryptography.hazmat.primitives import serialization
@@ -25,6 +25,7 @@ ADMIN_TOKEN = os.environ.get("STICKMATE_ADMIN_TOKEN", "")
 GITHUB_API = os.environ.get("STICKMATE_GITHUB_API", "https://api.github.com").rstrip("/")
 
 ACCESS_TTL = 3600
+REFRESH_TTL = 30 * 86400
 DEVICE_TTL = 600
 
 SCHEMA = """
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS sessions(
     account_id INTEGER,
     refresh_hash TEXT,
     created_at TEXT,
+    expires_at TEXT,
     revoked INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS device_codes(
@@ -89,6 +91,12 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def session_expiry():
+    return (
+        datetime.now(timezone.utc) + timedelta(seconds=REFRESH_TTL)
+    ).isoformat(timespec="seconds")
+
+
 def iso_plus(seconds):
     return datetime.fromtimestamp(time.time() + seconds, timezone.utc).isoformat(timespec="seconds")
 
@@ -112,6 +120,13 @@ def init_db():
             conn.executescript(SCHEMA)
             conn.execute("INSERT OR IGNORE INTO policy(key,value) VALUES('offline_grace_days','30')")
             conn.execute("INSERT OR IGNORE INTO policy(key,value) VALUES('preference_max_bytes','262144')")
+            columns = [row["name"] for row in conn.execute("PRAGMA table_info(sessions)")]
+            if "expires_at" not in columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN expires_at TEXT")
+                conn.execute(
+                    "UPDATE sessions SET expires_at=? WHERE expires_at IS NULL",
+                    (session_expiry(),),
+                )
             row = conn.execute("SELECT id FROM signing_key WHERE id=1").fetchone()
             if row is None:
                 key = ed25519.Ed25519PrivateKey.generate()
@@ -203,8 +218,8 @@ def new_refresh_token():
 def create_session(conn, account_id):
     token, token_hash = new_refresh_token()
     conn.execute(
-        "INSERT INTO sessions(account_id,refresh_hash,created_at,revoked) VALUES(?,?,?,0)",
-        (account_id, token_hash, now_iso()),
+        "INSERT INTO sessions(account_id,refresh_hash,created_at,expires_at,revoked) VALUES(?,?,?,?,0)",
+        (account_id, token_hash, now_iso(), session_expiry()),
     )
     return token
 

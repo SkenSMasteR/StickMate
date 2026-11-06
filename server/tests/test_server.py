@@ -1,6 +1,9 @@
 import os
 import sys
 import tempfile
+import hashlib
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -156,6 +159,38 @@ def test_refresh_rotates(client, monkeypatch):
     assert replay.status_code == 401
     preferences = client.get("/preferences", headers=auth(rotated["access_token"]))
     assert preferences.status_code == 200
+
+
+def session_row(refresh_token):
+    digest = hashlib.sha256(refresh_token.encode()).hexdigest()
+    with closing(core.db()) as conn:
+        return conn.execute(
+            "SELECT id, expires_at FROM sessions WHERE refresh_hash=?", (digest,)
+        ).fetchone()
+
+
+def test_refresh_recharges_expiry(client, monkeypatch):
+    tokens = sign_in(client, monkeypatch, 108, "erin")
+    row = session_row(tokens["refresh_token"])
+    soon = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(timespec="seconds")
+    with closing(core.db()) as conn, conn:
+        conn.execute("UPDATE sessions SET expires_at=? WHERE id=?", (soon, row["id"]))
+    response = client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+    assert response.status_code == 200
+    renewed = session_row(response.json()["refresh_token"])
+    assert renewed["expires_at"] > soon
+
+
+def test_expired_refresh_rejected(client, monkeypatch):
+    tokens = sign_in(client, monkeypatch, 109, "frank")
+    row = session_row(tokens["refresh_token"])
+    with closing(core.db()) as conn, conn:
+        conn.execute(
+            "UPDATE sessions SET expires_at=? WHERE id=?",
+            ("2000-01-01T00:00:00+00:00", row["id"]),
+        )
+    response = client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+    assert response.status_code == 401
 
 
 def test_logout(client, monkeypatch):
