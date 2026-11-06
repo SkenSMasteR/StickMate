@@ -121,6 +121,26 @@ ensure_gh() {
   TMP_DIR=""
 }
 
+load_gh_token() {
+  if [[ -z "${GH_TOKEN:-}" && -f "$ENV_FILE" ]]; then
+    local t
+    t=$(sed -n 's/^GH_TOKEN=//p' "$ENV_FILE" | head -n 1)
+    if [[ -n "$t" ]]; then
+      export GH_TOKEN="$t"
+    fi
+  fi
+}
+
+ensure_gh_auth() {
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    return 0
+  fi
+  if gh auth status >/dev/null 2>&1; then
+    return 0
+  fi
+  die "GitHub CLI is not authenticated. Run gh auth login or set GH_TOKEN in $ENV_FILE."
+}
+
 write_env_template() {
   local token="CHANGE_ME"
   if command -v openssl >/dev/null 2>&1; then
@@ -132,6 +152,7 @@ GITHUB_CLIENT_SECRET=CHANGE_ME
 STICKMATE_ADMIN_TOKEN=$token
 STICKMATE_PUBLIC_URL=https://CHANGE_ME
 STICKMATE_ADMIN_BIND=127.0.0.1
+GH_TOKEN=
 EOF
   chmod 0600 "$ENV_FILE"
   echo "Edit $ENV_FILE to set your secrets."
@@ -158,6 +179,8 @@ cmd_install() {
   if [[ ! -f "$ENV_FILE" ]]; then
     write_env_template
   fi
+  load_gh_token
+  ensure_gh_auth
   version=$(latest_server_version)
   [[ -n "$version" ]] || die "no server release found."
   download_and_verify "$version"
@@ -173,6 +196,8 @@ cmd_install() {
 cmd_update() {
   require_root
   local version cur
+  load_gh_token
+  ensure_gh_auth
   version=$(latest_server_version)
   [[ -n "$version" ]] || die "no server release found."
   cur=$(current_version)
