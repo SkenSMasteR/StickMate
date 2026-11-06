@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ThemeProvider, useTheme } from "next-themes";
@@ -11,6 +11,7 @@ import type { Language } from "@/i18n";
 import { ConfirmProvider } from "@/lib/confirm";
 import { PrefsProvider, usePrefs } from "@/lib/prefs";
 import Splash from "@/splash/Splash";
+import type { ThemeName } from "@/theme";
 
 function windowLabel(): string {
   try {
@@ -23,11 +24,14 @@ function windowLabel(): string {
 function ThemeSync() {
   const { prefs, loaded } = usePrefs();
   const { setTheme } = useTheme();
+  const applied = useRef<ThemeName | null>(null);
 
   useEffect(() => {
-    if (loaded) {
-      setTheme(prefs.theme);
+    if (!loaded || applied.current === prefs.theme) {
+      return;
     }
+    applied.current = prefs.theme;
+    setTheme(prefs.theme);
   }, [loaded, prefs.theme, setTheme]);
 
   return null;

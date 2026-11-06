@@ -3,9 +3,12 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState
 } from "react";
 import type { ReactNode } from "react";
+import { emit, listen } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { prefsGet, prefsPut } from "@/lib/tauri";
 import type { ThemeName } from "@/theme";
 import type { Language } from "@/i18n";
@@ -27,6 +30,13 @@ const defaultPrefs: PrefsData = {
 };
 
 const fallbackKey = "stickmate.prefs";
+
+const PREFS_EVENT = "prefs-changed";
+
+interface PrefsBroadcast {
+  revision: number;
+  data: PrefsData;
+}
 
 interface PrefsValue {
   prefs: PrefsData;
@@ -59,6 +69,8 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
   const [prefs, setPrefs] = useState<PrefsData>(defaultPrefs);
   const [loaded, setLoaded] = useState(false);
   const [baseRevision, setBaseRevision] = useState(0);
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
 
   useEffect(() => {
     let cancelled = false;
@@ -91,24 +103,45 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: UnlistenFn | null = null;
+    void listen<PrefsBroadcast>(PREFS_EVENT, (event) => {
+      setPrefs(event.payload.data);
+      setBaseRevision(event.payload.revision);
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   const update = useCallback(
     async (patch: Partial<PrefsData>) => {
-      setPrefs((prev) => {
-        const next = { ...prev, ...patch };
-        const persist = async () => {
-          try {
-            const result = await prefsPut(baseRevision, next as unknown as Record<string, unknown>);
-            setBaseRevision(result.revision);
-          } catch {
-            localStorage.setItem(
-              fallbackKey,
-              JSON.stringify({ base_revision: baseRevision, data: next })
-            );
-          }
-        };
-        void persist();
-        return next;
-      });
+      const next = { ...prefsRef.current, ...patch };
+      setPrefs(next);
+      let revision = baseRevision;
+      try {
+        const result = await prefsPut(
+          baseRevision,
+          next as unknown as Record<string, unknown>
+        );
+        revision = result.revision;
+        setBaseRevision(revision);
+      } catch {
+        localStorage.setItem(
+          fallbackKey,
+          JSON.stringify({ base_revision: baseRevision, data: next })
+        );
+      }
+      const payload: PrefsBroadcast = { revision, data: next };
+      void emit(PREFS_EVENT, payload);
     },
     [baseRevision]
   );
