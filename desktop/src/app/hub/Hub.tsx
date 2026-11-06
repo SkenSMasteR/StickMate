@@ -21,17 +21,12 @@ import {
   SidebarRail,
   SidebarTrigger
 } from "@/components/ui/sidebar";
-import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbList,
-  BreadcrumbPage
-} from "@/components/ui/breadcrumb";
+import { useTheme } from "next-themes";
 import { useWorkspace } from "@/editor/workspace";
 import { useI18n } from "@/i18n";
 import logoDark from "@/assets/logo-dark.png";
+import logoLight from "@/assets/logo-light.png";
 import Titlebar from "@/app/Titlebar";
 import New from "./New";
 import Projects from "./Projects";
@@ -50,6 +45,7 @@ export default function Hub({
   onOpenEditor: () => void;
 }) {
   const { t } = useI18n();
+  const { resolvedTheme } = useTheme();
   const { ids } = useWorkspace();
   const [destination, setDestination] = useState<Destination>("new");
 
@@ -61,24 +57,15 @@ export default function Hub({
     ];
 
   const titles: Record<Destination, string> = {
-    new: t("sidebar.new"),
-    projects: t("sidebar.projects"),
-    templates: t("sidebar.templates"),
-    settings: t("sidebar.settings")
+    new: t("new.title"),
+    projects: t("projects.title"),
+    templates: t("templates.title"),
+    settings: t("settings.title")
   };
 
   return (
     <SidebarProvider style={providerStyle} className="h-full min-h-0 flex-col">
-      <Titlebar>
-        <SidebarTrigger className="-ml-1" />
-        <Separator orientation="vertical" className="mx-2 h-4" />
-        <Breadcrumb>
-          <BreadcrumbList>
-            <BreadcrumbItem>
-              <BreadcrumbPage>{titles[destination]}</BreadcrumbPage>
-            </BreadcrumbItem>
-          </BreadcrumbList>
-        </Breadcrumb>
+      <Titlebar sidebar>
         {ids.length > 0 && (
           <Button
             variant="ghost"
@@ -102,9 +89,9 @@ export default function Hub({
                 <SidebarMenuButton size="lg" asChild>
                   <div className="flex items-center gap-2">
                     <img
-                      src={logoDark}
+                      src={resolvedTheme === "light" ? logoLight : logoDark}
                       alt=""
-                      className="h-8 w-8 object-contain invert dark:invert-0"
+                      className="h-8 w-8 object-contain"
                       draggable={false}
                     />
                     <span className="text-sm font-semibold">
@@ -163,6 +150,10 @@ export default function Hub({
         </Sidebar>
         <SidebarInset>
           <div className="flex flex-1 flex-col gap-4 overflow-hidden p-4">
+            <div className="flex items-center gap-2">
+              <SidebarTrigger className="-ml-1" />
+              <h1 className="text-lg font-semibold">{titles[destination]}</h1>
+            </div>
             {destination === "new" && <New onOpened={onOpenEditor} />}
             {destination === "projects" && <Projects onOpened={onOpenEditor} />}
             {destination === "templates" && (

@@ -4,6 +4,7 @@ import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { heldKey } from "@/lib/document";
 import { cn } from "@/lib/utils";
+import Picker from "@/components/color-field";
 import NumberField from "./NumberField";
 import { useWorkspace } from "./workspace";
 
@@ -29,21 +30,10 @@ function ColorField({
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 text-xs">
+    <div className="flex items-center gap-2 text-xs">
       <span className="w-20 shrink-0 text-muted-foreground">{label}</span>
-      <input
-        type="color"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-7 w-9 shrink-0 cursor-pointer border border-border bg-transparent p-0.5"
-      />
-      <input
-        value={value}
-        aria-label={label}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-7 w-full min-w-0 border border-border bg-transparent px-1 text-xs outline-none focus:border-ring"
-      />
-    </label>
+      <Picker value={value} onChange={onChange} label={label} square />
+    </div>
   );
 }
 

@@ -17,5 +17,10 @@
     "lib": "@/lib",
     "hooks": "@/hooks"
   },
-  "iconLibrary": "lucide"
+  "iconLibrary": "lucide",
+  "registries": {
+    "@shadcnio": {
+      "url": "https://shadcn.io/r/{name}.json?token=${SHADCNIO_TOKEN}"
+    }
+  }
 }

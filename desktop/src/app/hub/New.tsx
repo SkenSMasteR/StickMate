@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import ColorField from "@/components/color-field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -51,8 +52,6 @@ export default function New({ onOpened }: { onOpened: () => void }) {
 
   return (
     <div className="flex h-full flex-col gap-6 overflow-y-auto">
-      <h1 className="text-lg font-semibold">{t("new.title")}</h1>
-
       <div className="flex flex-col gap-2">
         <Label>{t("new.resolution")}</Label>
         <div className="grid max-w-2xl grid-cols-2 gap-3 lg:grid-cols-4">
@@ -126,11 +125,10 @@ export default function New({ onOpened }: { onOpened: () => void }) {
         <div className="flex w-48 flex-col gap-2">
           <Label>{t("new.background")}</Label>
           <div className="flex items-center gap-2">
-            <input
-              type="color"
+            <ColorField
               value={background}
-              onChange={(event) => setBackground(event.target.value)}
-              className="h-9 w-12 cursor-pointer rounded-md border border-input bg-transparent p-1"
+              onChange={setBackground}
+              label={t("new.background")}
             />
             <Input
               value={background}

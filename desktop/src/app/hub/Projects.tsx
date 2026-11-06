@@ -88,8 +88,7 @@ export default function Projects({ onOpened }: { onOpened: () => void }) {
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold">{t("projects.title")}</h1>
+      <div className="flex items-center justify-end">
         <Button variant="outline" size="sm" onClick={() => void refresh()}>
           {t("projects.refresh")}
         </Button>

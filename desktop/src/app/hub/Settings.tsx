@@ -105,8 +105,6 @@ export default function Settings({
 
   return (
     <div className="flex h-full flex-col gap-8 overflow-y-auto">
-      <h1 className="text-lg font-semibold">{t("settings.title")}</h1>
-
       <section className="flex w-full max-w-md flex-col gap-3">
         <Label>{t("settings.language")}</Label>
         <Select

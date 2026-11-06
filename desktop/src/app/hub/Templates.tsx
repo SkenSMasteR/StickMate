@@ -102,7 +102,6 @@ export default function Templates({ onOpened }: { onOpened: () => void }) {
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto">
-      <h1 className="text-lg font-semibold">{t("templates.title")}</h1>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
         {templates.map((template) => (
           <Card
