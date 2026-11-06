@@ -416,7 +416,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     },
     setTransform: (patch) =>
       edit((d, s, l) => docSetTransform(d.id, s.id, l.id, frame, { ...transform, ...patch })),
-    insertFrame: () => edit((d, s, l) => docInsertFrame(d.id, s.id, l.id, frame)),
+    insertFrame: () => {
+      const target = frame + 1;
+      void edit((d, s, l) => docInsertFrame(d.id, s.id, l.id, frame)).then((ok) => {
+        if (ok) {
+          setTab({ frame: target });
+        }
+      });
+    },
     keyframe: (blank) => edit((d, s, l) => docKeyframe(d.id, s.id, l.id, frame, blank)),
     removeFrame: () => edit((d, s, l) => docRemoveFrame(d.id, s.id, l.id, frame)),
     toggleTween: () =>
