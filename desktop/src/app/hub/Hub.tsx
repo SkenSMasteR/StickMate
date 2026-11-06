@@ -89,7 +89,7 @@ export default function Hub({
                     <img
                       src={logoDark}
                       alt=""
-                      className="h-8 w-8 object-contain"
+                      className="h-8 w-8 object-contain invert dark:invert-0"
                       draggable={false}
                     />
                     <span className="text-sm font-semibold">

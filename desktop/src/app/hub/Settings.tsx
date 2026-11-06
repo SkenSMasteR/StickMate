@@ -23,7 +23,7 @@ import { useI18n } from "@/i18n";
 import type { Language } from "@/i18n";
 import { usePrefs } from "@/lib/prefs";
 import type { UpdateChannel } from "@/lib/prefs";
-import { useToast } from "@/lib/toast";
+import { toast } from "sonner";
 import {
   appVersion,
   authLogout,
@@ -42,7 +42,6 @@ export default function Settings({
 }) {
   const { t, setLanguage } = useI18n();
   const { prefs, update } = usePrefs();
-  const { toast } = useToast();
   const [checking, setChecking] = useState(false);
   const [pendingVersion, setPendingVersion] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
@@ -84,7 +83,7 @@ export default function Settings({
         toast(t("settings.updateNone"));
       }
     } catch {
-      toast(t("settings.updateError"));
+      toast.error(t("settings.updateError"));
     } finally {
       setChecking(false);
     }

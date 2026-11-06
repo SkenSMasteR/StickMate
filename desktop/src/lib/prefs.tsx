@@ -7,7 +7,6 @@ import {
 } from "react";
 import type { ReactNode } from "react";
 import { prefsGet, prefsPut } from "@/lib/tauri";
-import { applyTheme } from "@/theme";
 import type { ThemeName } from "@/theme";
 import type { Language } from "@/i18n";
 
@@ -91,10 +90,6 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    applyTheme(prefs.theme);
-  }, [prefs.theme]);
 
   const update = useCallback(
     async (patch: Partial<PrefsData>) => {

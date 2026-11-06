@@ -11,7 +11,7 @@ import {
   SelectValue
 } from "@/components/ui/select";
 import { useI18n } from "@/i18n";
-import { useToast } from "@/lib/toast";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 const presets = [
@@ -25,7 +25,6 @@ const frameRates = [24, 30, 60];
 
 export default function New() {
   const { t } = useI18n();
-  const { toast } = useToast();
   const [preset, setPreset] = useState(0);
   const [frameRate, setFrameRate] = useState("30");
   const [background, setBackground] = useState("#ffffff");

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useI18n } from "@/i18n";
-import { useToast } from "@/lib/toast";
+import { toast } from "sonner";
 
 export interface RecentProject {
   id: string;
@@ -44,7 +44,6 @@ function formatLastOpened(timestamp: number, language: string): string {
 
 export default function Projects() {
   const { t, language } = useI18n();
-  const { toast } = useToast();
   const [projects, setProjects] = useState<RecentProject[]>([]);
 
   useEffect(() => {

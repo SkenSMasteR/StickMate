@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
-import { useToast } from "@/lib/toast";
+import { toast } from "sonner";
 import { authPoll, authStart, openUrl, tokenSave } from "@/lib/tauri";
 
 type Phase = "idle" | "waiting" | "expired" | "error";
@@ -12,7 +12,6 @@ export default function SignIn({
   onSignedIn: (login: string | null) => void;
 }) {
   const { t } = useI18n();
-  const { toast } = useToast();
   const [phase, setPhase] = useState<Phase>("idle");
   const [userCode, setUserCode] = useState("");
   const timerRef = useRef<number | null>(null);
@@ -90,9 +89,9 @@ export default function SignIn({
       timerRef.current = window.setTimeout(poll, intervalMs);
     } catch {
       setPhase("error");
-      toast(t("auth.error"));
+      toast.error(t("auth.error"));
     }
-  }, [onSignedIn, stopPolling, t, toast]);
+  }, [onSignedIn, stopPolling, t]);
 
   return (
     <div className="flex flex-1 items-center justify-center bg-[hsl(var(--background))] p-6">

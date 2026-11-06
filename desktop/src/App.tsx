@@ -1,9 +1,11 @@
+import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { ThemeProvider, useTheme } from "next-themes";
 import Main from "@/app/App";
+import { Toaster } from "@/components/ui/sonner";
 import { I18nProvider } from "@/i18n";
 import type { Language } from "@/i18n";
 import { PrefsProvider, usePrefs } from "@/lib/prefs";
-import { ToastProvider } from "@/lib/toast";
 import Splash from "@/splash/Splash";
 
 function windowLabel(): string {
@@ -12,6 +14,17 @@ function windowLabel(): string {
   } catch {
     return "main";
   }
+}
+
+function ThemeSync() {
+  const { prefs } = usePrefs();
+  const { setTheme } = useTheme();
+
+  useEffect(() => {
+    setTheme(prefs.theme);
+  }, [prefs.theme, setTheme]);
+
+  return null;
 }
 
 function Routed() {
@@ -37,10 +50,17 @@ function MainWithI18n() {
 
 export default function App() {
   return (
-    <ToastProvider>
+    <ThemeProvider
+      attribute="class"
+      defaultTheme="dark"
+      enableSystem={false}
+      disableTransitionOnChange
+    >
       <PrefsProvider>
+        <ThemeSync />
         <Routed />
       </PrefsProvider>
-    </ToastProvider>
+      <Toaster />
+    </ThemeProvider>
   );
 }

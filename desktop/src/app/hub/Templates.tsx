@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useI18n } from "@/i18n";
-import { useToast } from "@/lib/toast";
+import { toast } from "sonner";
 
 const catalogUrl =
   "https://raw.githubusercontent.com/StickMate/templates/orphan/catalog.json";
@@ -14,7 +14,6 @@ interface Template {
 
 export default function Templates() {
   const { t } = useI18n();
-  const { toast } = useToast();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -32,7 +31,7 @@ export default function Templates() {
       setTemplates(list);
     } catch {
       setTemplates([]);
-      toast(t("templates.unavailable"));
+      toast.error(t("templates.unavailable"));
     } finally {
       setBusy(false);
     }
