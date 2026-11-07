@@ -1,0 +1,62 @@
+name: Templates CI
+
+on:
+  push:
+    branches: [templates]
+  pull_request:
+    branches: [templates]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out template catalog
+        uses: actions/checkout@v7
+        with:
+          ref: templates
+          path: content
+      - name: Check out tested ref
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: tested
+      - name: Check out default branch
+        if: hashFiles('tested/scripts/validate-templates.py') == ''
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: source
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Validate published templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tested/scripts/validate-templates.py ]; then
+            python tested/scripts/validate-templates.py content
+          else
+            python source/scripts/validate-templates.py content
+          fi
+      - name: Verify catalog is reachable
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://raw.githubusercontent.com/SkenSMasteR/StickMate/templates/catalog.json"
+          expected="$(sha256sum content/catalog.json | cut -d ' ' -f 1)"
+          for _ in 1 2 3; do
+            if curl --fail --silent --show-error "$url" -o "$RUNNER_TEMP/catalog.json"; then
+              actual="$(sha256sum "$RUNNER_TEMP/catalog.json" | cut -d ' ' -f 1)"
+              if [ "$actual" = "$expected" ]; then
+                echo "catalog matches $url"
+                exit 0
+              fi
+            fi
+            sleep 10
+          done
+          echo "catalog at $url does not match the templates branch"
+          exit 1
