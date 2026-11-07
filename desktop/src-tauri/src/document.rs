@@ -18,7 +18,7 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-fn new_id(prefix: &str) -> String {
+pub(crate) fn new_id(prefix: &str) -> String {
     format!(
         "{}{:x}{:x}",
         prefix,
@@ -27,7 +27,7 @@ fn new_id(prefix: &str) -> String {
     )
 }
 
-fn locked<T>(_: T) -> String {
+pub(crate) fn locked<T>(_: T) -> String {
     "document store unavailable".to_string()
 }
 
@@ -214,7 +214,7 @@ fn densify(path: &[Point], spacing: f64) -> Vec<Point> {
     out
 }
 
-fn validate(shape: &Shape) -> Result<(), String> {
+pub(crate) fn validate(shape: &Shape) -> Result<(), String> {
     match shape {
         Shape::Polygon { sides, .. } if *sides < 3 => {
             Err("polygon needs at least 3 sides".to_string())
@@ -320,15 +320,15 @@ impl Layer {
         }
     }
 
-    fn key_index(&self, frame: u32) -> Option<usize> {
+    pub(crate) fn key_index(&self, frame: u32) -> Option<usize> {
         self.keys.iter().position(|k| k.frame == frame)
     }
 
-    fn held_index(&self, frame: u32) -> Option<usize> {
+    pub(crate) fn held_index(&self, frame: u32) -> Option<usize> {
         self.keys.iter().rposition(|k| k.frame <= frame)
     }
 
-    fn key_at(&mut self, frame: u32) -> usize {
+    pub(crate) fn key_at(&mut self, frame: u32) -> usize {
         if let Some(index) = self.key_index(frame) {
             return index;
         }
@@ -348,7 +348,7 @@ impl Layer {
         index
     }
 
-    fn writable(&self) -> Result<(), String> {
+    pub(crate) fn writable(&self) -> Result<(), String> {
         if self.locked {
             Err("layer is locked".to_string())
         } else {
@@ -383,7 +383,7 @@ impl Scene {
             .max(1)
     }
 
-    fn layer_index(&self, layer_id: &str) -> Result<usize, String> {
+    pub(crate) fn layer_index(&self, layer_id: &str) -> Result<usize, String> {
         self.layers
             .iter()
             .position(|layer| layer.id == layer_id)
@@ -403,14 +403,18 @@ pub struct Document {
 }
 
 impl Document {
-    fn scene_index(&self, scene_id: &str) -> Result<usize, String> {
+    pub(crate) fn scene_index(&self, scene_id: &str) -> Result<usize, String> {
         self.scenes
             .iter()
             .position(|scene| scene.id == scene_id)
             .ok_or_else(|| "unknown scene".to_string())
     }
 
-    fn layer_mut(&mut self, scene_id: &str, layer_id: &str) -> Result<&mut Layer, String> {
+    pub(crate) fn layer_mut(
+        &mut self,
+        scene_id: &str,
+        layer_id: &str,
+    ) -> Result<&mut Layer, String> {
         let scene = self
             .scenes
             .iter_mut()
@@ -568,7 +572,7 @@ impl DocStore {
         write_atomic(&self.dir.join(format!("{}.json", state.doc.id)), &bytes)
     }
 
-    fn edit<F>(&self, id: &str, change: F) -> Result<Document, String>
+    pub(crate) fn edit<F>(&self, id: &str, change: F) -> Result<Document, String>
     where
         F: FnOnce(&mut Document) -> Result<(), String>,
     {
@@ -1148,7 +1152,7 @@ impl DocStore {
     }
 }
 
-fn clean_name(value: &str) -> Option<String> {
+pub(crate) fn clean_name(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         None
