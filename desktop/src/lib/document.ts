@@ -26,7 +26,49 @@ export type Shape =
       fill: string;
       stroke: string;
       width: number;
+    }
+  | {
+      kind: "Polygon";
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      sides: number;
+      fill: string;
+      stroke: string;
+      width: number;
+    }
+  | {
+      kind: "Text";
+      x: number;
+      y: number;
+      text: string;
+      size: number;
+      family: string;
+      color: string;
     };
+
+export const TEXT_ADVANCE = 0.6;
+
+export function textWidth(text: string, size: number): number {
+  return [...text].length * size * TEXT_ADVANCE;
+}
+
+export function polygonVertices(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  sides: number
+): Point[] {
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  const step = (Math.PI * 2) / sides;
+  return Array.from({ length: sides }, (_, index) => {
+    const angle = -Math.PI / 2 + index * step;
+    return { x: cx + (w / 2) * Math.cos(angle), y: cy + (h / 2) * Math.sin(angle) };
+  });
+}
 
 export interface Transform {
   x: number;
@@ -278,6 +320,53 @@ export function docDraw(
   shape: Shape
 ): Promise<Document> {
   return invoke<Document>("doc_draw", { id, sceneId, layerId, frame, shape });
+}
+
+export function docErase(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  path: Point[],
+  radius: number
+): Promise<Document> {
+  return invoke<Document>("doc_erase", { id, sceneId, layerId, frame, path, radius });
+}
+
+export function docPaintShape(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  index: number,
+  color: string
+): Promise<Document> {
+  return invoke<Document>("doc_paint_shape", {
+    id,
+    sceneId,
+    layerId,
+    frame,
+    index,
+    color
+  });
+}
+
+export function docReplaceShape(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  index: number,
+  shape: Shape
+): Promise<Document> {
+  return invoke<Document>("doc_replace_shape", {
+    id,
+    sceneId,
+    layerId,
+    frame,
+    index,
+    shape
+  });
 }
 
 export function docDeleteShape(

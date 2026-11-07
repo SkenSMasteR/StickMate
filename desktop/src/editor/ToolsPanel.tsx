@@ -1,4 +1,16 @@
-import { Circle, MousePointer2, Pencil, Slash, Square } from "lucide-react";
+import {
+  Brush,
+  Circle,
+  Eraser,
+  MousePointer2,
+  PaintBucket,
+  Pentagon,
+  Pencil,
+  Pipette,
+  Slash,
+  Square,
+  Type
+} from "lucide-react";
 import { useI18n } from "@/i18n";
 import { buildCommands } from "./commands";
 import ToolButton from "./ToolButton";
@@ -8,9 +20,15 @@ import type { Tool } from "./workspace";
 const tools: Array<{ id: Tool; icon: typeof Pencil }> = [
   { id: "select", icon: MousePointer2 },
   { id: "pencil", icon: Pencil },
+  { id: "brush", icon: Brush },
+  { id: "eraser", icon: Eraser },
   { id: "line", icon: Slash },
   { id: "rect", icon: Square },
-  { id: "ellipse", icon: Circle }
+  { id: "ellipse", icon: Circle },
+  { id: "polygon", icon: Pentagon },
+  { id: "fill", icon: PaintBucket },
+  { id: "eyedropper", icon: Pipette },
+  { id: "text", icon: Type }
 ];
 
 export default function ToolsPanel() {

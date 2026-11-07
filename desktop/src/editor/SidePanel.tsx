@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { heldKey } from "@/lib/document";
+import type { Shape } from "@/lib/document";
 import { cn } from "@/lib/utils";
 import Picker from "@/components/color-field";
 import NumberField from "./NumberField";
@@ -40,10 +41,12 @@ function ColorField({
 function LabelField({
   label,
   value,
+  required,
   onCommit
 }: {
   label: string;
   value: string;
+  required?: boolean;
   onCommit: (value: string) => void;
 }) {
   const [text, setText] = useState(value);
@@ -57,7 +60,12 @@ function LabelField({
       <span className="w-20 shrink-0 text-muted-foreground">{label}</span>
       <input
         value={text}
-        onChange={(event) => setText(event.target.value)}
+        onChange={(event) => {
+          if (required && event.target.value === "") {
+            return;
+          }
+          setText(event.target.value);
+        }}
         onBlur={() => onCommit(text)}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
@@ -68,6 +76,128 @@ function LabelField({
         className="h-7 w-full min-w-0 border border-border bg-transparent px-1 text-xs outline-none focus:border-ring"
       />
     </label>
+  );
+}
+
+function ShapeFields({
+  shape,
+  index,
+  onPaint,
+  onReplace
+}: {
+  shape: Shape;
+  index: number;
+  onPaint: (index: number, color: string) => void;
+  onReplace: (index: number, shape: Shape) => void;
+}) {
+  const { t } = useI18n();
+  const rounded = (value: number) => Number(value.toFixed(2));
+
+  if (shape.kind === "Text") {
+    return (
+      <>
+        <LabelField
+          label={t("editor.textContent")}
+          value={shape.text}
+          required
+          onCommit={(text) => onReplace(index, { ...shape, text })}
+        />
+        <NumberField
+          label={t("editor.fontSize")}
+          value={rounded(shape.size)}
+          min={4}
+          max={400}
+          onCommit={(size) => onReplace(index, { ...shape, size })}
+        />
+        <LabelField
+          label={t("editor.fontFamily")}
+          value={shape.family}
+          required
+          onCommit={(family) => onReplace(index, { ...shape, family })}
+        />
+        <ColorField
+          label={t("editor.stroke")}
+          value={shape.color}
+          onChange={(color) => onPaint(index, color)}
+        />
+      </>
+    );
+  }
+
+  if (shape.kind === "Stroke") {
+    return (
+      <>
+        <ColorField
+          label={t("editor.stroke")}
+          value={shape.color}
+          onChange={(color) => onPaint(index, color)}
+        />
+        <NumberField
+          label={t("editor.strokeWidth")}
+          value={rounded(shape.width)}
+          min={0.5}
+          max={200}
+          step={0.5}
+          onCommit={(width) => onReplace(index, { ...shape, width })}
+        />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <NumberField
+        label={t("editor.x")}
+        value={rounded(shape.x)}
+        onCommit={(x) => onReplace(index, { ...shape, x })}
+      />
+      <NumberField
+        label={t("editor.y")}
+        value={rounded(shape.y)}
+        onCommit={(y) => onReplace(index, { ...shape, y })}
+      />
+      <NumberField
+        label={t("editor.width")}
+        value={rounded(shape.w)}
+        min={0.5}
+        step={0.5}
+        onCommit={(w) => onReplace(index, { ...shape, w })}
+      />
+      <NumberField
+        label={t("editor.height")}
+        value={rounded(shape.h)}
+        min={0.5}
+        step={0.5}
+        onCommit={(h) => onReplace(index, { ...shape, h })}
+      />
+      {shape.kind === "Polygon" && (
+        <NumberField
+          label={t("editor.sides")}
+          value={shape.sides}
+          min={3}
+          max={32}
+          onCommit={(sides) => onReplace(index, { ...shape, sides })}
+        />
+      )}
+      <ColorField
+        label={t("editor.fill")}
+        value={shape.fill}
+        onChange={(fill) => onPaint(index, fill)}
+      />
+      <ColorField
+        label={t("editor.stroke")}
+        value={shape.stroke}
+        onChange={(stroke) => onReplace(index, { ...shape, stroke })}
+      />
+      <NumberField
+        label={t("editor.strokeWidth")}
+        value={rounded(shape.width)}
+        min={0.5}
+        max={200}
+        step={0.5}
+        onCommit={(width) => onReplace(index, { ...shape, width })}
+      />
+    </>
   );
 }
 
@@ -97,20 +227,87 @@ export default function SidePanel() {
   const iconButton =
     "flex h-6 w-6 shrink-0 items-center justify-center text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-40";
 
+  const tool = tab.tool;
+  const usesStroke =
+    tool !== "select" && tool !== "eraser" && tool !== "fill" && tool !== "eyedropper";
+  const usesFill =
+    tool === "rect" || tool === "ellipse" || tool === "polygon" || tool === "fill";
+  const usesWidth =
+    tool === "pencil" ||
+    tool === "brush" ||
+    tool === "line" ||
+    tool === "rect" ||
+    tool === "ellipse" ||
+    tool === "polygon";
+  const hasToolSettings = usesStroke || usesFill || usesWidth || tool === "eraser";
+
   return (
     <div className="flex w-full flex-col">
-      <Section title={t("editor.toolSettings")}>
-        <ColorField label={t("editor.stroke")} value={tab.stroke} onChange={(stroke) => setTab({ stroke })} />
-        <ColorField label={t("editor.fill")} value={tab.fill} onChange={(fill) => setTab({ fill })} />
-        <NumberField
-          label={t("editor.strokeWidth")}
-          value={tab.strokeWidth}
-          min={0.5}
-          max={200}
-          step={0.5}
-          onCommit={(strokeWidth) => setTab({ strokeWidth })}
-        />
-      </Section>
+      {hasToolSettings && (
+        <Section title={t("editor.toolSettings")}>
+          {usesStroke && (
+            <ColorField label={t("editor.stroke")} value={tab.stroke} onChange={(stroke) => setTab({ stroke })} />
+          )}
+          {usesFill && (
+            <ColorField label={t("editor.fill")} value={tab.fill} onChange={(fill) => setTab({ fill })} />
+          )}
+          {usesWidth && (
+            <NumberField
+              label={t("editor.strokeWidth")}
+              value={tab.strokeWidth}
+              min={0.5}
+              max={200}
+              step={0.5}
+              onCommit={(strokeWidth) => setTab({ strokeWidth })}
+            />
+          )}
+          {tool === "brush" && (
+            <NumberField
+              label={t("editor.smoothing")}
+              value={tab.smoothing}
+              min={0}
+              max={100}
+              step={5}
+              onCommit={(smoothing) => setTab({ smoothing })}
+            />
+          )}
+          {tool === "polygon" && (
+            <NumberField
+              label={t("editor.sides")}
+              value={tab.sides}
+              min={3}
+              max={32}
+              onCommit={(sides) => setTab({ sides })}
+            />
+          )}
+          {tool === "eraser" && (
+            <NumberField
+              label={t("editor.eraserWidth")}
+              value={tab.eraserWidth}
+              min={1}
+              max={200}
+              onCommit={(eraserWidth) => setTab({ eraserWidth })}
+            />
+          )}
+          {tool === "text" && (
+            <>
+              <NumberField
+                label={t("editor.fontSize")}
+                value={tab.fontSize}
+                min={4}
+                max={400}
+                onCommit={(fontSize) => setTab({ fontSize })}
+              />
+              <LabelField
+                label={t("editor.fontFamily")}
+                value={tab.fontFamily}
+                required
+                onCommit={(fontFamily) => setTab({ fontFamily })}
+              />
+            </>
+          )}
+        </Section>
+      )}
 
       <Section title={t("editor.properties")}>
         <div className="flex items-center justify-between text-xs">
@@ -175,12 +372,21 @@ export default function SidePanel() {
             {t("editor.deleteShape")}
           </button>
         </div>
-        {selectedShape !== null && selectedIndex !== null && (
+      </Section>
+
+      {selectedShape !== null && selectedIndex !== null && (
+        <Section title={t("editor.shape")}>
           <p className="text-xs text-muted-foreground">
             {t(`editor.shape.${selectedShape.kind}`)} {selectedIndex + 1}
           </p>
-        )}
-      </Section>
+          <ShapeFields
+            shape={selectedShape}
+            index={selectedIndex}
+            onPaint={actions.paintShape}
+            onReplace={actions.replaceShape}
+          />
+        </Section>
+      )}
 
       <Section
         title={t("editor.layers")}

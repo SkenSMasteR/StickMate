@@ -63,6 +63,173 @@ pub enum Shape {
         stroke: String,
         width: f64,
     },
+    Polygon {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        sides: u32,
+        fill: String,
+        stroke: String,
+        width: f64,
+    },
+    Text {
+        x: f64,
+        y: f64,
+        text: String,
+        size: f64,
+        family: String,
+        color: String,
+    },
+}
+
+pub const TEXT_ADVANCE: f64 = 0.6;
+
+pub fn text_width(text: &str, size: f64) -> f64 {
+    text.chars().count() as f64 * size * TEXT_ADVANCE
+}
+
+pub fn polygon_vertices(x: f64, y: f64, w: f64, h: f64, sides: u32) -> Vec<Point> {
+    let cx = x + w / 2.0;
+    let cy = y + h / 2.0;
+    let step = std::f64::consts::TAU / sides as f64;
+    (0..sides)
+        .map(|index| {
+            let angle = -std::f64::consts::FRAC_PI_2 + index as f64 * step;
+            Point {
+                x: cx + (w / 2.0) * angle.cos(),
+                y: cy + (h / 2.0) * angle.sin(),
+            }
+        })
+        .collect()
+}
+
+fn within(a: &Point, b: &Point, radius: f64) -> bool {
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
+    dx * dx + dy * dy <= radius * radius
+}
+
+fn near_segment(p: &Point, a: &Point, b: &Point, radius: f64) -> bool {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 <= f64::EPSILON {
+        0.0
+    } else {
+        (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0)
+    };
+    within(
+        p,
+        &Point {
+            x: a.x + dx * t,
+            y: a.y + dy * t,
+        },
+        radius,
+    )
+}
+
+fn inside_polygon(p: &Point, vertices: &[Point]) -> bool {
+    let mut inside = false;
+    for index in 0..vertices.len() {
+        let a = &vertices[index];
+        let b = &vertices[(index + 1) % vertices.len()];
+        if (a.y > p.y) != (b.y > p.y) {
+            let cross = a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y);
+            if p.x < cross {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+fn shape_hit(shape: &Shape, p: &Point, radius: f64) -> bool {
+    match shape {
+        Shape::Stroke { points, width, .. } => {
+            let reach = radius + width / 2.0;
+            points
+                .windows(2)
+                .any(|pair| near_segment(p, &pair[0], &pair[1], reach))
+                || points
+                    .first()
+                    .map_or(false, |first| within(p, first, reach))
+        }
+        Shape::Rect { x, y, w, h, .. } => {
+            p.x >= x - radius && p.x <= x + w + radius && p.y >= y - radius && p.y <= y + h + radius
+        }
+        Shape::Ellipse { x, y, w, h, .. } => {
+            let rx = w / 2.0 + radius;
+            let ry = h / 2.0 + radius;
+            if rx <= 0.0 || ry <= 0.0 {
+                return false;
+            }
+            let dx = (p.x - (x + w / 2.0)) / rx;
+            let dy = (p.y - (y + h / 2.0)) / ry;
+            dx * dx + dy * dy <= 1.0
+        }
+        Shape::Polygon {
+            x,
+            y,
+            w,
+            h,
+            sides,
+            ..
+        } => {
+            let vertices = polygon_vertices(*x, *y, *w, *h, *sides);
+            inside_polygon(p, &vertices)
+                || vertices.iter().enumerate().any(|(index, a)| {
+                    near_segment(p, a, &vertices[(index + 1) % vertices.len()], radius)
+                })
+        }
+        Shape::Text {
+            x, y, text, size, ..
+        } => {
+            let w = text_width(text, *size);
+            p.x >= x - radius && p.x <= x + w + radius && p.y >= y - radius && p.y <= y + size + radius
+        }
+    }
+}
+
+fn densify(path: &[Point], spacing: f64) -> Vec<Point> {
+    let mut out = Vec::new();
+    for (index, point) in path.iter().enumerate() {
+        out.push(point.clone());
+        let Some(next) = path.get(index + 1) else {
+            continue;
+        };
+        let distance = ((next.x - point.x).powi(2) + (next.y - point.y).powi(2)).sqrt();
+        let steps = (distance / spacing).ceil() as usize;
+        for step in 1..steps {
+            if out.len() >= 20_000 {
+                return out;
+            }
+            let t = step as f64 / steps as f64;
+            out.push(Point {
+                x: point.x + (next.x - point.x) * t,
+                y: point.y + (next.y - point.y) * t,
+            });
+        }
+    }
+    out
+}
+
+fn validate(shape: &Shape) -> Result<(), String> {
+    match shape {
+        Shape::Polygon { sides, .. } if *sides < 3 => {
+            Err("polygon needs at least 3 sides".to_string())
+        }
+        Shape::Text { text, size, .. } => {
+            if text.trim().is_empty() {
+                return Err("text is empty".to_string());
+            }
+            if *size <= 0.0 {
+                return Err("text size must be positive".to_string());
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -770,11 +937,112 @@ impl DocStore {
         frame: u32,
         shape: Shape,
     ) -> Result<Document, String> {
+        validate(&shape)?;
         self.edit(id, |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let index = layer.key_at(frame);
             layer.keys[index].shapes.push(shape);
+            Ok(())
+        })
+    }
+
+    pub fn erase(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        path: Vec<Point>,
+        radius: f64,
+    ) -> Result<Document, String> {
+        if path.is_empty() {
+            return Err("eraser path is empty".to_string());
+        }
+        if path.len() > 5_000 {
+            return Err("eraser path is too long".to_string());
+        }
+        if radius < 0.5 {
+            return Err("eraser size is too small".to_string());
+        }
+        let samples = densify(&path, radius / 2.0);
+        self.edit(id, |doc| {
+            let layer = doc.layer_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let index = layer.key_at(frame);
+            let key = &mut layer.keys[index];
+            let mut kept: Vec<Shape> = Vec::new();
+            for shape in key.shapes.drain(..) {
+                match shape {
+                    Shape::Stroke {
+                        points,
+                        color,
+                        width,
+                    } => {
+                        let reach = radius + width / 2.0;
+                        let mut run: Vec<Point> = Vec::new();
+                        for point in points {
+                            if samples.iter().any(|sample| within(&point, sample, reach)) {
+                                if run.len() > 1 {
+                                    kept.push(Shape::Stroke {
+                                        points: run.clone(),
+                                        color: color.clone(),
+                                        width,
+                                    });
+                                }
+                                run.clear();
+                            } else {
+                                run.push(point);
+                            }
+                        }
+                        if run.len() > 1 {
+                            kept.push(Shape::Stroke {
+                                points: run,
+                                color,
+                                width,
+                            });
+                        }
+                    }
+                    other => {
+                        if !samples.iter().any(|sample| shape_hit(&other, sample, radius)) {
+                            kept.push(other);
+                        }
+                    }
+                }
+            }
+            key.shapes = kept;
+            Ok(())
+        })
+    }
+
+    pub fn paint_shape(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        index: usize,
+        color: String,
+    ) -> Result<Document, String> {
+        self.edit(id, |doc| {
+            let layer = doc.layer_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let key_index = layer.key_at(frame);
+            let key = &mut layer.keys[key_index];
+            let shape = key
+                .shapes
+                .get_mut(index)
+                .ok_or_else(|| "unknown shape".to_string())?;
+            match shape {
+                Shape::Stroke { color: target, .. } | Shape::Text { color: target, .. } => {
+                    *target = color;
+                }
+                Shape::Rect { fill, .. }
+                | Shape::Ellipse { fill, .. }
+                | Shape::Polygon { fill, .. } => {
+                    *fill = color;
+                }
+            }
             Ok(())
         })
     }
@@ -813,6 +1081,29 @@ impl DocStore {
             layer.writable()?;
             let index = layer.key_at(frame);
             layer.keys[index].transform = transform.sanitized();
+            Ok(())
+        })
+    }
+
+    pub fn replace_shape(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        index: usize,
+        shape: Shape,
+    ) -> Result<Document, String> {
+        validate(&shape)?;
+        self.edit(id, |doc| {
+            let layer = doc.layer_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let key_index = layer.key_at(frame);
+            let key = &mut layer.keys[key_index];
+            if index >= key.shapes.len() {
+                return Err("unknown shape".to_string());
+            }
+            key.shapes[index] = shape;
             Ok(())
         })
     }
@@ -1086,6 +1377,45 @@ pub fn doc_draw(
     shape: Shape,
 ) -> Result<Document, String> {
     store.draw(&id, &scene_id, &layer_id, frame, shape)
+}
+
+#[tauri::command]
+pub fn doc_erase(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    path: Vec<Point>,
+    radius: f64,
+) -> Result<Document, String> {
+    store.erase(&id, &scene_id, &layer_id, frame, path, radius)
+}
+
+#[tauri::command]
+pub fn doc_paint_shape(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    index: usize,
+    color: String,
+) -> Result<Document, String> {
+    store.paint_shape(&id, &scene_id, &layer_id, frame, index, color)
+}
+
+#[tauri::command]
+pub fn doc_replace_shape(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    index: usize,
+    shape: Shape,
+) -> Result<Document, String> {
+    store.replace_shape(&id, &scene_id, &layer_id, frame, index, shape)
 }
 
 #[tauri::command]
@@ -1845,5 +2175,451 @@ mod tests {
         let back: Shape =
             serde_json::from_value(serde_json::to_value(&rect).expect("serialize")).expect("back");
         assert_eq!(back, rect);
+    }
+
+    fn polygon(sides: u32) -> Shape {
+        Shape::Polygon {
+            x: 200.0,
+            y: 10.0,
+            w: 20.0,
+            h: 20.0,
+            sides,
+            fill: "#00ff00".to_string(),
+            stroke: "#000000".to_string(),
+            width: 1.0,
+        }
+    }
+
+    fn text(value: &str, size: f64) -> Shape {
+        Shape::Text {
+            x: 300.0,
+            y: 10.0,
+            text: value.to_string(),
+            size,
+            family: "Segoe UI".to_string(),
+            color: "#000000".to_string(),
+        }
+    }
+
+    fn box_shape(x: f64, y: f64) -> Shape {
+        Shape::Rect {
+            x,
+            y,
+            w: 20.0,
+            h: 20.0,
+            fill: "#ff0000".to_string(),
+            stroke: "#000000".to_string(),
+            width: 1.0,
+        }
+    }
+
+    fn line_stroke(from: f64, to: f64) -> Shape {
+        let mut points = Vec::new();
+        let mut x = from;
+        while x <= to {
+            points.push(Point { x, y: 50.0 });
+            x += 2.0;
+        }
+        Shape::Stroke {
+            points,
+            color: "#000000".to_string(),
+            width: 2.0,
+        }
+    }
+
+    #[test]
+    fn polygon_and_text_round_trip_and_draw() {
+        let fixture = Fixture::new("newkinds");
+        let id = &fixture.doc.id;
+        for shape in [polygon(5), text("Hello", 24.0)] {
+            let json = serde_json::to_value(&shape).expect("serialize");
+            let back: Shape = serde_json::from_value(json).expect("deserialize");
+            assert_eq!(back, shape);
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, shape)
+                .expect("draw");
+        }
+        let json = serde_json::to_value(polygon(5)).expect("serialize");
+        assert_eq!(json["kind"], "Polygon");
+        assert_eq!(json["sides"], 5);
+        let json = serde_json::to_value(text("Hi", 12.0)).expect("serialize");
+        assert_eq!(json["kind"], "Text");
+        let doc = fixture.store.get(id).expect("get");
+        assert_eq!(fixture.target(&doc).keys[0].shapes.len(), 2);
+    }
+
+    #[test]
+    fn draw_rejects_invalid_polygon_and_text() {
+        let fixture = Fixture::new("badkinds");
+        let id = &fixture.doc.id;
+        assert_eq!(
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, polygon(2))
+                .expect_err("sides"),
+            "polygon needs at least 3 sides"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, text("   ", 12.0))
+                .expect_err("blank"),
+            "text is empty"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, text("Hi", 0.0))
+                .expect_err("size"),
+            "text size must be positive"
+        );
+        assert!(fixture.target(&fixture.doc).keys[0].shapes.is_empty());
+        assert_eq!(fixture.store.undo(id).expect_err("undo"), "nothing to undo");
+    }
+
+    #[test]
+    fn polygon_vertices_start_at_top_and_text_width_uses_advance() {
+        let vertices = polygon_vertices(0.0, 0.0, 100.0, 100.0, 3);
+        assert_eq!(vertices.len(), 3);
+        assert!((vertices[0].x - 50.0).abs() < 1e-9);
+        assert!(vertices[0].y.abs() < 1e-9);
+        assert!(vertices[1].x > vertices[2].x);
+        assert_eq!(text_width("AB", 10.0), 12.0);
+    }
+
+    #[test]
+    fn eraser_splits_a_stroke_into_two() {
+        let fixture = Fixture::new("split");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, line_stroke(0.0, 100.0))
+            .expect("draw");
+        let erased = fixture
+            .store
+            .erase(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![Point { x: 50.0, y: 50.0 }],
+                4.0,
+            )
+            .expect("erase");
+        let shapes = &fixture.target(&erased).keys[0].shapes;
+        assert_eq!(shapes.len(), 2);
+        for shape in shapes {
+            match shape {
+                Shape::Stroke { points, .. } => {
+                    assert!(points.len() > 1);
+                    assert!(points.iter().all(|p| (p.x - 50.0).abs() > 5.0));
+                }
+                _ => panic!("expected stroke"),
+            }
+        }
+    }
+
+    #[test]
+    fn eraser_removes_only_touched_closed_shapes() {
+        let fixture = Fixture::new("closed");
+        let id = &fixture.doc.id;
+        for shape in [
+            box_shape(10.0, 10.0),
+            Shape::Ellipse {
+                x: 100.0,
+                y: 10.0,
+                w: 20.0,
+                h: 20.0,
+                fill: "#ff0000".to_string(),
+                stroke: "#000000".to_string(),
+                width: 1.0,
+            },
+            polygon(5),
+            text("Hi", 10.0),
+        ] {
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, shape)
+                .expect("draw");
+        }
+        let erased = fixture
+            .store
+            .erase(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![Point { x: 20.0, y: 20.0 }],
+                3.0,
+            )
+            .expect("erase");
+        let shapes = &fixture.target(&erased).keys[0].shapes;
+        assert_eq!(shapes.len(), 3);
+        assert!(shapes.iter().all(|shape| !matches!(shape, Shape::Rect { .. })));
+    }
+
+    #[test]
+    fn eraser_respects_polygon_geometry_not_its_box() {
+        let fixture = Fixture::new("polyhit");
+        let id = &fixture.doc.id;
+        let triangle = Shape::Polygon {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+            sides: 3,
+            fill: "#ff0000".to_string(),
+            stroke: "#000000".to_string(),
+            width: 1.0,
+        };
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, triangle)
+            .expect("draw");
+        let corner = fixture
+            .store
+            .erase(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![Point { x: 5.0, y: 5.0 }],
+                1.0,
+            )
+            .expect("erase corner");
+        assert_eq!(fixture.target(&corner).keys[0].shapes.len(), 1);
+        let centre = fixture
+            .store
+            .erase(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![Point { x: 50.0, y: 50.0 }],
+                1.0,
+            )
+            .expect("erase centre");
+        assert!(fixture.target(&centre).keys[0].shapes.is_empty());
+    }
+
+    #[test]
+    fn eraser_bridges_gaps_between_fast_pointer_samples() {
+        let fixture = Fixture::new("densify");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(40.0, 40.0))
+            .expect("draw");
+        let erased = fixture
+            .store
+            .erase(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![Point { x: 0.0, y: 50.0 }, Point { x: 100.0, y: 50.0 }],
+                2.0,
+            )
+            .expect("erase");
+        assert!(fixture.target(&erased).keys[0].shapes.is_empty());
+    }
+
+    #[test]
+    fn eraser_is_a_single_undo_step() {
+        let fixture = Fixture::new("eraseundo");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, line_stroke(0.0, 100.0))
+            .expect("stroke");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(40.0, 40.0))
+            .expect("rect");
+        fixture
+            .store
+            .erase(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![Point { x: 50.0, y: 50.0 }],
+                6.0,
+            )
+            .expect("erase");
+        let undone = fixture.store.undo(id).expect("undo");
+        assert_eq!(fixture.target(&undone).keys[0].shapes.len(), 2);
+    }
+
+    #[test]
+    fn eraser_rejects_bad_input_and_locked_layers() {
+        let fixture = Fixture::new("erasebad");
+        let id = &fixture.doc.id;
+        let point = vec![Point { x: 1.0, y: 1.0 }];
+        assert_eq!(
+            fixture
+                .store
+                .erase(id, &fixture.scene, &fixture.layer, 0, Vec::new(), 4.0)
+                .expect_err("empty"),
+            "eraser path is empty"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .erase(id, &fixture.scene, &fixture.layer, 0, point.clone(), 0.1)
+                .expect_err("radius"),
+            "eraser size is too small"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .erase(id, &fixture.scene, &fixture.layer, 0, vec![Point { x: 0.0, y: 0.0 }; 5_001], 4.0)
+                .expect_err("long"),
+            "eraser path is too long"
+        );
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .expect("lock");
+        assert_eq!(
+            fixture
+                .store
+                .erase(id, &fixture.scene, &fixture.layer, 0, point, 4.0)
+                .expect_err("locked"),
+            "layer is locked"
+        );
+    }
+
+    #[test]
+    fn paint_shape_recolors_each_kind() {
+        let fixture = Fixture::new("paint");
+        let id = &fixture.doc.id;
+        for shape in [box_shape(10.0, 10.0), stroke(1.0), polygon(6), text("Hi", 12.0)] {
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, shape)
+                .expect("draw");
+        }
+        let mut doc = fixture.doc.clone();
+        for index in 0..4 {
+            doc = fixture
+                .store
+                .paint_shape(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    index,
+                    "#123456".to_string(),
+                )
+                .expect("paint");
+        }
+        let shapes = &fixture.target(&doc).keys[0].shapes;
+        assert!(matches!(&shapes[0], Shape::Rect { fill, .. } if fill == "#123456"));
+        assert!(matches!(&shapes[1], Shape::Stroke { color, .. } if color == "#123456"));
+        assert!(matches!(&shapes[2], Shape::Polygon { fill, .. } if fill == "#123456"));
+        assert!(matches!(&shapes[3], Shape::Text { color, .. } if color == "#123456"));
+        assert_eq!(
+            fixture
+                .store
+                .paint_shape(id, &fixture.scene, &fixture.layer, 0, 9, "#000000".to_string())
+                .expect_err("index"),
+            "unknown shape"
+        );
+    }
+
+    #[test]
+    fn paint_shape_respects_locked_layers() {
+        let fixture = Fixture::new("paintlocked");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(10.0, 10.0))
+            .expect("draw");
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .expect("lock");
+        assert_eq!(
+            fixture
+                .store
+                .paint_shape(id, &fixture.scene, &fixture.layer, 0, 0, "#000000".to_string())
+                .expect_err("locked"),
+            "layer is locked"
+        );
+    }
+
+    #[test]
+    fn replace_shape_edits_text_and_polygon_in_place() {
+        let fixture = Fixture::new("replace");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, text("Hi", 12.0))
+            .expect("draw");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, polygon(5))
+            .expect("draw");
+        let mut doc = fixture
+            .store
+            .replace_shape(id, &fixture.scene, &fixture.layer, 0, 0, text("Hello", 24.0))
+            .expect("replace");
+        doc = fixture
+            .store
+            .replace_shape(id, &fixture.scene, &fixture.layer, 0, 1, polygon(8))
+            .expect("replace");
+        let shapes = &fixture.target(&doc).keys[0].shapes;
+        assert_eq!(shapes.len(), 2);
+        assert!(matches!(&shapes[0], Shape::Text { text, size, .. } if text == "Hello" && *size == 24.0));
+        assert!(matches!(&shapes[1], Shape::Polygon { sides, .. } if *sides == 8));
+        assert_eq!(
+            fixture
+                .store
+                .replace_shape(id, &fixture.scene, &fixture.layer, 0, 5, box_shape(0.0, 0.0))
+                .expect_err("index"),
+            "unknown shape"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .replace_shape(id, &fixture.scene, &fixture.layer, 0, 0, polygon(2))
+                .expect_err("sides"),
+            "polygon needs at least 3 sides"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .replace_shape(id, &fixture.scene, &fixture.layer, 0, 0, text("  ", 12.0))
+                .expect_err("empty"),
+            "text is empty"
+        );
+        let restored = fixture.store.undo(id).expect("undo");
+        assert!(matches!(
+            &fixture.target(&restored).keys[0].shapes[1],
+            Shape::Polygon { sides, .. } if *sides == 5
+        ));
+    }
+
+    #[test]
+    fn replace_shape_respects_locked_layers() {
+        let fixture = Fixture::new("replacelocked");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(10.0, 10.0))
+            .expect("draw");
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .expect("lock");
+        assert_eq!(
+            fixture
+                .store
+                .replace_shape(id, &fixture.scene, &fixture.layer, 0, 0, box_shape(20.0, 20.0))
+                .expect_err("locked"),
+            "layer is locked"
+        );
     }
 }

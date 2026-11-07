@@ -17,6 +17,7 @@ import {
   docDeleteShape,
   docDraw,
   docDuplicateScene,
+  docErase,
   docEvaluate,
   docGet,
   docInsertFrame,
@@ -24,11 +25,13 @@ import {
   docMoveLayer,
   docMoveScene,
   docNew,
+  docPaintShape,
   docRemoveFrame,
   docRemoveLayer,
   docRemoveScene,
   docRename,
   docRenameScene,
+  docReplaceShape,
   docSetLabel,
   docSetLayer,
   docSetTransform,
@@ -43,12 +46,24 @@ import type {
   Document,
   EvalFrame,
   Layer,
+  Point,
   Scene,
   Shape,
   Transform
 } from "@/lib/document";
 
-export type Tool = "select" | "pencil" | "line" | "rect" | "ellipse";
+export type Tool =
+  | "select"
+  | "pencil"
+  | "brush"
+  | "eraser"
+  | "line"
+  | "rect"
+  | "ellipse"
+  | "polygon"
+  | "fill"
+  | "eyedropper"
+  | "text";
 
 export interface TabState {
   sceneId: string;
@@ -63,6 +78,11 @@ export interface TabState {
   stroke: string;
   fill: string;
   strokeWidth: number;
+  smoothing: number;
+  sides: number;
+  eraserWidth: number;
+  fontSize: number;
+  fontFamily: string;
   zoom: number;
 }
 
@@ -89,6 +109,11 @@ function firstTab(doc: Document): TabState {
     stroke: "#000000",
     fill: "#3b82f6",
     strokeWidth: 3,
+    smoothing: 30,
+    sides: 5,
+    eraserWidth: 20,
+    fontSize: 32,
+    fontFamily: "Segoe UI",
     zoom: 1
   };
 }
@@ -132,6 +157,9 @@ export interface Actions {
   zoomBy: (factor: number) => void;
   zoomFit: () => void;
   draw: (shape: Shape) => void;
+  erase: (path: Point[]) => void;
+  paintShape: (index: number, color: string) => void;
+  replaceShape: (index: number, shape: Shape) => void;
   deleteSelected: () => void;
   setTransform: (patch: Partial<Transform>) => void;
   insertFrame: () => void;
@@ -406,6 +434,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     zoomBy: (factor) => setTab({ zoom: clamp((tab?.zoom ?? 1) * factor, 0.1, 8) }),
     zoomFit: () => setTab({ zoom: 1 }),
     draw: (shape) => edit((d, s, l) => docDraw(d.id, s.id, l.id, frame, shape)),
+    erase: (path) => {
+      if (path.length === 0) {
+        return;
+      }
+      edit((d, s, l) =>
+        docErase(d.id, s.id, l.id, frame, path, (tab?.eraserWidth ?? 20) / 2)
+      );
+    },
+    paintShape: (index, color) =>
+      edit((d, s, l) => docPaintShape(d.id, s.id, l.id, frame, index, color)),
+    replaceShape: (index, shape) =>
+      edit((d, s, l) => docReplaceShape(d.id, s.id, l.id, frame, index, shape)),
     deleteSelected: () => {
       if (tab?.selected == null) {
         return;

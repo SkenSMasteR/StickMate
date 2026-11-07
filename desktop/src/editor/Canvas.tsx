@@ -3,18 +3,25 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import { Frame, ZoomIn, ZoomOut } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/i18n";
-import { identityTransform } from "@/lib/document";
+import {
+  heldKey,
+  identityTransform,
+  polygonVertices,
+  textWidth
+} from "@/lib/document";
 import type { EvalLayer, Point, Shape, Transform } from "@/lib/document";
 import { useWorkspace } from "./workspace";
 import type { Tool, TabState } from "./workspace";
 
 interface Drag {
-  mode: "draw" | "pan" | "move";
+  mode: "draw" | "pan" | "move" | "erase";
   start: Point;
   clientStart: Point;
   panStart: Point;
   origin: Transform;
 }
+
+const PICK_TOOLS: Tool[] = ["select", "fill", "eyedropper", "text"];
 
 function bounds(shape: Shape): { x: number; y: number; w: number; h: number } {
   if (shape.kind === "Stroke") {
@@ -30,14 +37,37 @@ function bounds(shape: Shape): { x: number; y: number; w: number; h: number } {
       h: Math.max(...ys) + pad - y
     };
   }
+  if (shape.kind === "Text") {
+    return { x: shape.x, y: shape.y, w: textWidth(shape.text, shape.size), h: shape.size };
+  }
   return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
 }
 
+function smooth(points: Point[], amount: number): Point[] {
+  const passes = Math.round(amount / 25);
+  if (passes < 1 || points.length < 3) {
+    return points;
+  }
+  let current = points;
+  for (let pass = 0; pass < passes; pass++) {
+    const next: Point[] = [current[0]];
+    for (let index = 1; index < current.length - 1; index++) {
+      const a = current[index - 1];
+      const b = current[index];
+      const c = current[index + 1];
+      next.push({ x: (a.x + b.x * 2 + c.x) / 4, y: (a.y + b.y * 2 + c.y) / 4 });
+    }
+    next.push(current[current.length - 1]);
+    current = next;
+  }
+  return current;
+}
+
 function makeShape(tool: Tool, from: Point, to: Point, tab: TabState): Shape {
-  if (tool === "pencil" || tool === "line") {
+  if (tool === "pencil" || tool === "brush" || tool === "line") {
     return {
       kind: "Stroke",
-      points: tool === "pencil" ? [from] : [from, to],
+      points: tool === "line" ? [from, to] : [from],
       color: tab.stroke,
       width: tab.strokeWidth
     };
@@ -51,7 +81,25 @@ function makeShape(tool: Tool, from: Point, to: Point, tab: TabState): Shape {
     stroke: tab.stroke,
     width: tab.strokeWidth
   };
+  if (tool === "polygon") {
+    return { kind: "Polygon", ...box, sides: tab.sides };
+  }
   return tool === "rect" ? { kind: "Rect", ...box } : { kind: "Ellipse", ...box };
+}
+
+function finishDraft(shape: Shape, tab: TabState): Shape {
+  if (shape.kind !== "Stroke") {
+    return shape;
+  }
+  let points = shape.points;
+  if (points.length === 1) {
+    const point = points[0];
+    points = [point, { x: point.x + 0.01, y: point.y }];
+  }
+  if (tab.tool === "brush") {
+    points = smooth(points, tab.smoothing);
+  }
+  return { ...shape, points };
 }
 
 function isWorthwhile(shape: Shape): boolean {
@@ -63,27 +111,39 @@ function isWorthwhile(shape: Shape): boolean {
     const last = shape.points[shape.points.length - 1];
     return shape.points.length > 2 || Math.hypot(last.x - first.x, last.y - first.y) > 0.5;
   }
+  if (shape.kind === "Text") {
+    return true;
+  }
   return shape.w > 0.5 && shape.h > 0.5;
+}
+
+function sampleColor(shape: Shape): { stroke: string; fill: string } {
+  if (shape.kind === "Stroke" || shape.kind === "Text") {
+    return { stroke: shape.color, fill: shape.color };
+  }
+  return { stroke: shape.stroke, fill: shape.fill };
 }
 
 function ShapeNode({
   shape,
-  selectable,
+  interactive,
+  cursor,
   selected,
-  onSelect
+  onDown
 }: {
   shape: Shape;
-  selectable: boolean;
+  interactive: boolean;
+  cursor: string;
   selected: boolean;
-  onSelect: (event: ReactPointerEvent) => void;
+  onDown: (event: ReactPointerEvent) => void;
 }) {
   const box = bounds(shape);
   const down = (event: ReactPointerEvent) => {
-    if (!selectable) {
+    if (!interactive) {
       return;
     }
     event.stopPropagation();
-    onSelect(event);
+    onDown(event);
   };
   const outline = selected ? (
     <rect
@@ -103,8 +163,8 @@ function ShapeNode({
   if (shape.kind === "Stroke") {
     const points = shape.points.map((point) => `${point.x},${point.y}`).join(" ");
     return (
-      <g onPointerDown={down} style={{ cursor: selectable ? "move" : undefined }}>
-        {selectable && (
+      <g onPointerDown={down} style={{ cursor: interactive ? cursor : undefined }}>
+        {interactive && (
           <polyline
             points={points}
             fill="none"
@@ -118,6 +178,49 @@ function ShapeNode({
           stroke={shape.color}
           strokeWidth={shape.width}
           strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        {outline}
+      </g>
+    );
+  }
+
+  if (shape.kind === "Text") {
+    return (
+      <g onPointerDown={down} style={{ cursor: interactive ? cursor : undefined }}>
+        {interactive && (
+          <rect x={box.x} y={box.y} width={box.w} height={box.h} fill="transparent" />
+        )}
+        <text
+          x={shape.x}
+          y={shape.y}
+          dominantBaseline="hanging"
+          fontFamily={shape.family}
+          fontSize={shape.size}
+          fill={shape.color}
+          style={{ whiteSpace: "pre" }}
+        >
+          {shape.text}
+        </text>
+        {outline}
+      </g>
+    );
+  }
+
+  if (shape.kind === "Polygon") {
+    const points = polygonVertices(shape.x, shape.y, shape.w, shape.h, shape.sides)
+      .map((point) => `${point.x},${point.y}`)
+      .join(" ");
+    return (
+      <g onPointerDown={down} style={{ cursor: interactive ? cursor : undefined }}>
+        {interactive && (
+          <polygon points={points} fill="transparent" stroke="transparent" strokeWidth={12} />
+        )}
+        <polygon
+          points={points}
+          fill={shape.fill}
+          stroke={shape.stroke}
+          strokeWidth={shape.width}
           strokeLinejoin="round"
         />
         {outline}
@@ -143,8 +246,8 @@ function ShapeNode({
   const Element = geometry.element;
 
   return (
-    <g onPointerDown={down} style={{ cursor: selectable ? "move" : undefined }}>
-      {selectable && (
+    <g onPointerDown={down} style={{ cursor: interactive ? cursor : undefined }}>
+      {interactive && (
         <Element
           {...geometry.props}
           fill="transparent"
@@ -166,15 +269,17 @@ function ShapeNode({
 function LayerContent({
   evaluated,
   transform,
-  selectable,
+  interactive,
+  cursor,
   selected,
-  onSelect
+  onDown
 }: {
   evaluated: EvalLayer;
   transform: Transform;
-  selectable: boolean;
+  interactive: boolean;
+  cursor: string;
   selected: number | null;
-  onSelect: (index: number, event: ReactPointerEvent) => void;
+  onDown: (index: number, event: ReactPointerEvent) => void;
 }) {
   return (
     <g
@@ -185,9 +290,10 @@ function LayerContent({
         <ShapeNode
           key={index}
           shape={shape}
-          selectable={selectable}
-          selected={selectable && selected === index}
-          onSelect={(event) => onSelect(index, event)}
+          interactive={interactive}
+          cursor={cursor}
+          selected={interactive && selected === index}
+          onDown={(event) => onDown(index, event)}
         />
       ))}
     </g>
@@ -200,12 +306,14 @@ export default function Canvas() {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<Drag | null>(null);
+  const eraseRef = useRef<Point[]>([]);
   const actionsRef = useRef(actions);
   actionsRef.current = actions;
   const [host, setHost] = useState({ width: 0, height: 0 });
   const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
   const [draft, setDraft] = useState<Shape | null>(null);
   const [preview, setPreview] = useState<Transform | null>(null);
+  const [hover, setHover] = useState<Point | null>(null);
 
   useEffect(() => {
     const element = hostRef.current;
@@ -248,6 +356,14 @@ export default function Canvas() {
   const scale = Math.max(0.02, fit * tab.zoom);
   const current = frames.length > 0 ? frames[frames.length - 1] : null;
   const onion = tab.onion ? frames.slice(0, -1) : [];
+  const erasing = tab.tool === "eraser";
+  const cursor = erasing
+    ? "none"
+    : tab.tool === "select"
+      ? "default"
+      : "crosshair";
+  const shapeCursor =
+    tab.tool === "select" ? "move" : tab.tool === "text" ? "text" : "crosshair";
 
   const toDoc = (clientX: number, clientY: number): Point => {
     const rect = svgRef.current?.getBoundingClientRect();
@@ -257,21 +373,39 @@ export default function Canvas() {
     return { x: (clientX - rect.left) / scale, y: (clientY - rect.top) / scale };
   };
 
-  const beginMove = (index: number, event: ReactPointerEvent) => {
-    actions.select(index);
-    if (layer.locked) {
+  const onShapeDown = (index: number, shape: Shape, event: ReactPointerEvent) => {
+    if (tab.tool === "select") {
+      actions.select(index);
+      if (layer.locked) {
+        toast.error(t("editor.layerLocked"));
+        return;
+      }
+      const point = toDoc(event.clientX, event.clientY);
+      dragRef.current = {
+        mode: "move",
+        start: point,
+        clientStart: point,
+        panStart: pan,
+        origin: transform
+      };
+      svgRef.current?.setPointerCapture(event.pointerId);
+      return;
+    }
+    if (layer.locked && tab.tool !== "eyedropper") {
       toast.error(t("editor.layerLocked"));
       return;
     }
-    const point = toDoc(event.clientX, event.clientY);
-    dragRef.current = {
-      mode: "move",
-      start: point,
-      clientStart: point,
-      panStart: pan,
-      origin: transform
-    };
-    svgRef.current?.setPointerCapture(event.pointerId);
+    if (tab.tool === "fill") {
+      actions.paintShape(index, tab.fill);
+      return;
+    }
+    if (tab.tool === "eyedropper") {
+      setTab(sampleColor(shape));
+      return;
+    }
+    if (shape.kind === "Text") {
+      actions.select(index);
+    }
   };
 
   const onPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
@@ -293,12 +427,41 @@ export default function Canvas() {
       actions.select(null);
       return;
     }
+    if (tab.tool === "fill" || tab.tool === "eyedropper") {
+      return;
+    }
     if (layer.locked) {
       toast.error(t("editor.layerLocked"));
       return;
     }
     setTab({ playing: false });
     const point = toDoc(event.clientX, event.clientY);
+    if (tab.tool === "text") {
+      const count = heldKey(layer, tab.frame)?.shapes.length ?? 0;
+      actions.draw({
+        kind: "Text",
+        x: point.x,
+        y: point.y,
+        text: t("editor.textDefault"),
+        size: tab.fontSize,
+        family: tab.fontFamily,
+        color: tab.stroke
+      });
+      actions.select(count);
+      return;
+    }
+    if (erasing) {
+      eraseRef.current = [point];
+      dragRef.current = {
+        mode: "erase",
+        start: point,
+        clientStart: point,
+        panStart: pan,
+        origin: identityTransform
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
     dragRef.current = {
       mode: "draw",
       start: point,
@@ -311,6 +474,10 @@ export default function Canvas() {
   };
 
   const onPointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const point = toDoc(event.clientX, event.clientY);
+    if (erasing) {
+      setHover(point);
+    }
     const drag = dragRef.current;
     if (!drag) {
       return;
@@ -322,7 +489,10 @@ export default function Canvas() {
       });
       return;
     }
-    const point = toDoc(event.clientX, event.clientY);
+    if (drag.mode === "erase") {
+      eraseRef.current = [...eraseRef.current, point];
+      return;
+    }
     if (drag.mode === "move") {
       setPreview({
         ...transform,
@@ -332,7 +502,7 @@ export default function Canvas() {
       return;
     }
     setDraft((prev) => {
-      if (tab.tool === "pencil" && prev && prev.kind === "Stroke") {
+      if ((tab.tool === "pencil" || tab.tool === "brush") && prev && prev.kind === "Stroke") {
         return { ...prev, points: [...prev.points, point] };
       }
       return makeShape(tab.tool, drag.start, point, tab);
@@ -345,12 +515,14 @@ export default function Canvas() {
     if (!drag) {
       return;
     }
+    if (drag.mode === "erase") {
+      const path = eraseRef.current;
+      eraseRef.current = [];
+      actions.erase(path);
+      return;
+    }
     if (drag.mode === "draw" && draft) {
-      let shape = draft;
-      if (shape.kind === "Stroke" && shape.points.length === 1) {
-        const point = shape.points[0];
-        shape = { ...shape, points: [point, { x: point.x + 0.01, y: point.y }] };
-      }
+      const shape = finishDraft(draft, tab);
       setDraft(null);
       if (isWorthwhile(shape)) {
         actions.draw(shape);
@@ -373,13 +545,18 @@ export default function Canvas() {
           <LayerContent
             evaluated={item}
             transform={shown}
-            selectable={!faded && isActive && tab.tool === "select"}
+            interactive={!faded && isActive && PICK_TOOLS.includes(tab.tool)}
+            cursor={shapeCursor}
             selected={tab.selected}
-            onSelect={beginMove}
+            onDown={(index, event) =>
+              onShapeDown(index, item.shapes[index], event)
+            }
           />
         </g>
       );
     });
+
+  const shown = draft ? finishDraft(draft, tab) : null;
 
   return (
     <div ref={hostRef} className="relative min-h-0 flex-1 overflow-hidden bg-muted">
@@ -393,18 +570,39 @@ export default function Canvas() {
           height={doc.height * scale}
           viewBox={`0 0 ${doc.width} ${doc.height}`}
           className="border border-border"
-          style={{ cursor: tab.tool === "select" ? "default" : "crosshair", touchAction: "none" }}
+          style={{ cursor, touchAction: "none" }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
+          onPointerLeave={() => setHover(null)}
         >
           <rect x={0} y={0} width={doc.width} height={doc.height} fill={doc.background} />
           {onion.map((item) => (
             <g key={item.frame}>{renderLayers(item.layers, true)}</g>
           ))}
           {current && renderLayers(current.layers, false)}
-          {draft && <ShapeNode shape={draft} selectable={false} selected={false} onSelect={() => undefined} />}
+          {shown && (
+            <ShapeNode
+              shape={shown}
+              interactive={false}
+              cursor="crosshair"
+              selected={false}
+              onDown={() => undefined}
+            />
+          )}
+          {erasing && hover && (
+            <circle
+              cx={hover.x}
+              cy={hover.y}
+              r={tab.eraserWidth / 2}
+              fill="none"
+              stroke="#3b82f6"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+              pointerEvents="none"
+            />
+          )}
         </svg>
       </div>
       <div className="pointer-events-none absolute bottom-2 left-2 flex items-center gap-2 border border-border bg-background px-2 py-1 text-xs text-muted-foreground">
