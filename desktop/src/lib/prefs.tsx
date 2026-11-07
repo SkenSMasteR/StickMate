@@ -11,6 +11,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import { prefsGet, prefsPut, setUpdateChannel } from "@/lib/tauri";
+import type { ShortcutOverrides } from "@/lib/shortcuts";
 import type { ThemeName } from "@/theme";
 import type { Language } from "@/i18n";
 import en from "@/i18n/en.json";
@@ -23,13 +24,15 @@ export interface PrefsData {
   theme: ThemeName;
   channel: UpdateChannel;
   login: string | null;
+  shortcuts: ShortcutOverrides;
 }
 
 const defaultPrefs: PrefsData = {
   language: "en",
   theme: "dark",
   channel: "stable",
-  login: null
+  login: null,
+  shortcuts: {}
 };
 
 const fallbackKey = "stickmate.prefs";
@@ -88,6 +91,38 @@ function saveFallback(revision: number, data: PrefsData): void {
   );
 }
 
+function mergeShortcuts(
+  ours: ShortcutOverrides,
+  theirs: ShortcutOverrides,
+  base: ShortcutOverrides
+): { data: ShortcutOverrides; contested: boolean } {
+  const merged: ShortcutOverrides = { ...ours };
+  let contested = false;
+  const ids = new Set([
+    ...Object.keys(ours),
+    ...Object.keys(theirs),
+    ...Object.keys(base)
+  ]);
+  for (const id of ids) {
+    const a = ours[id];
+    const b = theirs[id];
+    const start = base[id];
+    if (a === b) {
+      continue;
+    }
+    if (a === start) {
+      if (b === undefined) {
+        delete merged[id];
+      } else {
+        merged[id] = b;
+      }
+    } else if (b !== start) {
+      contested = true;
+    }
+  }
+  return { data: merged, contested };
+}
+
 function mergePrefs(
   ours: PrefsData,
   theirs: PrefsData,
@@ -99,6 +134,12 @@ function mergePrefs(
   const merged: PrefsRecord = { ...mine };
   let contested = false;
   for (const key of Object.keys(defaultPrefs)) {
+    if (key === "shortcuts") {
+      const part = mergeShortcuts(ours.shortcuts, theirs.shortcuts, base.shortcuts);
+      merged.shortcuts = part.data;
+      contested = contested || part.contested;
+      continue;
+    }
     const a = JSON.stringify(mine[key]);
     const b = JSON.stringify(other[key]);
     const start = JSON.stringify(origin[key]);

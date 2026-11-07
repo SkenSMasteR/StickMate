@@ -1,18 +1,24 @@
 import { useEffect, useRef } from "react";
+import { comboFromEvent } from "@/lib/shortcuts";
+import type { ShortcutOverrides } from "@/lib/shortcuts";
 import type { Actions } from "./workspace";
 
 export interface Command {
   id: string;
   label: string;
   keys: string | null;
+  defaultKeys: string | null;
   run: () => void;
 }
 
 export function buildCommands(
   actions: Actions,
-  t: (key: string) => string
+  t: (key: string) => string,
+  overrides: ShortcutOverrides,
+  openShortcuts: () => void,
+  openExport: () => void
 ): Command[] {
-  return [
+  const defaults: Array<Omit<Command, "defaultKeys">> = [
     { id: "tool.select", label: t("command.select"), keys: "v", run: () => actions.setTool("select") },
     { id: "tool.pencil", label: t("command.pencil"), keys: "p", run: () => actions.setTool("pencil") },
     { id: "tool.brush", label: t("command.brush"), keys: "b", run: () => actions.setTool("brush") },
@@ -49,17 +55,16 @@ export function buildCommands(
     { id: "view.zoomIn", label: t("command.zoomIn"), keys: "ctrl+=", run: () => actions.zoomBy(1.25) },
     { id: "view.zoomOut", label: t("command.zoomOut"), keys: "ctrl+-", run: () => actions.zoomBy(0.8) },
     { id: "view.zoomFit", label: t("command.zoomFit"), keys: "ctrl+0", run: actions.zoomFit },
+    { id: "view.shortcuts", label: t("command.shortcuts"), keys: "ctrl+alt+k", run: openShortcuts },
+    { id: "view.export", label: t("command.export"), keys: "ctrl+e", run: openExport },
     { id: "layer.add", label: t("command.addLayer"), keys: "ctrl+alt+n", run: actions.addLayer },
     { id: "scene.add", label: t("command.addScene"), keys: "ctrl+shift+n", run: actions.addScene }
   ];
-}
-
-function comboOf(event: KeyboardEvent): string {
-  const key = event.key === " " ? "space" : event.key.toLowerCase();
-  const ctrl = event.ctrlKey || event.metaKey ? "ctrl+" : "";
-  const alt = event.altKey ? "alt+" : "";
-  const shift = event.shiftKey ? "shift+" : "";
-  return `${ctrl}${alt}${shift}${key}`;
+  return defaults.map((command) => ({
+    ...command,
+    defaultKeys: command.keys,
+    keys: overrides[command.id] === undefined ? command.keys : overrides[command.id]
+  }));
 }
 
 export function useCommandKeys(commands: Command[], enabled: boolean): void {
@@ -81,7 +86,10 @@ export function useCommandKeys(commands: Command[], enabled: boolean): void {
       ) {
         return;
       }
-      const combo = comboOf(event);
+      const combo = comboFromEvent(event);
+      if (combo === null) {
+        return;
+      }
       const command = latest.current.find((item) => item.keys === combo);
       if (!command) {
         return;

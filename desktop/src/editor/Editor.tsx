@@ -1,8 +1,11 @@
 import { useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useI18n } from "@/i18n";
+import { usePrefs } from "@/lib/prefs";
 import Canvas from "./Canvas";
+import ExportDialog from "./ExportDialog";
 import ScenesBar from "./ScenesBar";
+import ShortcutsDialog from "./ShortcutsDialog";
 import SidePanel from "./SidePanel";
 import Timeline from "./Timeline";
 import ToolsPanel from "./ToolsPanel";
@@ -22,11 +25,22 @@ function clamp(value: number, low: number, high: number): number {
 export default function Editor() {
   const { doc, tab, actions } = useWorkspace();
   const { t } = useI18n();
+  const { prefs, update } = usePrefs();
   const resizeRef = useRef<Resize | null>(null);
   const [rightWidth, setRightWidth] = useState(264);
   const [bottomHeight, setBottomHeight] = useState(220);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
 
-  useCommandKeys(buildCommands(actions, t), Boolean(doc && tab));
+  const commands = buildCommands(
+    actions,
+    t,
+    prefs.shortcuts,
+    () => setShortcutsOpen(true),
+    () => setExportOpen(true)
+  );
+
+  useCommandKeys(commands, Boolean(doc && tab) && !shortcutsOpen && !exportOpen);
 
   const beginResize = (axis: "x" | "y", event: ReactPointerEvent<HTMLDivElement>) => {
     resizeRef.current = {
@@ -62,7 +76,10 @@ export default function Editor() {
     <div className="flex min-h-0 flex-1 flex-col bg-background">
       <ScenesBar />
       <div className="flex min-h-0 flex-1">
-        <ToolsPanel />
+        <ToolsPanel
+          onShortcuts={() => setShortcutsOpen(true)}
+          onExport={() => setExportOpen(true)}
+        />
         <div className="flex min-w-0 flex-1 flex-col">
           <Canvas />
           <div
@@ -90,6 +107,14 @@ export default function Editor() {
           <SidePanel />
         </div>
       </div>
+      <ShortcutsDialog
+        open={shortcutsOpen}
+        commands={commands}
+        overrides={prefs.shortcuts}
+        onChange={(next) => void update({ shortcuts: next })}
+        onClose={() => setShortcutsOpen(false)}
+      />
+      <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
     </div>
   );
 }

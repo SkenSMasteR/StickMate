@@ -10,7 +10,8 @@ const defaults: PrefsData = {
   language: "en",
   theme: "dark",
   channel: "stable",
-  login: null
+  login: null,
+  shortcuts: {}
 };
 
 let api: {
