@@ -8,6 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::path::{flatten_path, PathNode};
+
 const HISTORY_LIMIT: usize = 100;
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -80,6 +82,13 @@ pub enum Shape {
         size: f64,
         family: String,
         color: String,
+    },
+    Path {
+        nodes: Vec<PathNode>,
+        closed: bool,
+        fill: String,
+        stroke: String,
+        width: f64,
     },
 }
 
@@ -188,6 +197,22 @@ fn shape_hit(shape: &Shape, p: &Point, radius: f64) -> bool {
             let w = text_width(text, *size);
             p.x >= x - radius && p.x <= x + w + radius && p.y >= y - radius && p.y <= y + size + radius
         }
+        Shape::Path {
+            nodes,
+            closed,
+            width,
+            ..
+        } => {
+            let reach = radius + width / 2.0;
+            let outline = flatten_path(nodes, *closed);
+            outline
+                .windows(2)
+                .any(|pair| near_segment(p, &pair[0], &pair[1], reach))
+                || outline
+                    .first()
+                    .map_or(false, |first| within(p, first, reach))
+                || (*closed && inside_polygon(p, &outline))
+        }
     }
 }
 
@@ -225,6 +250,34 @@ pub(crate) fn validate(shape: &Shape) -> Result<(), String> {
             }
             if *size <= 0.0 {
                 return Err("text size must be positive".to_string());
+            }
+            Ok(())
+        }
+        Shape::Path {
+            nodes,
+            closed,
+            width,
+            ..
+        } => {
+            if *closed && nodes.len() < 3 {
+                return Err("closed path needs at least 3 nodes".to_string());
+            }
+            if nodes.len() < 2 {
+                return Err("path needs at least 2 nodes".to_string());
+            }
+            for node in nodes {
+                for point in [&node.point]
+                    .into_iter()
+                    .chain(node.handle_in.as_ref())
+                    .chain(node.handle_out.as_ref())
+                {
+                    if !point.x.is_finite() || !point.y.is_finite() {
+                        return Err("path coordinates must be finite".to_string());
+                    }
+                }
+            }
+            if !(0.5..=200.0).contains(width) {
+                return Err("width must be between 0.5 and 200".to_string());
             }
             Ok(())
         }
@@ -1043,7 +1096,8 @@ impl DocStore {
                 }
                 Shape::Rect { fill, .. }
                 | Shape::Ellipse { fill, .. }
-                | Shape::Polygon { fill, .. } => {
+                | Shape::Polygon { fill, .. }
+                | Shape::Path { fill, .. } => {
                     *fill = color;
                 }
             }
@@ -1470,6 +1524,7 @@ pub fn doc_evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::path::PATH_STEPS;
 
     struct Fixture {
         store: DocStore,
@@ -2625,5 +2680,225 @@ mod tests {
                 .expect_err("locked"),
             "layer is locked"
         );
+    }
+
+    fn curve_nodes() -> Vec<PathNode> {
+        vec![
+            PathNode {
+                point: Point { x: 0.0, y: 0.0 },
+                handle_in: None,
+                handle_out: Some(Point { x: 0.0, y: 100.0 }),
+            },
+            PathNode {
+                point: Point { x: 100.0, y: 0.0 },
+                handle_in: Some(Point { x: 100.0, y: 100.0 }),
+                handle_out: None,
+            },
+        ]
+    }
+
+    fn curve_path(closed: bool) -> Shape {
+        Shape::Path {
+            nodes: curve_nodes(),
+            closed,
+            fill: "#ff0000".to_string(),
+            stroke: "#000000".to_string(),
+            width: 1.0,
+        }
+    }
+
+    #[test]
+    fn flatten_path_samples_cubic_segments() {
+        let flat = flatten_path(&curve_nodes(), false);
+        assert_eq!(flat.len(), 1 + PATH_STEPS);
+        assert_eq!(flat[0], Point { x: 0.0, y: 0.0 });
+        assert_eq!(flat[4], Point { x: 15.625, y: 56.25 });
+        assert_eq!(flat[8], Point { x: 50.0, y: 75.0 });
+        assert_eq!(flat[16], Point { x: 100.0, y: 0.0 });
+        let mut triangle = curve_nodes();
+        triangle.push(PathNode {
+            point: Point { x: 50.0, y: -50.0 },
+            handle_in: None,
+            handle_out: None,
+        });
+        let closed = flatten_path(&triangle, true);
+        assert_eq!(closed.len(), 1 + 3 * PATH_STEPS);
+        assert_eq!(closed.last(), closed.first());
+        assert_eq!(flatten_path(&[], false).len(), 0);
+    }
+
+    #[test]
+    fn path_hit_follows_the_curve_not_the_chord() {
+        let shape = curve_path(false);
+        assert!(shape_hit(&shape, &Point { x: 50.0, y: 75.0 }, 1.0));
+        assert!(!shape_hit(&shape, &Point { x: 50.0, y: 0.0 }, 1.0));
+        let closed = curve_path(true);
+        assert!(shape_hit(&closed, &Point { x: 50.0, y: 30.0 }, 1.0));
+        assert!(!shape_hit(&closed, &Point { x: 50.0, y: -10.0 }, 1.0));
+    }
+
+    #[test]
+    fn path_validation_rejects_bad_input() {
+        let fixture = Fixture::new("pathbad");
+        let id = &fixture.doc.id;
+        let single = Shape::Path {
+            nodes: vec![PathNode {
+                point: Point { x: 0.0, y: 0.0 },
+                handle_in: None,
+                handle_out: None,
+            }],
+            closed: false,
+            fill: "#ff0000".to_string(),
+            stroke: "#000000".to_string(),
+            width: 1.0,
+        };
+        assert_eq!(
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, single)
+                .expect_err("single"),
+            "path needs at least 2 nodes"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, curve_path(true))
+                .expect_err("closed two"),
+            "closed path needs at least 3 nodes"
+        );
+        let mut nodes = curve_nodes();
+        nodes[0].handle_out = Some(Point { x: f64::NAN, y: 0.0 });
+        let non_finite = Shape::Path {
+            nodes,
+            closed: false,
+            fill: "#ff0000".to_string(),
+            stroke: "#000000".to_string(),
+            width: 1.0,
+        };
+        assert_eq!(
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, non_finite)
+                .expect_err("nan"),
+            "path coordinates must be finite"
+        );
+        let zero_width = Shape::Path {
+            nodes: curve_nodes(),
+            closed: false,
+            fill: "#ff0000".to_string(),
+            stroke: "#000000".to_string(),
+            width: 0.0,
+        };
+        assert_eq!(
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, zero_width)
+                .expect_err("width"),
+            "width must be between 0.5 and 200"
+        );
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, curve_path(false))
+            .expect("draw");
+        let mut shrunk = curve_nodes();
+        shrunk.pop();
+        assert_eq!(
+            fixture
+                .store
+                .replace_shape(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    0,
+                    Shape::Path {
+                        nodes: shrunk,
+                        closed: false,
+                        fill: "#ff0000".to_string(),
+                        stroke: "#000000".to_string(),
+                        width: 1.0,
+                    }
+                )
+                .expect_err("shrunk"),
+            "path needs at least 2 nodes"
+        );
+        assert_eq!(fixture.target(&fixture.store.get(id).expect("get")).keys[0].shapes.len(), 1);
+    }
+
+    #[test]
+    fn path_serialization_uses_kind_tag_and_null_handles() {
+        let shape = curve_path(false);
+        let json = serde_json::to_value(&shape).expect("serialize");
+        assert_eq!(json["kind"], "Path");
+        assert_eq!(json["nodes"][0]["handle_in"], serde_json::Value::Null);
+        assert_eq!(json["nodes"][0]["handle_out"]["y"], 100.0);
+        let back: Shape = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, shape);
+    }
+
+    #[test]
+    fn eraser_deletes_a_crossed_path() {
+        let fixture = Fixture::new("patherase");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, curve_path(false))
+            .expect("draw");
+        let missed = fixture
+            .store
+            .erase(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![Point { x: 50.0, y: 0.0 }],
+                2.0,
+            )
+            .expect("erase chord");
+        assert_eq!(fixture.target(&missed).keys[0].shapes.len(), 1);
+        let erased = fixture
+            .store
+            .erase(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![Point { x: 50.0, y: 75.0 }],
+                2.0,
+            )
+            .expect("erase curve");
+        assert!(fixture.target(&erased).keys[0].shapes.is_empty());
+    }
+
+    #[test]
+    fn locked_layer_rejects_a_path_draw() {
+        let fixture = Fixture::new("pathlocked");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .expect("lock");
+        assert_eq!(
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, curve_path(false))
+                .expect_err("locked"),
+            "layer is locked"
+        );
+    }
+
+    #[test]
+    fn a_committed_path_is_one_undo_step() {
+        let fixture = Fixture::new("pathundo");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, curve_path(false))
+            .expect("draw");
+        let undone = fixture.store.undo(id).expect("undo");
+        assert!(fixture.target(&undone).keys[0].shapes.is_empty());
+        let redone = fixture.store.redo(id).expect("redo");
+        assert_eq!(fixture.target(&redone).keys[0].shapes.len(), 1);
+        assert_eq!(fixture.store.undo(id).expect("undo again").scenes[0].layers[0].keys[0].shapes.len(), 0);
     }
 }

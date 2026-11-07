@@ -88,6 +88,10 @@ export function installUpdate(): Promise<unknown> {
   return invoke<unknown>("install_update", {});
 }
 
+export function setUpdateChannel(channel: string): Promise<unknown> {
+  return invoke<unknown>("set_update_channel", { channel });
+}
+
 export function onUpdateProgress(
   callback: (percent: number) => void
 ): Promise<() => void> {

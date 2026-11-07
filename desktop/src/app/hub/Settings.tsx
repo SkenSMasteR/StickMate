@@ -190,6 +190,11 @@ export default function Settings({
             </SelectItem>
           </SelectContent>
         </Select>
+        {prefs.channel === "nightly" && (
+          <p className="text-sm text-muted-foreground">
+            {t("settings.channel.nightlyNote")}
+          </p>
+        )}
         <div>
           <Button
             variant="outline"

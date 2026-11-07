@@ -46,7 +46,49 @@ export type Shape =
       size: number;
       family: string;
       color: string;
+    }
+  | {
+      kind: "Path";
+      nodes: PathNode[];
+      closed: boolean;
+      fill: string;
+      stroke: string;
+      width: number;
     };
+
+export interface PathNode {
+  point: Point;
+  handle_in: Point | null;
+  handle_out: Point | null;
+}
+
+export const PATH_STEPS = 16;
+
+export function flattenPath(nodes: PathNode[], closed: boolean): Point[] {
+  const first = nodes[0];
+  if (!first) {
+    return [];
+  }
+  const out: Point[] = [first.point];
+  const segments = closed ? nodes.length : nodes.length - 1;
+  for (let index = 0; index < segments; index += 1) {
+    const a = nodes[index];
+    const b = nodes[(index + 1) % nodes.length];
+    const p0 = a.point;
+    const p1 = a.handle_out ?? p0;
+    const p3 = b.point;
+    const p2 = b.handle_in ?? p3;
+    for (let step = 1; step <= PATH_STEPS; step += 1) {
+      const t = step / PATH_STEPS;
+      const u = 1 - t;
+      out.push({
+        x: u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x,
+        y: u * u * u * p0.y + 3 * u * u * t * p1.y + 3 * u * t * t * p2.y + t * t * t * p3.y
+      });
+    }
+  }
+  return out;
+}
 
 export const TEXT_ADVANCE = 0.6;
 

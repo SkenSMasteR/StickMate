@@ -1,0 +1,102 @@
+name: Desktop Nightly
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      - name: Delete the previous nightly
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release delete desktop-nightly --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+      - name: Compute the next version
+        id: next
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=$(node -p "require('./desktop/package.json').version")
+          IFS=. read -r major minor patch <<< "$base"
+          version="$major.$minor.$((patch + 1))"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    name: Nightly ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: Set the nightly version
+        shell: bash
+        run: |
+          set -euo pipefail
+          node desktop/bump-version.mjs "${{ needs.prepare.outputs.version }}"
+      - name: Install app dependencies
+        shell: bash
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          npm ci
+      - name: Test
+        shell: bash
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          npm run build
+          npm test
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: desktop
+          tagName: desktop-nightly
+          releaseName: Desktop nightly __VERSION__
+          releaseBody: Nightly desktop build from ${{ github.sha }}.
+          releaseDraft: false
+          prerelease: true
+          updaterJsonPreferNsis: true
+      - name: Collect bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p attest-dist
+          find desktop/src-tauri/target/release/bundle -type f \( -name '*.exe' -o -name '*.msi' -o -name '*.AppImage' -o -name '*.deb' \) -exec cp {} attest-dist/ \;
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: attest-dist/*

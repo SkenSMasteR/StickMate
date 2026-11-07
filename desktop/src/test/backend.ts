@@ -1,5 +1,5 @@
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import { polygonVertices, textWidth } from "@/lib/document";
+import { flattenPath, polygonVertices, textWidth } from "@/lib/document";
 import type {
   Document,
   EvalFrame,
@@ -120,6 +120,18 @@ function shapeHit(shape: Shape, p: Point, radius: number): boolean {
       )
     );
   }
+  if (shape.kind === "Path") {
+    const reach = radius + shape.width / 2;
+    const outline = flattenPath(shape.nodes, shape.closed);
+    return (
+      outline.some(
+        (point, index) =>
+          index > 0 && nearSegment(p, outline[index - 1], point, reach)
+      ) ||
+      (outline.length > 0 && within(p, outline[0], reach)) ||
+      (shape.closed && insidePolygon(p, outline))
+    );
+  }
   const w = textWidth(shape.text, shape.size);
   return (
     p.x >= shape.x - radius &&
@@ -164,6 +176,24 @@ function validateShape(shape: Shape): void {
     }
     if (shape.size <= 0) {
       throw new Error("text size must be positive");
+    }
+  }
+  if (shape.kind === "Path") {
+    if (shape.closed && shape.nodes.length < 3) {
+      throw new Error("closed path needs at least 3 nodes");
+    }
+    if (shape.nodes.length < 2) {
+      throw new Error("path needs at least 2 nodes");
+    }
+    for (const node of shape.nodes) {
+      for (const point of [node.point, node.handle_in, node.handle_out]) {
+        if (point && (!Number.isFinite(point.x) || !Number.isFinite(point.y))) {
+          throw new Error("path coordinates must be finite");
+        }
+      }
+    }
+    if (shape.width < 0.5 || shape.width > 200) {
+      throw new Error("width must be between 0.5 and 200");
     }
   }
 }
@@ -375,10 +405,10 @@ const context: MockContext = {
   identity
 };
 
-const modules = import.meta.glob<{ handlers: MockExtension }>(
-  "./backend/*.ts",
-  { eager: true }
-);
+const modules = import.meta.glob<{
+  handlers: MockExtension;
+  reset?: () => void;
+}>("./backend/*.ts", { eager: true });
 
 const extensions: MockHandlers = Object.assign(
   {},
@@ -394,6 +424,9 @@ export function resetBackend(): void {
   tokens.set("offline", "mock-offline");
   windowState.maximized = false;
   windowState.visible = true;
+  for (const module of Object.values(modules)) {
+    module.reset?.();
+  }
 }
 
 mockWindows("main");
@@ -773,10 +806,6 @@ mockIPC(
         return null;
       case "open_url":
         return null;
-      case "prefs_get":
-        throw new Error("offline");
-      case "prefs_put":
-        throw new Error("offline");
       case "plugin:window|is_maximized":
         return windowState.maximized;
       case "plugin:window|maximize":

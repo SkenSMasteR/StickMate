@@ -2,13 +2,19 @@ import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import {
   ArrowRight,
+  ClipboardPaste,
+  Copy,
+  CopyPlus,
   Diamond,
   Eye,
   EyeOff,
   Layers,
+  ListMinus,
+  ListPlus,
   Lock,
   LockOpen,
   Minus,
+  MoveHorizontal,
   Pause,
   Play,
   Plus,
@@ -17,7 +23,8 @@ import {
   SkipBack,
   SkipForward,
   Square,
-  Undo2
+  Undo2,
+  X
 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import type { Layer } from "@/lib/document";
@@ -83,7 +90,10 @@ export default function Timeline() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const scrubbing = useRef(false);
+  const anchor = useRef(0);
   const [view, setView] = useState({ left: 0, width: 0 });
+  const [frameCount, setFrameCount] = useState(1);
+  const [moveTarget, setMoveTarget] = useState(1);
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -111,34 +121,74 @@ export default function Timeline() {
     frames.push(index);
   }
   const contentHeight = HEADER + scene.layers.length * ROW;
+  const selected = new Set(tab.selectedFrames);
 
-  const seekFrom = (event: ReactPointerEvent) => {
+  const rangeTo = (frame: number): number[] => {
+    const low = Math.min(anchor.current, frame);
+    const high = Math.max(anchor.current, frame);
+    const frames: number[] = [];
+    for (let index = low; index <= high; index += 1) {
+      frames.push(index);
+    }
+    return frames;
+  };
+
+  const cellAt = (event: ReactPointerEvent) => {
     const rect = gridRef.current?.getBoundingClientRect();
     if (!rect) {
-      return;
+      return null;
     }
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
-    const row = Math.floor((y - HEADER) / ROW);
-    if (row >= 0 && row < scene.layers.length) {
-      actions.selectLayer(scene.layers[row].id);
-    }
-    actions.seek(Math.floor(x / CELL));
+    return {
+      frame: Math.min(Math.max(Math.floor(x / CELL), 0), total - 1),
+      row: Math.floor((y - HEADER) / ROW)
+    };
   };
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) {
       return;
     }
-    scrubbing.current = true;
+    const cell = cellAt(event);
+    if (!cell) {
+      return;
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
-    seekFrom(event);
+    if (cell.row >= 0 && cell.row < scene.layers.length) {
+      actions.selectLayer(scene.layers[cell.row].id);
+    }
+    if (event.ctrlKey || event.metaKey) {
+      scrubbing.current = false;
+      const next = new Set(tab.selectedFrames);
+      if (next.has(cell.frame)) {
+        next.delete(cell.frame);
+      } else {
+        next.add(cell.frame);
+      }
+      actions.setSelectedFrames([...next]);
+      return;
+    }
+    scrubbing.current = true;
+    if (!event.shiftKey) {
+      anchor.current = cell.frame;
+      actions.setSelectedFrames([cell.frame]);
+    } else {
+      actions.setSelectedFrames(rangeTo(cell.frame));
+    }
+    actions.seek(cell.frame);
   };
 
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (scrubbing.current) {
-      seekFrom(event);
+    if (!scrubbing.current) {
+      return;
     }
+    const cell = cellAt(event);
+    if (!cell) {
+      return;
+    }
+    actions.setSelectedFrames(rangeTo(cell.frame));
+    actions.seek(cell.frame);
   };
 
   const stopScrubbing = () => {
@@ -202,6 +252,56 @@ export default function Timeline() {
         <span className="px-1 text-xs text-muted-foreground">{doc.fps} fps</span>
       </div>
 
+      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-1">
+        <input
+          type="number"
+          min={1}
+          max={1000}
+          value={frameCount}
+          aria-label={t("editor.frameCount")}
+          onChange={(event) => setFrameCount(Number(event.target.value))}
+          className="h-7 w-12 border border-border bg-transparent px-1 text-xs outline-none focus:border-ring"
+        />
+        <ToolButton icon={ListPlus} label={t("command.insertFrames")} onClick={() => actions.insertFrames(frameCount)} />
+        <ToolButton icon={ListMinus} label={t("command.removeFrames")} onClick={() => actions.removeFrames(frameCount)} />
+        <ToolButton icon={Copy} label={t("command.copyFrames")} onClick={actions.copyFrames} />
+        <ToolButton icon={ClipboardPaste} label={t("command.pasteFrames")} onClick={actions.pasteFrames} />
+        <ToolButton icon={CopyPlus} label={t("command.duplicateFrames")} onClick={actions.duplicateFrames} />
+        <span className="mx-1 h-5 w-px bg-border" />
+        <input
+          type="number"
+          min={1}
+          max={total}
+          value={moveTarget}
+          aria-label={t("editor.moveTarget")}
+          onChange={(event) => setMoveTarget(Number(event.target.value))}
+          className="h-7 w-12 border border-border bg-transparent px-1 text-xs outline-none focus:border-ring"
+        />
+        <ToolButton icon={MoveHorizontal} label={t("command.moveFrames")} onClick={() => actions.moveFrames(moveTarget - 1)} />
+        <span className="mx-1 h-5 w-px bg-border" />
+        <input
+          type="number"
+          min={1}
+          max={total}
+          value={tab.loopStart === null ? 1 : tab.loopStart + 1}
+          aria-label={t("editor.loopStart")}
+          onChange={(event) => actions.setLoopRange(Number(event.target.value) - 1, tab.loopEnd ?? total - 1)}
+          className="h-7 w-12 border border-border bg-transparent px-1 text-xs outline-none focus:border-ring"
+        />
+        <input
+          type="number"
+          min={1}
+          max={total}
+          value={tab.loopEnd === null ? total : tab.loopEnd + 1}
+          aria-label={t("editor.loopEnd")}
+          onChange={(event) => actions.setLoopRange(tab.loopStart ?? 0, Number(event.target.value) - 1)}
+          className="h-7 w-12 border border-border bg-transparent px-1 text-xs outline-none focus:border-ring"
+        />
+        {tab.loopStart !== null && tab.loopEnd !== null && (
+          <ToolButton icon={X} label={t("editor.loopClear")} onClick={() => actions.setLoopRange(null, null)} />
+        )}
+      </div>
+
       <div
         ref={scrollRef}
         className="min-h-0 flex-1 overflow-auto"
@@ -263,6 +363,7 @@ export default function Timeline() {
 
           <div
             ref={gridRef}
+            data-testid="timeline-grid"
             className="relative"
             style={{ width: total * CELL, height: contentHeight }}
             onPointerDown={onPointerDown}
@@ -285,6 +386,18 @@ export default function Timeline() {
               ))}
             </div>
 
+            {tab.loopStart !== null && tab.loopEnd !== null && (
+              <div
+                data-testid="loop-range"
+                className="pointer-events-none absolute top-0 z-20 border-x-2 border-primary bg-primary/20"
+                style={{
+                  left: tab.loopStart * CELL,
+                  width: (tab.loopEnd - tab.loopStart + 1) * CELL,
+                  height: HEADER
+                }}
+              />
+            )}
+
             {scene.layers.map((item, rowIndex) => (
               <div
                 key={item.id}
@@ -297,11 +410,14 @@ export default function Timeline() {
                 {cellsOf(item, from, to).map((cell) => (
                   <div
                     key={cell.frame}
+                    data-frame={cell.frame}
+                    data-selected={item.id === layer.id && selected.has(cell.frame)}
                     className={cn(
                       "absolute top-0 h-full border-r border-border/40",
                       cell.state === "held" && "bg-muted/60",
                       cell.state === "tween" && "bg-primary/15",
-                      cell.state === "past" && "border-r-transparent"
+                      cell.state === "past" && "border-r-transparent",
+                      item.id === layer.id && selected.has(cell.frame) && "bg-primary/40"
                     )}
                     style={{ left: cell.frame * CELL, width: CELL }}
                   >

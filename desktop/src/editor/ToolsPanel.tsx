@@ -4,12 +4,14 @@ import {
   Eraser,
   MousePointer2,
   PaintBucket,
+  PenTool,
   Pentagon,
   Pencil,
   Pipette,
   Slash,
   Square,
-  Type
+  Type,
+  Waypoints
 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { buildCommands } from "./commands";
@@ -28,7 +30,9 @@ const tools: Array<{ id: Tool; icon: typeof Pencil }> = [
   { id: "polygon", icon: Pentagon },
   { id: "fill", icon: PaintBucket },
   { id: "eyedropper", icon: Pipette },
-  { id: "text", icon: Type }
+  { id: "text", icon: Type },
+  { id: "pen", icon: PenTool },
+  { id: "node", icon: Waypoints }
 ];
 
 export default function ToolsPanel() {

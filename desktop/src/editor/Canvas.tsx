@@ -4,24 +4,30 @@ import { Frame, ZoomIn, ZoomOut } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/i18n";
 import {
+  flattenPath,
   heldKey,
   identityTransform,
   polygonVertices,
   textWidth
 } from "@/lib/document";
-import type { EvalLayer, Point, Shape, Transform } from "@/lib/document";
+import type { EvalLayer, PathNode, Point, Shape, Transform } from "@/lib/document";
 import { useWorkspace } from "./workspace";
 import type { Tool, TabState } from "./workspace";
 
+type PathShape = Extract<Shape, { kind: "Path" }>;
+
 interface Drag {
-  mode: "draw" | "pan" | "move" | "erase";
+  mode: "draw" | "pan" | "move" | "erase" | "pen" | "anchor" | "handle";
   start: Point;
   clientStart: Point;
   panStart: Point;
   origin: Transform;
+  nodeIndex?: number;
+  handle?: "in" | "out";
+  path?: PathShape;
 }
 
-const PICK_TOOLS: Tool[] = ["select", "fill", "eyedropper", "text"];
+const PICK_TOOLS: Tool[] = ["select", "node", "fill", "eyedropper", "text"];
 
 function bounds(shape: Shape): { x: number; y: number; w: number; h: number } {
   if (shape.kind === "Stroke") {
@@ -40,7 +46,38 @@ function bounds(shape: Shape): { x: number; y: number; w: number; h: number } {
   if (shape.kind === "Text") {
     return { x: shape.x, y: shape.y, w: textWidth(shape.text, shape.size), h: shape.size };
   }
+  if (shape.kind === "Path") {
+    const points = flattenPath(shape.nodes, shape.closed);
+    const xs = points.map((point) => point.x);
+    const ys = points.map((point) => point.y);
+    const pad = shape.width / 2;
+    const x = Math.min(...xs) - pad;
+    const y = Math.min(...ys) - pad;
+    return {
+      x,
+      y,
+      w: Math.max(...xs) + pad - x,
+      h: Math.max(...ys) + pad - y
+    };
+  }
   return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
+}
+
+function pathData(nodes: PathNode[], closed: boolean): string {
+  const first = nodes[0];
+  if (!first) {
+    return "";
+  }
+  let d = `M ${first.point.x} ${first.point.y}`;
+  const segments = closed ? nodes.length : nodes.length - 1;
+  for (let index = 0; index < segments; index += 1) {
+    const a = nodes[index];
+    const b = nodes[(index + 1) % nodes.length];
+    const p1 = a.handle_out ?? a.point;
+    const p2 = b.handle_in ?? b.point;
+    d += ` C ${p1.x} ${p1.y} ${p2.x} ${p2.y} ${b.point.x} ${b.point.y}`;
+  }
+  return closed ? `${d} Z` : d;
 }
 
 function smooth(points: Point[], amount: number): Point[] {
@@ -113,6 +150,9 @@ function isWorthwhile(shape: Shape): boolean {
   }
   if (shape.kind === "Text") {
     return true;
+  }
+  if (shape.kind === "Path") {
+    return shape.nodes.length >= 2;
   }
   return shape.w > 0.5 && shape.h > 0.5;
 }
@@ -228,6 +268,31 @@ function ShapeNode({
     );
   }
 
+  if (shape.kind === "Path") {
+    const d = pathData(shape.nodes, shape.closed);
+    return (
+      <g onPointerDown={down} style={{ cursor: interactive ? cursor : undefined }}>
+        {interactive && (
+          <path
+            d={d}
+            fill={shape.closed ? "transparent" : "none"}
+            stroke="transparent"
+            strokeWidth={Math.max(shape.width, 12)}
+          />
+        )}
+        <path
+          d={d}
+          fill={shape.closed ? shape.fill : "none"}
+          stroke={shape.stroke}
+          strokeWidth={shape.width}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        {outline}
+      </g>
+    );
+  }
+
   const geometry =
     shape.kind === "Rect"
       ? {
@@ -314,6 +379,10 @@ export default function Canvas() {
   const [draft, setDraft] = useState<Shape | null>(null);
   const [preview, setPreview] = useState<Transform | null>(null);
   const [hover, setHover] = useState<Point | null>(null);
+  const [penNodes, setPenNodes] = useState<PathNode[]>([]);
+  const [nodePreview, setNodePreview] = useState<PathShape | null>(null);
+  const penRef = useRef<PathNode[]>([]);
+  const commitRef = useRef<(closed: boolean) => void>(() => undefined);
 
   useEffect(() => {
     const element = hostRef.current;
@@ -345,6 +414,29 @@ export default function Canvas() {
     return () => element.removeEventListener("wheel", onWheel);
   }, []);
 
+  useEffect(() => {
+    penRef.current = [];
+    setPenNodes([]);
+    setNodePreview(null);
+    dragRef.current = null;
+  }, [doc?.id, tab?.sceneId, tab?.layerId, tab?.frame]);
+
+  useEffect(() => () => commitRef.current(false), [tab?.tool]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) {
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Escape") {
+        commitRef.current(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   if (!doc || !layer || !tab) {
     return <div ref={hostRef} className="min-h-0 flex-1 bg-muted" />;
   }
@@ -373,7 +465,97 @@ export default function Canvas() {
     return { x: (clientX - rect.left) / scale, y: (clientY - rect.top) / scale };
   };
 
+  const toShape = (point: Point): Point => {
+    const dx = (point.x - transform.x) / transform.scale;
+    const dy = (point.y - transform.y) / transform.scale;
+    const angle = (-transform.rotation * Math.PI) / 180;
+    return {
+      x: dx * Math.cos(angle) - dy * Math.sin(angle),
+      y: dx * Math.sin(angle) + dy * Math.cos(angle)
+    };
+  };
+
+  const commitPen = (closed: boolean) => {
+    const nodes = penRef.current;
+    penRef.current = [];
+    setPenNodes([]);
+    if (nodes.length >= 2) {
+      actions.draw({
+        kind: "Path",
+        nodes,
+        closed,
+        fill: tab.fill,
+        stroke: tab.stroke,
+        width: tab.strokeWidth
+      });
+    }
+  };
+  commitRef.current = commitPen;
+
+  const activeShapes =
+    current?.layers.find((item) => item.id === layer.id)?.shapes ?? [];
+  const selectedShape = tab.selected === null ? undefined : activeShapes[tab.selected];
+  const nodePath: PathShape | null =
+    tab.tool === "node" && selectedShape?.kind === "Path"
+      ? nodePreview ?? selectedShape
+      : null;
+  const activeNode =
+    nodePath && tab.selectedNode !== null
+      ? nodePath.nodes[tab.selectedNode] ?? null
+      : null;
+
+  const onAnchorDown = (index: number, event: ReactPointerEvent) => {
+    event.stopPropagation();
+    if (!nodePath) {
+      return;
+    }
+    setTab({ selectedNode: index });
+    if (layer.locked) {
+      toast.error(t("editor.layerLocked"));
+      return;
+    }
+    dragRef.current = {
+      mode: "anchor",
+      start: toShape(toDoc(event.clientX, event.clientY)),
+      clientStart: { x: event.clientX, y: event.clientY },
+      panStart: pan,
+      origin: transform,
+      nodeIndex: index,
+      path: nodePath
+    };
+    svgRef.current?.setPointerCapture(event.pointerId);
+  };
+
+  const onHandleDown = (side: "in" | "out", event: ReactPointerEvent) => {
+    event.stopPropagation();
+    if (!nodePath || tab.selectedNode === null) {
+      return;
+    }
+    if (layer.locked) {
+      toast.error(t("editor.layerLocked"));
+      return;
+    }
+    dragRef.current = {
+      mode: "handle",
+      start: toShape(toDoc(event.clientX, event.clientY)),
+      clientStart: { x: event.clientX, y: event.clientY },
+      panStart: pan,
+      origin: transform,
+      nodeIndex: tab.selectedNode,
+      handle: side,
+      path: nodePath
+    };
+    svgRef.current?.setPointerCapture(event.pointerId);
+  };
+
   const onShapeDown = (index: number, shape: Shape, event: ReactPointerEvent) => {
+    if (tab.tool === "node") {
+      actions.select(index);
+      if (layer.locked) {
+        toast.error(t("editor.layerLocked"));
+      }
+      return;
+    }
     if (tab.tool === "select") {
       actions.select(index);
       if (layer.locked) {
@@ -423,7 +605,7 @@ export default function Canvas() {
     if (event.button !== 0) {
       return;
     }
-    if (tab.tool === "select") {
+    if (tab.tool === "select" || tab.tool === "node") {
       actions.select(null);
       return;
     }
@@ -448,6 +630,30 @@ export default function Canvas() {
         color: tab.stroke
       });
       actions.select(count);
+      return;
+    }
+    if (tab.tool === "pen") {
+      const nodes = penRef.current;
+      const first = nodes[0];
+      if (
+        nodes.length >= 3 &&
+        first &&
+        Math.hypot(point.x - first.point.x, point.y - first.point.y) <= 5
+      ) {
+        commitPen(true);
+        return;
+      }
+      const next = [...nodes, { point, handle_in: null, handle_out: null }];
+      penRef.current = next;
+      setPenNodes(next);
+      dragRef.current = {
+        mode: "pen",
+        start: point,
+        clientStart: point,
+        panStart: pan,
+        origin: identityTransform
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
       return;
     }
     if (erasing) {
@@ -501,6 +707,64 @@ export default function Canvas() {
       });
       return;
     }
+    if (drag.mode === "pen") {
+      if (Math.hypot(point.x - drag.start.x, point.y - drag.start.y) > 2) {
+        const nodes = penRef.current;
+        const index = nodes.length - 1;
+        const node = nodes[index];
+        if (node) {
+          const next = nodes.map((item, position) =>
+            position === index
+              ? {
+                  ...item,
+                  handle_out: point,
+                  handle_in: {
+                    x: 2 * item.point.x - point.x,
+                    y: 2 * item.point.y - point.y
+                  }
+                }
+              : item
+          );
+          penRef.current = next;
+          setPenNodes(next);
+        }
+      }
+      return;
+    }
+    const { path, nodeIndex } = drag;
+    if ((drag.mode === "anchor" || drag.mode === "handle") && path && nodeIndex !== undefined) {
+      const local = toShape(point);
+      if (drag.mode === "anchor") {
+        const dx = local.x - drag.start.x;
+        const dy = local.y - drag.start.y;
+        const nodes = path.nodes.map((node, index) =>
+          index === nodeIndex
+            ? {
+                point: { x: node.point.x + dx, y: node.point.y + dy },
+                handle_in: node.handle_in
+                  ? { x: node.handle_in.x + dx, y: node.handle_in.y + dy }
+                  : null,
+                handle_out: node.handle_out
+                  ? { x: node.handle_out.x + dx, y: node.handle_out.y + dy }
+                  : null
+              }
+            : node
+        );
+        setNodePreview({ ...path, nodes });
+        return;
+      }
+      const node = path.nodes[nodeIndex];
+      const mirror = { x: 2 * node.point.x - local.x, y: 2 * node.point.y - local.y };
+      const updated: PathNode =
+        drag.handle === "in"
+          ? { ...node, handle_in: local, handle_out: event.altKey ? node.handle_out : mirror }
+          : { ...node, handle_out: local, handle_in: event.altKey ? node.handle_in : mirror };
+      setNodePreview({
+        ...path,
+        nodes: path.nodes.map((item, index) => (index === nodeIndex ? updated : item))
+      });
+      return;
+    }
     setDraft((prev) => {
       if ((tab.tool === "pencil" || tab.tool === "brush") && prev && prev.kind === "Stroke") {
         return { ...prev, points: [...prev.points, point] };
@@ -533,6 +797,16 @@ export default function Canvas() {
       const next = preview;
       setPreview(null);
       actions.setTransform({ x: next.x, y: next.y });
+      return;
+    }
+    if (
+      (drag.mode === "anchor" || drag.mode === "handle") &&
+      nodePreview &&
+      tab.selected !== null
+    ) {
+      const next = nodePreview;
+      setNodePreview(null);
+      actions.replaceShape(tab.selected, next);
     }
   };
 
@@ -540,10 +814,19 @@ export default function Canvas() {
     [...evaluated].reverse().map((item) => {
       const isActive = item.id === layer.id;
       const shown = isActive && !faded && preview ? preview : item.transform;
+      const content =
+        isActive && !faded && nodePreview && tab.selected !== null
+          ? {
+              ...item,
+              shapes: item.shapes.map((shape, index) =>
+                index === tab.selected ? nodePreview : shape
+              )
+            }
+          : item;
       return (
         <g key={item.id} opacity={faded ? 0.2 : 1}>
           <LayerContent
-            evaluated={item}
+            evaluated={content}
             transform={shown}
             interactive={!faded && isActive && PICK_TOOLS.includes(tab.tool)}
             cursor={shapeCursor}
@@ -576,6 +859,11 @@ export default function Canvas() {
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
           onPointerLeave={() => setHover(null)}
+          onDoubleClick={() => {
+            if (tab.tool === "pen") {
+              commitPen(false);
+            }
+          }}
         >
           <rect x={0} y={0} width={doc.width} height={doc.height} fill={doc.background} />
           {onion.map((item) => (
@@ -590,6 +878,89 @@ export default function Canvas() {
               selected={false}
               onDown={() => undefined}
             />
+          )}
+          {tab.tool === "pen" && penNodes.length > 0 && (
+            <g pointerEvents="none">
+              <ShapeNode
+                shape={{
+                  kind: "Path",
+                  nodes: penNodes,
+                  closed: false,
+                  fill: tab.fill,
+                  stroke: tab.stroke,
+                  width: tab.strokeWidth
+                }}
+                interactive={false}
+                cursor="crosshair"
+                selected={false}
+                onDown={() => undefined}
+              />
+              {penNodes.map((node, index) => (
+                <rect
+                  key={index}
+                  x={node.point.x - 3}
+                  y={node.point.y - 3}
+                  width={6}
+                  height={6}
+                  fill="#3b82f6"
+                />
+              ))}
+            </g>
+          )}
+          {nodePath && (
+            <g
+              transform={`translate(${transform.x} ${transform.y}) rotate(${transform.rotation}) scale(${transform.scale})`}
+            >
+              {nodePath.nodes.map((node, index) => (
+                <rect
+                  key={index}
+                  data-anchor={index}
+                  x={node.point.x - 4}
+                  y={node.point.y - 4}
+                  width={8}
+                  height={8}
+                  fill={tab.selectedNode === index ? "#3b82f6" : "#ffffff"}
+                  stroke="#3b82f6"
+                  strokeWidth={1}
+                  vectorEffect="non-scaling-stroke"
+                  style={{ cursor: "move" }}
+                  onPointerDown={(event) => onAnchorDown(index, event)}
+                />
+              ))}
+              {activeNode &&
+                (["in", "out"] as const).map((side) => {
+                  const handle = side === "in" ? activeNode.handle_in : activeNode.handle_out;
+                  if (!handle) {
+                    return null;
+                  }
+                  return (
+                    <g key={side}>
+                      <line
+                        x1={activeNode.point.x}
+                        y1={activeNode.point.y}
+                        x2={handle.x}
+                        y2={handle.y}
+                        stroke="#3b82f6"
+                        strokeWidth={1}
+                        vectorEffect="non-scaling-stroke"
+                        pointerEvents="none"
+                      />
+                      <circle
+                        data-handle={side}
+                        cx={handle.x}
+                        cy={handle.y}
+                        r={4}
+                        fill="#ffffff"
+                        stroke="#3b82f6"
+                        strokeWidth={1}
+                        vectorEffect="non-scaling-stroke"
+                        style={{ cursor: "move" }}
+                        onPointerDown={(event) => onHandleDown(side, event)}
+                      />
+                    </g>
+                  );
+                })}
+            </g>
           )}
           {erasing && hover && (
             <circle

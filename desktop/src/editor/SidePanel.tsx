@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { useI18n } from "@/i18n";
 import { heldKey } from "@/lib/document";
 import type { Shape } from "@/lib/document";
@@ -144,6 +145,44 @@ function ShapeFields({
     );
   }
 
+  if (shape.kind === "Path") {
+    return (
+      <>
+        <button
+          type="button"
+          aria-pressed={shape.closed}
+          onClick={() => onReplace(index, { ...shape, closed: !shape.closed })}
+          className={cn(
+            "h-7 border px-2 text-xs",
+            shape.closed
+              ? "border-border bg-accent text-accent-foreground"
+              : "border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          )}
+        >
+          {t("editor.closed")}
+        </button>
+        <ColorField
+          label={t("editor.fill")}
+          value={shape.fill}
+          onChange={(fill) => onPaint(index, fill)}
+        />
+        <ColorField
+          label={t("editor.stroke")}
+          value={shape.stroke}
+          onChange={(stroke) => onReplace(index, { ...shape, stroke })}
+        />
+        <NumberField
+          label={t("editor.strokeWidth")}
+          value={rounded(shape.width)}
+          min={0.5}
+          max={200}
+          step={0.5}
+          onCommit={(width) => onReplace(index, { ...shape, width })}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <NumberField
@@ -216,6 +255,11 @@ export default function SidePanel() {
   const selectedIndex = tab.selected;
   const selectedShape =
     selectedIndex === null ? null : key?.shapes[selectedIndex] ?? null;
+  const nodeIndex = tab.selectedNode;
+  const pathNode =
+    selectedShape?.kind === "Path" && nodeIndex !== null
+      ? selectedShape.nodes[nodeIndex] ?? null
+      : null;
 
   const commitRename = () => {
     if (renaming) {
@@ -229,16 +273,25 @@ export default function SidePanel() {
 
   const tool = tab.tool;
   const usesStroke =
-    tool !== "select" && tool !== "eraser" && tool !== "fill" && tool !== "eyedropper";
+    tool !== "select" &&
+    tool !== "node" &&
+    tool !== "eraser" &&
+    tool !== "fill" &&
+    tool !== "eyedropper";
   const usesFill =
-    tool === "rect" || tool === "ellipse" || tool === "polygon" || tool === "fill";
+    tool === "rect" ||
+    tool === "ellipse" ||
+    tool === "polygon" ||
+    tool === "pen" ||
+    tool === "fill";
   const usesWidth =
     tool === "pencil" ||
     tool === "brush" ||
     tool === "line" ||
     tool === "rect" ||
     tool === "ellipse" ||
-    tool === "polygon";
+    tool === "polygon" ||
+    tool === "pen";
   const hasToolSettings = usesStroke || usesFill || usesWidth || tool === "eraser";
 
   return (
@@ -385,6 +438,71 @@ export default function SidePanel() {
             onPaint={actions.paintShape}
             onReplace={actions.replaceShape}
           />
+          {selectedShape.kind === "Path" && pathNode && nodeIndex !== null && (
+            <>
+              <NumberField
+                label={t("editor.nodeX")}
+                value={rounded(pathNode.point.x)}
+                onCommit={(x) => {
+                  const dx = x - pathNode.point.x;
+                  const nodes = selectedShape.nodes.map((node, index) =>
+                    index === nodeIndex
+                      ? {
+                          point: { x, y: node.point.y },
+                          handle_in: node.handle_in
+                            ? { x: node.handle_in.x + dx, y: node.handle_in.y }
+                            : null,
+                          handle_out: node.handle_out
+                            ? { x: node.handle_out.x + dx, y: node.handle_out.y }
+                            : null
+                        }
+                      : node
+                  );
+                  actions.replaceShape(selectedIndex, { ...selectedShape, nodes });
+                }}
+              />
+              <NumberField
+                label={t("editor.nodeY")}
+                value={rounded(pathNode.point.y)}
+                onCommit={(y) => {
+                  const dy = y - pathNode.point.y;
+                  const nodes = selectedShape.nodes.map((node, index) =>
+                    index === nodeIndex
+                      ? {
+                          point: { x: node.point.x, y },
+                          handle_in: node.handle_in
+                            ? { x: node.handle_in.x, y: node.handle_in.y + dy }
+                            : null,
+                          handle_out: node.handle_out
+                            ? { x: node.handle_out.x, y: node.handle_out.y + dy }
+                            : null
+                        }
+                      : node
+                  );
+                  actions.replaceShape(selectedIndex, { ...selectedShape, nodes });
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const minimum = selectedShape.closed ? 3 : 2;
+                  if (selectedShape.nodes.length <= minimum) {
+                    toast.error(t("editor.nodeMinimum"));
+                    return;
+                  }
+                  actions.replaceShape(selectedIndex, {
+                    ...selectedShape,
+                    nodes: selectedShape.nodes.filter((_, index) => index !== nodeIndex)
+                  });
+                  setTab({ selectedNode: null });
+                }}
+                className="flex h-7 items-center gap-1 border border-border px-2 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {t("editor.removeNode")}
+              </button>
+            </>
+          )}
         </Section>
       )}
 

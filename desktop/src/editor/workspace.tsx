@@ -51,6 +51,16 @@ import type {
   Shape,
   Transform
 } from "@/lib/document";
+import {
+  docCopyFrames,
+  docDuplicateFrames,
+  docInsertFrames,
+  docMoveFrames,
+  docPasteFrames,
+  docRemoveFrames,
+  frameClipboard,
+  setFrameClipboard
+} from "@/lib/frames";
 
 export type Tool =
   | "select"
@@ -63,18 +73,24 @@ export type Tool =
   | "polygon"
   | "fill"
   | "eyedropper"
-  | "text";
+  | "text"
+  | "pen"
+  | "node";
 
 export interface TabState {
   sceneId: string;
   layerId: string;
   frame: number;
+  selectedFrames: number[];
+  loopStart: number | null;
+  loopEnd: number | null;
   tool: Tool;
   playing: boolean;
   loop: boolean;
   onion: boolean;
   onionRange: number;
   selected: number | null;
+  selectedNode: number | null;
   stroke: string;
   fill: string;
   strokeWidth: number;
@@ -100,12 +116,16 @@ function firstTab(doc: Document): TabState {
     sceneId: scene.id,
     layerId: scene.layers[0].id,
     frame: 0,
+    selectedFrames: [],
+    loopStart: null,
+    loopEnd: null,
     tool: "pencil",
     playing: false,
     loop: true,
     onion: false,
     onionRange: 2,
     selected: null,
+    selectedNode: null,
     stroke: "#000000",
     fill: "#3b82f6",
     strokeWidth: 3,
@@ -120,6 +140,10 @@ function firstTab(doc: Document): TabState {
 
 function clamp(value: number, low: number, high: number): number {
   return Math.min(Math.max(value, low), high);
+}
+
+function frameRange(start: number, count: number): number[] {
+  return Array.from({ length: count }, (_, index) => start + index);
 }
 
 interface WorkspaceValue {
@@ -165,6 +189,14 @@ export interface Actions {
   insertFrame: () => void;
   keyframe: (blank: boolean) => void;
   removeFrame: () => void;
+  insertFrames: (count: number) => void;
+  removeFrames: (count: number) => void;
+  copyFrames: () => void;
+  pasteFrames: () => void;
+  duplicateFrames: () => void;
+  moveFrames: (target: number) => void;
+  setSelectedFrames: (frames: number[]) => void;
+  setLoopRange: (start: number | null, end: number | null) => void;
   toggleTween: () => void;
   setLabel: (label: string) => void;
   addLayer: () => void;
@@ -381,11 +413,19 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           return prev;
         }
         const next = current.frame + 1;
-        if (next < total) {
+        const loopStart = current.loopStart;
+        const loopEnd = current.loopEnd;
+        const ranged = loopStart !== null && loopEnd !== null;
+        const end = ranged ? Math.min(loopEnd, total - 1) : total - 1;
+        const resume = ranged ? Math.min(loopStart, end) : 0;
+        if (next < total && next <= end) {
           return { ...prev, [doc.id]: { ...current, frame: next } };
         }
         if (current.loop) {
-          return { ...prev, [doc.id]: { ...current, frame: 0 } };
+          return { ...prev, [doc.id]: { ...current, frame: resume } };
+        }
+        if (ranged) {
+          return { ...prev, [doc.id]: { ...current, frame: end, playing: false } };
         }
         const index = doc.scenes.findIndex((item) => item.id === current.sceneId);
         const following = doc.scenes[index + 1];
@@ -399,7 +439,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
             sceneId: following.id,
             layerId: following.layers[0].id,
             frame: 0,
-            selected: null
+            selected: null,
+            selectedFrames: []
           }
         };
       });
@@ -407,10 +448,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(timer);
   }, [doc, tab?.playing, total]);
 
+  const selectionStart = (): number => {
+    const selected = tab?.selectedFrames ?? [];
+    return selected.length > 0 ? selected[0] : frame;
+  };
+
+  const selectionCount = (): number => {
+    const selected = tab?.selectedFrames ?? [];
+    return selected.length > 0 ? selected[selected.length - 1] - selected[0] + 1 : 1;
+  };
+
   const actions: Actions = {
-    setTool: (tool) => setTab({ tool, selected: null }),
-    select: (index) => setTab({ selected: index }),
-    selectLayer: (layerId) => setTab({ layerId, selected: null }),
+    setTool: (tool) => setTab({ tool, selected: null, selectedNode: null }),
+    select: (index) => setTab({ selected: index, selectedNode: null }),
+    selectLayer: (layerId) => setTab({ layerId, selected: null, selectedFrames: [] }),
     selectScene: (sceneId) => {
       const next = doc?.scenes.find((item) => item.id === sceneId);
       if (!next) {
@@ -421,6 +472,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         layerId: next.layers[0].id,
         frame: 0,
         selected: null,
+        selectedFrames: [],
         playing: false
       });
     },
@@ -466,6 +518,79 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     },
     keyframe: (blank) => edit((d, s, l) => docKeyframe(d.id, s.id, l.id, frame, blank)),
     removeFrame: () => edit((d, s, l) => docRemoveFrame(d.id, s.id, l.id, frame)),
+    insertFrames: (count) => {
+      const start = selectionStart();
+      void edit((d, s, l) => docInsertFrames(d.id, s.id, l.id, start, count)).then((ok) => {
+        if (ok) {
+          setTab({ frame: start, selectedFrames: frameRange(start, count) });
+        }
+      });
+    },
+    removeFrames: (count) => {
+      const start = selectionStart();
+      const span = tab?.selectedFrames.length ? selectionCount() : count;
+      void edit((d, s, l) => docRemoveFrames(d.id, s.id, l.id, start, span)).then((ok) => {
+        if (ok) {
+          setTab({ frame: start, selectedFrames: [] });
+        }
+      });
+    },
+    copyFrames: () => {
+      if (!doc || !scene || !layer) {
+        return;
+      }
+      docCopyFrames(doc.id, scene.id, layer.id, selectionStart(), selectionCount())
+        .then((clip) => setFrameClipboard(clip))
+        .catch((error) => toast.error(String(error)));
+    },
+    pasteFrames: () => {
+      const clip = frameClipboard();
+      if (!clip || clip.keys.length === 0) {
+        toast.error(t("editor.clipboardEmpty"));
+        return;
+      }
+      const start = selectionStart();
+      void edit((d, s, l) => docPasteFrames(d.id, s.id, l.id, start, clip)).then((ok) => {
+        if (ok) {
+          setTab({ frame: start, selectedFrames: frameRange(start, clip.span) });
+        }
+      });
+    },
+    duplicateFrames: () => {
+      const start = selectionStart();
+      const count = selectionCount();
+      void edit((d, s, l) => docDuplicateFrames(d.id, s.id, l.id, start, count)).then((ok) => {
+        if (ok) {
+          setTab({ frame: start + count, selectedFrames: frameRange(start + count, count) });
+        }
+      });
+    },
+    moveFrames: (target) => {
+      const start = selectionStart();
+      const count = selectionCount();
+      const at = target > start ? Math.max(0, target - count) : target;
+      void edit((d, s, l) => docMoveFrames(d.id, s.id, l.id, start, count, target)).then((ok) => {
+        if (ok) {
+          setTab({ frame: at, selectedFrames: frameRange(at, count) });
+        }
+      });
+    },
+    setSelectedFrames: (frames) => {
+      const unique = [...new Set(frames.map((value) => clamp(value, 0, total - 1)))].sort(
+        (a, b) => a - b
+      );
+      setTab({ selectedFrames: unique });
+    },
+    setLoopRange: (start, end) => {
+      if (start === null || end === null) {
+        setTab({ loopStart: null, loopEnd: null });
+        return;
+      }
+      setTab({
+        loopStart: clamp(Math.min(start, end), 0, total - 1),
+        loopEnd: clamp(Math.max(start, end), 0, total - 1)
+      });
+    },
     toggleTween: () =>
       edit((d, s, l) => {
         const key = heldKey(l, frame);

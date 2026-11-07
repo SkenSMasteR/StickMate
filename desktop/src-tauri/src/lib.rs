@@ -1,5 +1,7 @@
 mod auth;
 mod document;
+mod frames;
+mod path;
 mod prefs;
 mod tokens;
 mod updater;
@@ -53,6 +55,7 @@ pub fn run() {
             prefs::prefs_put,
             updater::check_for_update,
             updater::install_update,
+            updater::set_update_channel,
             document::doc_new,
             document::doc_list,
             document::doc_recovery_report,
@@ -83,6 +86,12 @@ pub fn run() {
             document::doc_undo,
             document::doc_redo,
             document::doc_evaluate,
+            frames::doc_insert_frames,
+            frames::doc_remove_frames,
+            frames::doc_copy_frames,
+            frames::doc_paste_frames,
+            frames::doc_duplicate_frames,
+            frames::doc_move_frames,
             app_version
         ])
         .on_window_event(|window, event| {
