@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { entitlementCheck } from "@/lib/entitlement";
 import { usePrefs } from "@/lib/prefs";
 import { tokenLoad } from "@/lib/tauri";
 import { showEditor } from "@/lib/windows";
@@ -26,8 +27,9 @@ export default function Main() {
         }
         const offline = await tokenLoad("offline");
         if (offline) {
+          const entitlement = await entitlementCheck();
           if (!cancelled) {
-            setView("hub");
+            setView(entitlement.valid ? "hub" : "signin");
           }
           return;
         }

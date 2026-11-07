@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { toast } from "sonner";
+import { entitlementRefreshKey } from "@/lib/entitlement";
 import { authPoll, authStart, openUrl, tokenSave } from "@/lib/tauri";
 
 type Phase = "idle" | "waiting" | "expired" | "error";
@@ -70,6 +71,7 @@ export default function SignIn({
             if (result.offline_token) {
               await tokenSave("offline", result.offline_token);
             }
+            await entitlementRefreshKey().catch(() => undefined);
             onSignedIn(result.account?.login ?? null);
             return;
           }
