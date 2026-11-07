@@ -1,12 +1,13 @@
 {
   "name": "stickmate-desktop",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "bump": "node bump-version.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
