@@ -113,6 +113,304 @@ pub fn polygon_vertices(x: f64, y: f64, w: f64, h: f64, sides: u32) -> Vec<Point
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Affine {
+    pub a: f64,
+    pub b: f64,
+    pub c: f64,
+    pub d: f64,
+    pub e: f64,
+    pub f: f64,
+}
+
+pub fn affine_from(pivot: &Point, dx: f64, dy: f64, sx: f64, sy: f64, rotation: f64) -> Affine {
+    let angle = rotation * std::f64::consts::PI / 180.0;
+    let cos = angle.cos();
+    let sin = angle.sin();
+    let a = cos * sx;
+    let b = sin * sx;
+    let c = -sin * sy;
+    let d = cos * sy;
+    Affine {
+        a,
+        b,
+        c,
+        d,
+        e: pivot.x - a * pivot.x - c * pivot.y + dx,
+        f: pivot.y - b * pivot.x - d * pivot.y + dy,
+    }
+}
+
+pub fn apply_affine(matrix: &Affine, point: &Point) -> Point {
+    Point {
+        x: matrix.a * point.x + matrix.c * point.y + matrix.e,
+        y: matrix.b * point.x + matrix.d * point.y + matrix.f,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct Bounds {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+fn points_bounds(points: &[Point], width: f64) -> Bounds {
+    let pad = width / 2.0;
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for point in points {
+        min_x = min_x.min(point.x);
+        min_y = min_y.min(point.y);
+        max_x = max_x.max(point.x);
+        max_y = max_y.max(point.y);
+    }
+    let x = min_x - pad;
+    let y = min_y - pad;
+    Bounds {
+        x,
+        y,
+        w: max_x + pad - x,
+        h: max_y + pad - y,
+    }
+}
+
+pub fn shape_bounds(shape: &Shape) -> Bounds {
+    match shape {
+        Shape::Stroke { points, width, .. } => points_bounds(points, *width),
+        Shape::Path {
+            nodes,
+            closed,
+            width,
+            ..
+        } => points_bounds(&flatten_path(nodes, *closed), *width),
+        Shape::Text {
+            x, y, text, size, ..
+        } => Bounds {
+            x: *x,
+            y: *y,
+            w: text_width(text, *size),
+            h: *size,
+        },
+        Shape::Rect { x, y, w, h, .. }
+        | Shape::Ellipse { x, y, w, h, .. }
+        | Shape::Polygon { x, y, w, h, .. } => Bounds {
+            x: *x,
+            y: *y,
+            w: *w,
+            h: *h,
+        },
+    }
+}
+
+fn corners_path(corners: &[Point], matrix: &Affine, fill: &str, stroke: &str, width: f64) -> Shape {
+    Shape::Path {
+        nodes: corners
+            .iter()
+            .map(|point| PathNode {
+                point: apply_affine(matrix, point),
+                handle_in: None,
+                handle_out: None,
+            })
+            .collect(),
+        closed: true,
+        fill: fill.to_string(),
+        stroke: stroke.to_string(),
+        width,
+    }
+}
+
+fn transform_shape(
+    shape: &Shape,
+    matrix: &Affine,
+    sx: f64,
+    sy: f64,
+    rotation: f64,
+) -> Result<Shape, String> {
+    match shape {
+        Shape::Stroke {
+            points,
+            color,
+            width,
+        } => Ok(Shape::Stroke {
+            points: points.iter().map(|p| apply_affine(matrix, p)).collect(),
+            color: color.clone(),
+            width: *width,
+        }),
+        Shape::Path {
+            nodes,
+            closed,
+            fill,
+            stroke,
+            width,
+        } => Ok(Shape::Path {
+            nodes: nodes
+                .iter()
+                .map(|node| PathNode {
+                    point: apply_affine(matrix, &node.point),
+                    handle_in: node.handle_in.as_ref().map(|p| apply_affine(matrix, p)),
+                    handle_out: node.handle_out.as_ref().map(|p| apply_affine(matrix, p)),
+                })
+                .collect(),
+            closed: *closed,
+            fill: fill.clone(),
+            stroke: stroke.clone(),
+            width: *width,
+        }),
+        Shape::Text {
+            x,
+            y,
+            text,
+            size,
+            family,
+            color,
+        } => {
+            if rotation != 0.0 {
+                return Err("text cannot be rotated".to_string());
+            }
+            if sx != sy {
+                return Err("text supports uniform scale only".to_string());
+            }
+            let q = apply_affine(matrix, &Point { x: *x, y: *y });
+            Ok(Shape::Text {
+                x: q.x,
+                y: q.y,
+                text: text.clone(),
+                size: size * sx,
+                family: family.clone(),
+                color: color.clone(),
+            })
+        }
+        Shape::Ellipse {
+            x,
+            y,
+            w,
+            h,
+            fill,
+            stroke,
+            width,
+        } if rotation != 0.0 => {
+            if rotation % 90.0 != 0.0 {
+                return Err("ellipse cannot be rotated".to_string());
+            }
+            let center = apply_affine(
+                matrix,
+                &Point {
+                    x: x + w / 2.0,
+                    y: y + h / 2.0,
+                },
+            );
+            let odd = ((rotation / 90.0) as i64).abs() % 2 == 1;
+            let nw = if odd { h * sy } else { w * sx };
+            let nh = if odd { w * sx } else { h * sy };
+            Ok(Shape::Ellipse {
+                x: center.x - nw / 2.0,
+                y: center.y - nh / 2.0,
+                w: nw,
+                h: nh,
+                fill: fill.clone(),
+                stroke: stroke.clone(),
+                width: *width,
+            })
+        }
+        Shape::Rect {
+            x,
+            y,
+            w,
+            h,
+            fill,
+            stroke,
+            width,
+        } if rotation != 0.0 => {
+            let corners = [
+                Point { x: *x, y: *y },
+                Point { x: x + w, y: *y },
+                Point { x: x + w, y: y + h },
+                Point { x: *x, y: y + h },
+            ];
+            Ok(corners_path(&corners, matrix, fill, stroke, *width))
+        }
+        Shape::Polygon {
+            x,
+            y,
+            w,
+            h,
+            sides,
+            fill,
+            stroke,
+            width,
+        } if rotation != 0.0 => {
+            let vertices = polygon_vertices(*x, *y, *w, *h, *sides);
+            Ok(corners_path(&vertices, matrix, fill, stroke, *width))
+        }
+        Shape::Rect {
+            x,
+            y,
+            w,
+            h,
+            fill,
+            stroke,
+            width,
+        } => {
+            let q = apply_affine(matrix, &Point { x: *x, y: *y });
+            Ok(Shape::Rect {
+                x: q.x,
+                y: q.y,
+                w: w * sx,
+                h: h * sy,
+                fill: fill.clone(),
+                stroke: stroke.clone(),
+                width: *width,
+            })
+        }
+        Shape::Ellipse {
+            x,
+            y,
+            w,
+            h,
+            fill,
+            stroke,
+            width,
+        } => {
+            let q = apply_affine(matrix, &Point { x: *x, y: *y });
+            Ok(Shape::Ellipse {
+                x: q.x,
+                y: q.y,
+                w: w * sx,
+                h: h * sy,
+                fill: fill.clone(),
+                stroke: stroke.clone(),
+                width: *width,
+            })
+        }
+        Shape::Polygon {
+            x,
+            y,
+            w,
+            h,
+            sides,
+            fill,
+            stroke,
+            width,
+        } => {
+            let q = apply_affine(matrix, &Point { x: *x, y: *y });
+            Ok(Shape::Polygon {
+                x: q.x,
+                y: q.y,
+                w: w * sx,
+                h: h * sy,
+                sides: *sides,
+                fill: fill.clone(),
+                stroke: stroke.clone(),
+                width: *width,
+            })
+        }
+    }
+}
+
 fn within(a: &Point, b: &Point, radius: f64) -> bool {
     let dx = a.x - b.x;
     let dy = a.y - b.y;
@@ -1126,6 +1424,138 @@ impl DocStore {
         })
     }
 
+    pub fn transform_shapes(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        indices: Vec<usize>,
+        pivot: Point,
+        dx: f64,
+        dy: f64,
+        sx: f64,
+        sy: f64,
+        rotation: f64,
+    ) -> Result<Document, String> {
+        if indices.is_empty() {
+            return Err("no shapes selected".to_string());
+        }
+        if !sx.is_finite() || sx <= 0.0 || !sy.is_finite() || sy <= 0.0 {
+            return Err("scale must be positive".to_string());
+        }
+        if !dx.is_finite()
+            || !dy.is_finite()
+            || !rotation.is_finite()
+            || !pivot.x.is_finite()
+            || !pivot.y.is_finite()
+        {
+            return Err("transform values must be finite".to_string());
+        }
+        let matrix = affine_from(&pivot, dx, dy, sx, sy, rotation);
+        self.edit(id, |doc| {
+            let layer = doc.layer_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let source = layer
+                .held_index(frame)
+                .map(|index| layer.keys[index].shapes.clone())
+                .unwrap_or_default();
+            let mut updated = Vec::new();
+            for &shape_index in &indices {
+                let shape = source
+                    .get(shape_index)
+                    .ok_or_else(|| "unknown shape".to_string())?;
+                let next = transform_shape(shape, &matrix, sx, sy, rotation)?;
+                validate(&next)?;
+                updated.push((shape_index, next));
+            }
+            let index = layer.key_at(frame);
+            let key = &mut layer.keys[index];
+            for (shape_index, next) in updated {
+                key.shapes[shape_index] = next;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn reorder_shapes(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        indices: Vec<usize>,
+        to_front: bool,
+    ) -> Result<Document, String> {
+        if indices.is_empty() {
+            return Err("no shapes selected".to_string());
+        }
+        let mut sorted = indices;
+        sorted.sort_unstable();
+        sorted.dedup();
+        self.edit(id, |doc| {
+            let layer = doc.layer_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let len = layer
+                .held_index(frame)
+                .map(|index| layer.keys[index].shapes.len())
+                .unwrap_or(0);
+            for &shape_index in &sorted {
+                if shape_index >= len {
+                    return Err("unknown shape".to_string());
+                }
+            }
+            let index = layer.key_at(frame);
+            let key = &mut layer.keys[index];
+            let mut moved = Vec::new();
+            for &shape_index in sorted.iter().rev() {
+                moved.push(key.shapes.remove(shape_index));
+            }
+            moved.reverse();
+            if to_front {
+                key.shapes.extend(moved);
+            } else {
+                key.shapes.splice(0..0, moved);
+            }
+            Ok(())
+        })
+    }
+
+    pub fn delete_shapes(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        indices: Vec<usize>,
+    ) -> Result<Document, String> {
+        if indices.is_empty() {
+            return Err("no shapes selected".to_string());
+        }
+        let mut sorted = indices;
+        sorted.sort_unstable();
+        sorted.dedup();
+        self.edit(id, |doc| {
+            let layer = doc.layer_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let len = layer
+                .held_index(frame)
+                .map(|index| layer.keys[index].shapes.len())
+                .unwrap_or(0);
+            for &shape_index in &sorted {
+                if shape_index >= len {
+                    return Err("unknown shape".to_string());
+                }
+            }
+            let index = layer.key_at(frame);
+            let key = &mut layer.keys[index];
+            for &shape_index in sorted.iter().rev() {
+                key.shapes.remove(shape_index);
+            }
+            Ok(())
+        })
+    }
+
     pub fn set_transform(
         &self,
         id: &str,
@@ -1486,6 +1916,51 @@ pub fn doc_delete_shape(
     index: usize,
 ) -> Result<Document, String> {
     store.delete_shape(&id, &scene_id, &layer_id, frame, index)
+}
+
+#[tauri::command]
+pub fn doc_transform_shapes(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    indices: Vec<usize>,
+    pivot: Point,
+    dx: f64,
+    dy: f64,
+    sx: f64,
+    sy: f64,
+    rotation: f64,
+) -> Result<Document, String> {
+    store.transform_shapes(
+        &id, &scene_id, &layer_id, frame, indices, pivot, dx, dy, sx, sy, rotation,
+    )
+}
+
+#[tauri::command]
+pub fn doc_reorder_shapes(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    indices: Vec<usize>,
+    to_front: bool,
+) -> Result<Document, String> {
+    store.reorder_shapes(&id, &scene_id, &layer_id, frame, indices, to_front)
+}
+
+#[tauri::command]
+pub fn doc_delete_shapes(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    indices: Vec<usize>,
+) -> Result<Document, String> {
+    store.delete_shapes(&id, &scene_id, &layer_id, frame, indices)
 }
 
 #[tauri::command]
@@ -2621,11 +3096,11 @@ mod tests {
             .store
             .draw(id, &fixture.scene, &fixture.layer, 0, polygon(5))
             .expect("draw");
-        let mut doc = fixture
+        fixture
             .store
             .replace_shape(id, &fixture.scene, &fixture.layer, 0, 0, text("Hello", 24.0))
             .expect("replace");
-        doc = fixture
+        let doc = fixture
             .store
             .replace_shape(id, &fixture.scene, &fixture.layer, 0, 1, polygon(8))
             .expect("replace");
@@ -2901,4 +3376,615 @@ mod tests {
         assert_eq!(fixture.target(&redone).keys[0].shapes.len(), 1);
         assert_eq!(fixture.store.undo(id).expect("undo again").scenes[0].layers[0].keys[0].shapes.len(), 0);
     }
+
+    fn ellipse_shape(x: f64, y: f64, w: f64, h: f64) -> Shape {
+        Shape::Ellipse {
+            x,
+            y,
+            w,
+            h,
+            fill: "#ff0000".to_string(),
+            stroke: "#000000".to_string(),
+            width: 1.0,
+        }
+    }
+
+    fn close(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-9, "{a} != {b}");
+    }
+
+    #[test]
+    fn affine_and_bounds_match_the_shared_contract() {
+        let pivot = Point { x: 10.0, y: 10.0 };
+        let matrix = affine_from(&pivot, 5.0, -3.0, 2.0, 3.0, 90.0);
+        let moved = apply_affine(&matrix, &Point { x: 20.0, y: 30.0 });
+        close(moved.x, -45.0);
+        close(moved.y, 27.0);
+        let identity = affine_from(&pivot, 0.0, 0.0, 1.0, 1.0, 0.0);
+        let same = apply_affine(&identity, &Point { x: 7.0, y: -2.0 });
+        close(same.x, 7.0);
+        close(same.y, -2.0);
+        let box_bounds = shape_bounds(&box_shape(10.0, 20.0));
+        assert_eq!(
+            box_bounds,
+            Bounds { x: 10.0, y: 20.0, w: 20.0, h: 20.0 }
+        );
+        let stroke_bounds = shape_bounds(&stroke(4.0));
+        assert_eq!(
+            stroke_bounds,
+            Bounds { x: 3.0, y: -1.0, w: 2.0, h: 12.0 }
+        );
+        let text_bounds = shape_bounds(&text("AB", 10.0));
+        assert_eq!(
+            text_bounds,
+            Bounds { x: 300.0, y: 10.0, w: 12.0, h: 10.0 }
+        );
+        let path_bounds = shape_bounds(&curve_path(false));
+        close(path_bounds.x, -0.5);
+        close(path_bounds.y, -0.5);
+        close(path_bounds.w, 101.0);
+        close(path_bounds.h, 76.0);
+    }
+
+    #[test]
+    fn transform_moves_selected_shapes_as_one_undo_step() {
+        let fixture = Fixture::new("transform-move");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(10.0, 10.0))
+            .expect("first");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(50.0))
+            .expect("second");
+        let before = fixture.store.get(id).expect("get");
+        let pivot = Point { x: 0.0, y: 0.0 };
+        let edited = fixture
+            .store
+            .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 1], pivot, 7.0, -4.0, 1.0, 1.0, 0.0)
+            .expect("move");
+        let shapes = &fixture.target(&edited).keys[0].shapes;
+        assert!(matches!(&shapes[0], Shape::Rect { x, y, w, h, .. } if *x == 17.0 && *y == 6.0 && *w == 20.0 && *h == 20.0));
+        assert!(matches!(&shapes[1], Shape::Stroke { points, width, .. } if points[0].x == 57.0 && points[0].y == -4.0 && *width == 2.0));
+        let undone = fixture.store.undo(id).expect("undo");
+        assert_eq!(undone, before);
+    }
+
+    #[test]
+    fn transform_scales_about_a_custom_pivot() {
+        let fixture = Fixture::new("transform-scale");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(10.0, 10.0))
+            .expect("draw");
+        let pivot = Point { x: 10.0, y: 10.0 };
+        let edited = fixture
+            .store
+            .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], pivot, 0.0, 0.0, 2.0, 3.0, 0.0)
+            .expect("scale");
+        assert!(matches!(
+            &fixture.target(&edited).keys[0].shapes[0],
+            Shape::Rect { x, y, w, h, width, .. } if *x == 10.0 && *y == 10.0 && *w == 40.0 && *h == 60.0 && *width == 1.0
+        ));
+        let ellipse = fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, ellipse_shape(0.0, 0.0, 20.0, 10.0))
+            .expect("ellipse");
+        let scaled = fixture
+            .store
+            .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![1], Point { x: 0.0, y: 0.0 }, 0.0, 0.0, 2.0, 2.0, 0.0)
+            .expect("scale ellipse");
+        assert!(matches!(
+            &fixture.target(&scaled).keys[0].shapes[1],
+            Shape::Ellipse { x, y, w, h, .. } if *x == 0.0 && *y == 0.0 && *w == 40.0 && *h == 20.0
+        ));
+        assert_eq!(ellipse.scenes[0].layers[0].keys[0].shapes.len(), 2);
+    }
+
+    #[test]
+    fn rotating_a_rect_becomes_a_faithful_four_node_path() {
+        let fixture = Fixture::new("transform-rotate");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 0.0))
+            .expect("draw");
+        let pivot = Point { x: 10.0, y: 10.0 };
+        let edited = fixture
+            .store
+            .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], pivot, 0.0, 0.0, 1.0, 1.0, 90.0)
+            .expect("rotate");
+        let shape = &fixture.target(&edited).keys[0].shapes[0];
+        let Shape::Path { nodes, closed, fill, width, .. } = shape else {
+            panic!("expected path");
+        };
+        assert!(*closed);
+        assert_eq!(*fill, "#ff0000");
+        assert_eq!(*width, 1.0);
+        assert_eq!(nodes.len(), 4);
+        let expected = [(20.0, 0.0), (20.0, 20.0), (0.0, 20.0), (0.0, 0.0)];
+        for (node, (x, y)) in nodes.iter().zip(expected) {
+            close(node.point.x, x);
+            close(node.point.y, y);
+            assert!(node.handle_in.is_none());
+            assert!(node.handle_out.is_none());
+        }
+    }
+
+    #[test]
+    fn rotating_a_polygon_becomes_a_path_and_ellipse_quarter_turns_swap_axes() {
+        let fixture = Fixture::new("transform-rotate-kinds");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, polygon(3))
+            .expect("polygon");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, ellipse_shape(0.0, 0.0, 20.0, 10.0))
+            .expect("ellipse");
+        let pivot = Point { x: 0.0, y: 0.0 };
+        let edited = fixture
+            .store
+            .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], pivot.clone(), 0.0, 0.0, 1.0, 1.0, 90.0)
+            .expect("rotate polygon");
+        let Shape::Path { nodes, closed, .. } = &fixture.target(&edited).keys[0].shapes[0] else {
+            panic!("expected path");
+        };
+        assert!(*closed);
+        assert_eq!(nodes.len(), 3);
+        let turned = fixture
+            .store
+            .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![1], pivot, 0.0, 0.0, 1.0, 1.0, 90.0)
+            .expect("rotate ellipse");
+        let Shape::Ellipse { x, y, w, h, .. } = &fixture.target(&turned).keys[0].shapes[1] else {
+            panic!("expected ellipse");
+        };
+        close(*w, 10.0);
+        close(*h, 20.0);
+        close(*x, -10.0);
+        close(*y, 0.0);
+    }
+
+    #[test]
+    fn unrepresentable_transforms_are_rejected_without_changes() {
+        let fixture = Fixture::new("transform-reject");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, text("Hi", 12.0))
+            .expect("text");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, ellipse_shape(0.0, 0.0, 20.0, 10.0))
+            .expect("ellipse");
+        let before = fixture.store.get(id).expect("get");
+        let pivot = Point { x: 0.0, y: 0.0 };
+        assert_eq!(
+            fixture
+                .store
+                .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], pivot.clone(), 0.0, 0.0, 1.0, 1.0, 30.0)
+                .expect_err("text rotation"),
+            "text cannot be rotated"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], pivot.clone(), 0.0, 0.0, 2.0, 3.0, 0.0)
+                .expect_err("text stretch"),
+            "text supports uniform scale only"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![1], pivot.clone(), 0.0, 0.0, 1.0, 1.0, 30.0)
+                .expect_err("ellipse rotation"),
+            "ellipse cannot be rotated"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 1], pivot.clone(), 5.0, 5.0, 1.0, 1.0, 30.0)
+                .expect_err("mixed batch"),
+            "text cannot be rotated"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], pivot.clone(), 0.0, 0.0, -1.0, 1.0, 0.0)
+                .expect_err("negative scale"),
+            "scale must be positive"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .transform_shapes(id, &fixture.scene, &fixture.layer, 0, Vec::new(), pivot.clone(), 0.0, 0.0, 1.0, 1.0, 0.0)
+                .expect_err("empty"),
+            "no shapes selected"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![9], pivot, 0.0, 0.0, 1.0, 1.0, 0.0)
+                .expect_err("index"),
+            "unknown shape"
+        );
+        assert_eq!(fixture.store.get(id).expect("get"), before);
+        let undone = fixture.store.undo(id).expect("undo");
+        assert_eq!(fixture.target(&undone).keys[0].shapes.len(), 1);
+    }
+
+    #[test]
+    fn uniform_text_scale_and_path_handles_transform() {
+        let fixture = Fixture::new("transform-text-path");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, text("Hi", 12.0))
+            .expect("text");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, curve_path(false))
+            .expect("path");
+        let pivot = Point { x: 0.0, y: 0.0 };
+        let edited = fixture
+            .store
+            .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 1], pivot, 0.0, 0.0, 2.0, 2.0, 0.0)
+            .expect("scale");
+        let shapes = &fixture.target(&edited).keys[0].shapes;
+        assert!(matches!(&shapes[0], Shape::Text { x, y, size, .. } if *x == 600.0 && *y == 20.0 && *size == 24.0));
+        let Shape::Path { nodes, width, .. } = &shapes[1] else {
+            panic!("expected path");
+        };
+        assert_eq!(*width, 1.0);
+        assert_eq!(nodes[0].point, Point { x: 0.0, y: 0.0 });
+        assert_eq!(nodes[0].handle_out, Some(Point { x: 0.0, y: 200.0 }));
+        assert_eq!(nodes[1].handle_in, Some(Point { x: 200.0, y: 200.0 }));
+    }
+
+    #[test]
+    fn transform_on_a_held_frame_materializes_a_keyframe() {
+        let fixture = Fixture::new("transform-held");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(10.0, 10.0))
+            .expect("draw");
+        for _ in 0..5 {
+            fixture
+                .store
+                .insert_frame(id, &fixture.scene, &fixture.layer, 0)
+                .expect("extend");
+        }
+        let pivot = Point { x: 0.0, y: 0.0 };
+        let edited = fixture
+            .store
+            .transform_shapes(id, &fixture.scene, &fixture.layer, 5, vec![0], pivot, 3.0, 4.0, 1.0, 1.0, 0.0)
+            .expect("move held");
+        let target = fixture.target(&edited);
+        assert_eq!(target.keys.len(), 2);
+        assert_eq!(target.keys[1].frame, 5);
+        assert!(matches!(&target.keys[0].shapes[0], Shape::Rect { x, y, .. } if *x == 10.0 && *y == 10.0));
+        assert!(matches!(&target.keys[1].shapes[0], Shape::Rect { x, y, .. } if *x == 13.0 && *y == 14.0));
+    }
+
+    #[test]
+    fn rejected_transform_on_a_held_frame_does_not_materialize() {
+        let fixture = Fixture::new("transform-held-reject");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, text("Hi", 12.0))
+            .expect("draw");
+        for _ in 0..5 {
+            fixture
+                .store
+                .insert_frame(id, &fixture.scene, &fixture.layer, 0)
+                .expect("extend");
+        }
+        let before = fixture.store.get(id).expect("get");
+        let pivot = Point { x: 0.0, y: 0.0 };
+        assert_eq!(
+            fixture
+                .store
+                .transform_shapes(id, &fixture.scene, &fixture.layer, 5, vec![0], pivot, 0.0, 0.0, 1.0, 1.0, 45.0)
+                .expect_err("text rotation"),
+            "text cannot be rotated"
+        );
+        assert_eq!(fixture.store.get(id).expect("get"), before);
+        assert_eq!(fixture.target(&before).keys.len(), 1);
+    }
+
+    #[test]
+    fn locked_layers_reject_every_shape_transform() {
+        let fixture = Fixture::new("transform-locked");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(10.0, 10.0))
+            .expect("draw");
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .expect("lock");
+        let pivot = Point { x: 0.0, y: 0.0 };
+        assert_eq!(
+            fixture
+                .store
+                .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], pivot, 1.0, 1.0, 1.0, 1.0, 0.0)
+                .expect_err("locked move"),
+            "layer is locked"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .reorder_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], true)
+                .expect_err("locked reorder"),
+            "layer is locked"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .delete_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0])
+                .expect_err("locked delete"),
+            "layer is locked"
+        );
+    }
+
+    #[test]
+    fn reorder_shapes_changes_stacking_in_one_undo_step() {
+        let fixture = Fixture::new("transform-reorder");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 0.0))
+            .expect("first");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(100.0, 0.0))
+            .expect("second");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(200.0, 0.0))
+            .expect("third");
+        let front = fixture
+            .store
+            .reorder_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], true)
+            .expect("front");
+        let xs: Vec<f64> = fixture
+            .target(&front)
+            .keys[0]
+            .shapes
+            .iter()
+            .map(|shape| match shape {
+                Shape::Rect { x, .. } => *x,
+                _ => panic!("expected rect"),
+            })
+            .collect();
+        assert_eq!(xs, vec![100.0, 200.0, 0.0]);
+        let back = fixture
+            .store
+            .reorder_shapes(id, &fixture.scene, &fixture.layer, 0, vec![1, 2], false)
+            .expect("back");
+        let xs: Vec<f64> = fixture
+            .target(&back)
+            .keys[0]
+            .shapes
+            .iter()
+            .map(|shape| match shape {
+                Shape::Rect { x, .. } => *x,
+                _ => panic!("expected rect"),
+            })
+            .collect();
+        assert_eq!(xs, vec![200.0, 0.0, 100.0]);
+        assert_eq!(
+            fixture
+                .store
+                .reorder_shapes(id, &fixture.scene, &fixture.layer, 0, vec![9], true)
+                .expect_err("index"),
+            "unknown shape"
+        );
+    }
+
+    #[test]
+    fn delete_shapes_removes_all_selected_in_one_undo_step() {
+        let fixture = Fixture::new("transform-delete");
+        let id = &fixture.doc.id;
+        for x in [0.0, 100.0, 200.0] {
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(x, 0.0))
+                .expect("draw");
+        }
+        let before = fixture.store.get(id).expect("get");
+        let edited = fixture
+            .store
+            .delete_shapes(id, &fixture.scene, &fixture.layer, 0, vec![2, 0])
+            .expect("delete");
+        let shapes = &fixture.target(&edited).keys[0].shapes;
+        assert_eq!(shapes.len(), 1);
+        assert!(matches!(&shapes[0], Shape::Rect { x, .. } if *x == 100.0));
+        assert_eq!(fixture.store.undo(id).expect("undo"), before);
+        assert_eq!(
+            fixture
+                .store
+                .delete_shapes(id, &fixture.scene, &fixture.layer, 0, vec![4])
+                .expect_err("index"),
+            "unknown shape"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .delete_shapes(id, &fixture.scene, &fixture.layer, 0, Vec::new())
+                .expect_err("empty"),
+            "no shapes selected"
+        );
+    }
+
+    #[test]
+    fn duplicate_layer_copies_content_with_a_fresh_id() {
+        let fixture = Fixture::new("dup-layer");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(1.0))
+            .expect("first");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 4, stroke(2.0))
+            .expect("second");
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, None, Some(0.5))
+            .expect("opacity");
+        let before = fixture.store.get(id).expect("get");
+        let edited = fixture
+            .store
+            .duplicate_layer(id, &fixture.scene, &fixture.layer)
+            .expect("duplicate");
+        let scene = &edited.scenes[0];
+        assert_eq!(scene.layers.len(), 2);
+        let source = &scene.layers[0];
+        let copy = &scene.layers[1];
+        assert_ne!(copy.id, source.id);
+        assert_eq!(copy.name, "Layer 1 copy");
+        assert_eq!(copy.visible, source.visible);
+        assert_eq!(copy.locked, source.locked);
+        assert_eq!(copy.opacity, 0.5);
+        assert_eq!(copy.length, source.length);
+        assert_eq!(copy.keys, source.keys);
+        assert_eq!(source, fixture.target(&before));
+        fixture
+            .store
+            .draw(id, &fixture.scene, &copy.id, 0, stroke(3.0))
+            .expect("draw copy");
+        let after = fixture.store.get(id).expect("get");
+        assert_eq!(after.scenes[0].layers[0].keys[0].shapes.len(), 1);
+        assert_eq!(after.scenes[0].layers[1].keys[0].shapes.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_layer_lands_after_the_source_and_is_one_undo_step() {
+        let fixture = Fixture::new("dup-layer-position");
+        let id = &fixture.doc.id;
+        let top = fixture
+            .store
+            .add_layer(id, &fixture.scene, "Top".to_string())
+            .expect("add");
+        let top_id = top.scenes[0].layers[0].id.clone();
+        let before = fixture.store.get(id).expect("get");
+        let edited = fixture
+            .store
+            .duplicate_layer(id, &fixture.scene, &fixture.layer)
+            .expect("duplicate");
+        let names: Vec<String> = edited.scenes[0]
+            .layers
+            .iter()
+            .map(|layer| layer.name.clone())
+            .collect();
+        assert_eq!(names, vec!["Top", "Layer 1", "Layer 1 copy"]);
+        let edited = fixture
+            .store
+            .duplicate_layer(id, &fixture.scene, &top_id)
+            .expect("duplicate top");
+        let names: Vec<String> = edited.scenes[0]
+            .layers
+            .iter()
+            .map(|layer| layer.name.clone())
+            .collect();
+        assert_eq!(names, vec!["Top", "Top copy", "Layer 1", "Layer 1 copy"]);
+        let mut ids: Vec<String> = edited.scenes[0]
+            .layers
+            .iter()
+            .map(|layer| layer.id.clone())
+            .collect();
+        let count = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), count);
+        let undone = fixture.store.undo(id).expect("undo top");
+        assert_eq!(undone.scenes[0].layers.len(), 3);
+        assert_eq!(fixture.store.undo(id).expect("undo"), before);
+    }
+
+    #[test]
+    fn duplicate_layer_is_allowed_on_a_locked_layer() {
+        let fixture = Fixture::new("dup-layer-locked");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(1.0))
+            .expect("draw");
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .expect("lock");
+        let before = fixture.store.get(id).expect("get");
+        let edited = fixture
+            .store
+            .duplicate_layer(id, &fixture.scene, &fixture.layer)
+            .expect("duplicate locked");
+        assert_eq!(edited.scenes[0].layers.len(), 2);
+        assert!(edited.scenes[0].layers[1].locked);
+        assert_eq!(&edited.scenes[0].layers[0], fixture.target(&before));
+        assert_eq!(fixture.store.undo(id).expect("undo"), before);
+    }
+
+    #[test]
+    fn duplicate_layer_rejects_unknown_targets() {
+        let fixture = Fixture::new("dup-layer-unknown");
+        let id = &fixture.doc.id;
+        let before = fixture.store.get(id).expect("get");
+        assert_eq!(
+            fixture
+                .store
+                .duplicate_layer(id, &fixture.scene, "missing")
+                .expect_err("layer"),
+            "unknown layer"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .duplicate_layer(id, "missing", &fixture.layer)
+                .expect_err("scene"),
+            "unknown scene"
+        );
+        assert_eq!(fixture.store.get(id).expect("get"), before);
+        assert_eq!(
+            fixture.store.undo(id).expect_err("undo"),
+            "nothing to undo"
+        );
+    }
+}
+
+impl DocStore {
+    pub fn duplicate_layer(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+    ) -> Result<Document, String> {
+        self.edit(id, |doc| {
+            let index = doc.scene_index(scene_id)?;
+            let scene = &mut doc.scenes[index];
+            let at = scene.layer_index(layer_id)?;
+            let mut copy = scene.layers[at].clone();
+            copy.id = new_id("l");
+            copy.name = format!("{} copy", copy.name);
+            scene.layers.insert(at + 1, copy);
+            Ok(())
+        })
+    }
+}
+
+#[tauri::command]
+pub fn doc_duplicate_layer(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+) -> Result<Document, String> {
+    store.duplicate_layer(&id, &scene_id, &layer_id)
 }

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
+use crate::entitlement::cache_public_key;
 use crate::tokens::{refresh_with, TokenCache};
 use crate::BASE_URL;
 
@@ -55,10 +56,13 @@ pub async fn auth_poll(device_code: String) -> Result<serde_json::Value, String>
 
 #[tauri::command]
 pub async fn auth_refresh(
+    app: AppHandle,
     cache: State<'_, TokenCache>,
     refresh_token: String,
 ) -> Result<serde_json::Value, String> {
-    refresh_with(&cache, &refresh_token).await
+    let value = refresh_with(&cache, &refresh_token).await?;
+    let _ = cache_public_key(&app).await;
+    Ok(value)
 }
 
 #[tauri::command]

@@ -1,8 +1,11 @@
 mod auth;
 mod document;
+mod entitlement;
+mod export;
 mod frames;
 mod path;
 mod prefs;
+mod templates;
 mod tokens;
 mod updater;
 
@@ -51,6 +54,8 @@ pub fn run() {
             tokens::token_save,
             tokens::token_load,
             tokens::token_clear,
+            entitlement::entitlement_check,
+            entitlement::entitlement_refresh_key,
             prefs::prefs_get,
             prefs::prefs_put,
             updater::check_for_update,
@@ -72,6 +77,7 @@ pub fn run() {
             document::doc_set_layer,
             document::doc_remove_layer,
             document::doc_move_layer,
+            document::doc_duplicate_layer,
             document::doc_insert_frame,
             document::doc_keyframe,
             document::doc_remove_frame,
@@ -82,6 +88,9 @@ pub fn run() {
             document::doc_paint_shape,
             document::doc_replace_shape,
             document::doc_delete_shape,
+            document::doc_transform_shapes,
+            document::doc_reorder_shapes,
+            document::doc_delete_shapes,
             document::doc_set_transform,
             document::doc_undo,
             document::doc_redo,
@@ -92,6 +101,10 @@ pub fn run() {
             frames::doc_paste_frames,
             frames::doc_duplicate_frames,
             frames::doc_move_frames,
+            templates::templates_catalog,
+            templates::templates_preview,
+            templates::templates_open,
+            export::export_web,
             app_version
         ])
         .on_window_event(|window, event| {
