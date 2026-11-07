@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import ProjectPreview from "@/app/hub/ProjectPreview";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -111,6 +112,7 @@ export default function Projects({ onOpened }: { onOpened: (id: string) => void 
               onClick={() => void openProject(project.id)}
               className="flex cursor-pointer items-center gap-4 p-4 transition-colors hover:bg-accent hover:text-accent-foreground"
             >
+              <ProjectPreview project={project} />
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-medium">
                   {project.name}
