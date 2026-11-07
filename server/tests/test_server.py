@@ -263,6 +263,37 @@ def test_preference_size_limit(client, admin_client, monkeypatch):
     admin_client.put("/admin/policy", json={"key": "preference_max_bytes", "value": "262144"})
 
 
+def test_preferences_are_isolated_per_account(client, monkeypatch):
+    heidi = auth(sign_in(client, monkeypatch, 108, "heidi")["access_token"])
+    ivan = auth(sign_in(client, monkeypatch, 109, "ivan")["access_token"])
+    assert client.put(
+        "/preferences",
+        headers=heidi,
+        json={"base_revision": 0, "data": {"theme": "dark", "login": "heidi"}},
+    ).json() == {"revision": 1}
+    assert client.get("/preferences", headers=ivan).json() == {"revision": 0, "data": {}}
+    assert client.put(
+        "/preferences",
+        headers=ivan,
+        json={"base_revision": 0, "data": {"theme": "light", "login": "ivan"}},
+    ).json() == {"revision": 1}
+    assert client.get("/preferences", headers=heidi).json() == {
+        "revision": 1,
+        "data": {"theme": "dark", "login": "heidi"},
+    }
+    assert client.get("/preferences", headers=ivan).json() == {
+        "revision": 1,
+        "data": {"theme": "light", "login": "ivan"},
+    }
+    stolen = client.put(
+        "/preferences",
+        headers=ivan,
+        json={"base_revision": 1, "data": {"theme": "dark", "login": "heidi"}},
+    )
+    assert stolen.status_code == 200
+    assert client.get("/preferences", headers=heidi).json()["data"]["login"] == "heidi"
+
+
 def test_access_token_required(client, monkeypatch):
     assert client.get("/preferences").status_code == 401
     assert client.get("/preferences", headers=auth("garbage")).status_code == 401
