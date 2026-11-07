@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, vi } from "vitest";
+import { webcrypto } from "node:crypto";
 import { cleanup } from "@testing-library/react";
 import { installBackend, resetBackend } from "./backend";
 
@@ -12,6 +13,7 @@ class Observer {
 }
 
 vi.stubGlobal("ResizeObserver", Observer);
+vi.stubGlobal("crypto", webcrypto);
 vi.stubGlobal("IntersectionObserver", Observer);
 vi.stubGlobal("matchMedia", (query: string) => ({
   matches: false,

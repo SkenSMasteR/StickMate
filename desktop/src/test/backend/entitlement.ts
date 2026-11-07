@@ -1,4 +1,3 @@
-import { createPublicKey, verify } from "node:crypto";
 import type { MockExtension } from "../backend";
 
 export const keyServer = {
@@ -40,6 +39,28 @@ interface Status {
 
 const invalid: Status = { valid: false, account_id: null, expires_at: null };
 
+function bytes(value: string): Uint8Array<ArrayBuffer> {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64 + "=".repeat((4 - (base64.length % 4)) % 4));
+  return Uint8Array.from(raw, (char) => char.charCodeAt(0));
+}
+
+async function signed(token: string, pem: string): Promise<boolean> {
+  const parts = token.split(".");
+  if (parts.length !== 2) {
+    return false;
+  }
+  const raw = bytes(pem.replace(/-----[^-]+-----/g, "").replace(/\s/g, ""));
+  const key = await crypto.subtle.importKey(
+    "raw",
+    raw.slice(-32),
+    { name: "Ed25519" },
+    false,
+    ["verify"]
+  );
+  return crypto.subtle.verify({ name: "Ed25519" }, key, bytes(parts[1]), bytes(parts[0]));
+}
+
 export const handlers: MockExtension = () => ({
   entitlement_refresh_key: () => {
     if (keyServer.fails || !keyServer.pem) {
@@ -48,23 +69,17 @@ export const handlers: MockExtension = () => ({
     keyCache.pem = keyServer.pem;
     return null;
   },
-  entitlement_check: (): Status => {
+  entitlement_check: async (): Promise<Status> => {
     const token = storedTokens().get("offline");
     if (!token || !keyCache.pem) {
       return invalid;
     }
-    const parts = token.split(".");
-    if (parts.length !== 2) {
-      return invalid;
-    }
-    const body = Buffer.from(parts[0], "base64url");
-    const signature = Buffer.from(parts[1], "base64url");
     let payload: { type?: unknown; exp?: unknown; account_id?: unknown };
     try {
-      if (!verify(null, body, createPublicKey(keyCache.pem), signature)) {
+      if (!(await signed(token, keyCache.pem))) {
         return invalid;
       }
-      payload = JSON.parse(body.toString("utf8"));
+      payload = JSON.parse(new TextDecoder().decode(bytes(token.split(".")[0])));
     } catch {
       return invalid;
     }
