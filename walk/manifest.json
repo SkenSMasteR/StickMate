@@ -1,0 +1,12 @@
+{
+  "id": "walk",
+  "name": "Walk cycle",
+  "description": "Head, arms, body and legs layers ready to pose.",
+  "preview": "preview.svg",
+  "project": "project.json",
+  "version": "1.0.0",
+  "min_app_version": "0.1.0",
+  "width": 1080,
+  "height": 1080,
+  "fps": 12
+}

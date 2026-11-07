@@ -1,0 +1,84 @@
+{
+  "id": "d0",
+  "name": "Walk cycle",
+  "width": 1080,
+  "height": 1080,
+  "fps": 12,
+  "background": "#ffffff",
+  "scenes": [
+    {
+      "id": "s0",
+      "name": "Scene 1",
+      "layers": [
+        {
+          "id": "l0",
+          "name": "Head",
+          "visible": true,
+          "locked": false,
+          "opacity": 1,
+          "length": 1,
+          "keys": [
+            {
+              "frame": 0,
+              "shapes": [],
+              "transform": { "x": 0, "y": 0, "rotation": 0, "scale": 1, "opacity": 1 },
+              "tween": false,
+              "label": null
+            }
+          ]
+        },
+        {
+          "id": "l1",
+          "name": "Arms",
+          "visible": true,
+          "locked": false,
+          "opacity": 1,
+          "length": 1,
+          "keys": [
+            {
+              "frame": 0,
+              "shapes": [],
+              "transform": { "x": 0, "y": 0, "rotation": 0, "scale": 1, "opacity": 1 },
+              "tween": false,
+              "label": null
+            }
+          ]
+        },
+        {
+          "id": "l2",
+          "name": "Body",
+          "visible": true,
+          "locked": false,
+          "opacity": 1,
+          "length": 1,
+          "keys": [
+            {
+              "frame": 0,
+              "shapes": [],
+              "transform": { "x": 0, "y": 0, "rotation": 0, "scale": 1, "opacity": 1 },
+              "tween": false,
+              "label": null
+            }
+          ]
+        },
+        {
+          "id": "l3",
+          "name": "Legs",
+          "visible": true,
+          "locked": false,
+          "opacity": 1,
+          "length": 1,
+          "keys": [
+            {
+              "frame": 0,
+              "shapes": [],
+              "transform": { "x": 0, "y": 0, "rotation": 0, "scale": 1, "opacity": 1 },
+              "tween": false,
+              "label": null
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
