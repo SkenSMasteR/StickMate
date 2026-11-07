@@ -7,7 +7,7 @@ from contextlib import closing
 from urllib.parse import urlencode
 
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel
 
@@ -61,17 +61,37 @@ def issue_tokens(conn, account_id):
     }
 
 
+def enforce_rate_limit(bucket, subject, default):
+    with closing(core.db()) as conn, conn:
+        limit = core.get_policy_int(conn, bucket + "_rate_limit", default)
+        wait = core.rate_limit(conn, bucket, subject, limit)
+    if wait:
+        raise HTTPException(
+            status_code=429,
+            detail="rate limit exceeded",
+            headers={"Retry-After": str(wait)},
+        )
+
+
+def auth_rate_limit(request: Request):
+    peer = request.client.host if request.client else "unknown"
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if peer in core.TRUSTED_PROXIES and forwarded:
+        peer = forwarded.split(",")[-1].strip()
+    enforce_rate_limit("auth", peer, 300)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "version": core.read_version()}
 
 
-@app.get("/auth/public-key")
+@app.get("/auth/public-key", dependencies=[Depends(auth_rate_limit)])
 def public_key():
     return {"public_key": core.public_pem()}
 
 
-@app.post("/auth/device/start")
+@app.post("/auth/device/start", dependencies=[Depends(auth_rate_limit)])
 def device_start():
     device_code = secrets.token_urlsafe(32)
     user_code = "".join(secrets.choice(string.ascii_uppercase) for _ in range(8))
@@ -89,7 +109,7 @@ def device_start():
     }
 
 
-@app.get("/auth/verify", response_class=HTMLResponse)
+@app.get("/auth/verify", response_class=HTMLResponse, dependencies=[Depends(auth_rate_limit)])
 def verify_page(user_code: str = ""):
     safe_code = html.escape(user_code)
     return (
@@ -100,7 +120,7 @@ def verify_page(user_code: str = ""):
     )
 
 
-@app.get("/auth/github/start")
+@app.get("/auth/github/start", dependencies=[Depends(auth_rate_limit)])
 def github_start(user_code: str = ""):
     if not core.GITHUB_CLIENT_ID:
         return PlainTextResponse("GitHub sign in is not configured", status_code=400)
@@ -127,7 +147,7 @@ def github_start(user_code: str = ""):
     return RedirectResponse("https://github.com/login/oauth/authorize?" + params, status_code=302)
 
 
-@app.get("/auth/github/callback")
+@app.get("/auth/github/callback", dependencies=[Depends(auth_rate_limit)])
 def github_callback(code: str = "", state: str = ""):
     try:
         with closing(core.db()) as conn, conn:
@@ -172,7 +192,7 @@ def github_callback(code: str = "", state: str = ""):
     )
 
 
-@app.post("/auth/device/poll")
+@app.post("/auth/device/poll", dependencies=[Depends(auth_rate_limit)])
 def device_poll(body: DevicePollBody):
     with closing(core.db()) as conn, conn:
         row = conn.execute(
@@ -199,7 +219,7 @@ def device_poll(body: DevicePollBody):
         return tokens
 
 
-@app.post("/auth/refresh")
+@app.post("/auth/refresh", dependencies=[Depends(auth_rate_limit)])
 def refresh(body: RefreshBody):
     token_hash = hashlib.sha256(body.refresh_token.encode()).hexdigest()
     with closing(core.db()) as conn, conn:
@@ -225,7 +245,7 @@ def refresh(body: RefreshBody):
         return tokens
 
 
-@app.post("/auth/logout")
+@app.post("/auth/logout", dependencies=[Depends(auth_rate_limit)])
 def logout(body: RefreshBody):
     token_hash = hashlib.sha256(body.refresh_token.encode()).hexdigest()
     with closing(core.db()) as conn, conn:
@@ -235,6 +255,7 @@ def logout(body: RefreshBody):
 
 @app.get("/preferences")
 def get_preferences(account=Depends(current_account)):
+    enforce_rate_limit("sync", str(account["id"]), 120)
     with closing(core.db()) as conn, conn:
         conn.execute(
             "INSERT OR IGNORE INTO preferences(account_id,revision,data,updated_at) VALUES(?,0,'{}',?)",
@@ -249,6 +270,7 @@ def get_preferences(account=Depends(current_account)):
 
 @app.put("/preferences")
 def put_preferences(body: PreferencesPutBody, account=Depends(current_account)):
+    enforce_rate_limit("sync", str(account["id"]), 120)
     serialized = json.dumps(body.data, separators=(",", ":"))
     with closing(core.db()) as conn, conn:
         max_bytes = core.get_policy_int(conn, "preference_max_bytes", 262144)

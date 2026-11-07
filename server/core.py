@@ -23,10 +23,16 @@ GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
 GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 ADMIN_TOKEN = os.environ.get("STICKMATE_ADMIN_TOKEN", "")
 GITHUB_API = os.environ.get("STICKMATE_GITHUB_API", "https://api.github.com").rstrip("/")
+TRUSTED_PROXIES = {
+    value.strip()
+    for value in os.environ.get("STICKMATE_TRUSTED_PROXIES", "").split(",")
+    if value.strip()
+}
 
 ACCESS_TTL = 3600
 REFRESH_TTL = 30 * 86400
 DEVICE_TTL = 600
+RATE_WINDOW = 60
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts(
@@ -80,6 +86,13 @@ CREATE TABLE IF NOT EXISTS signing_key(
     private_pem TEXT,
     public_pem TEXT
 );
+CREATE TABLE IF NOT EXISTS rate_limits(
+    bucket TEXT,
+    subject TEXT,
+    window_start INTEGER,
+    count INTEGER,
+    PRIMARY KEY(bucket, subject)
+);
 """
 
 _PRIVATE_KEY = None
@@ -120,6 +133,8 @@ def init_db():
             conn.executescript(SCHEMA)
             conn.execute("INSERT OR IGNORE INTO policy(key,value) VALUES('offline_grace_days','30')")
             conn.execute("INSERT OR IGNORE INTO policy(key,value) VALUES('preference_max_bytes','262144')")
+            conn.execute("INSERT OR IGNORE INTO policy(key,value) VALUES('auth_rate_limit','300')")
+            conn.execute("INSERT OR IGNORE INTO policy(key,value) VALUES('sync_rate_limit','120')")
             columns = [row["name"] for row in conn.execute("PRAGMA table_info(sessions)")]
             if "expires_at" not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN expires_at TEXT")
@@ -143,7 +158,7 @@ def init_db():
                     "INSERT INTO signing_key(id,private_pem,public_pem) VALUES(1,?,?)",
                     (private_pem, public_pem),
                 )
-            conn.execute("PRAGMA user_version=1")
+            conn.execute("PRAGMA user_version=2")
     finally:
         conn.close()
     _load_keys()
@@ -241,6 +256,29 @@ def audit(conn, actor, action, detail=""):
         "INSERT INTO audit(at,actor,action,detail) VALUES(?,?,?,?)",
         (now_iso(), actor, action, detail),
     )
+
+
+def rate_limit(conn, bucket, subject, limit):
+    now = int(time.time())
+    row = conn.execute(
+        "SELECT window_start, count FROM rate_limits WHERE bucket=? AND subject=?",
+        (bucket, subject),
+    ).fetchone()
+    if row is None or now - row["window_start"] >= RATE_WINDOW:
+        conn.execute(
+            "INSERT INTO rate_limits(bucket,subject,window_start,count) VALUES(?,?,?,1) "
+            "ON CONFLICT(bucket,subject) DO UPDATE SET window_start=excluded.window_start, count=1",
+            (bucket, subject, now),
+        )
+        conn.execute("DELETE FROM rate_limits WHERE window_start < ?", (now - RATE_WINDOW * 60,))
+        return 0
+    if row["count"] >= limit:
+        return row["window_start"] + RATE_WINDOW - now
+    conn.execute(
+        "UPDATE rate_limits SET count=count+1 WHERE bucket=? AND subject=?",
+        (bucket, subject),
+    )
+    return 0
 
 
 def check_admin_token(header_value):

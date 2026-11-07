@@ -41,6 +41,17 @@ def admin_client():
         yield c
 
 
+@pytest.fixture(scope="module", autouse=True)
+def unthrottled(admin_client):
+    admin_client.put("/admin/policy", json={"key": "auth_rate_limit", "value": "10000"})
+    admin_client.put("/admin/policy", json={"key": "sync_rate_limit", "value": "100000"})
+    yield
+
+
+def set_rate_limit(admin_client, key, value):
+    admin_client.put("/admin/policy", json={"key": key, "value": str(value)})
+
+
 def sign_in(client, monkeypatch, github_id, login):
     monkeypatch.setattr(core, "exchange_code", lambda code: "gh-token-" + code)
     monkeypatch.setattr(core, "fetch_user", lambda token: {"id": github_id, "login": login})
@@ -264,8 +275,8 @@ def test_preference_size_limit(client, admin_client, monkeypatch):
 
 
 def test_preferences_are_isolated_per_account(client, monkeypatch):
-    heidi = auth(sign_in(client, monkeypatch, 108, "heidi")["access_token"])
-    ivan = auth(sign_in(client, monkeypatch, 109, "ivan")["access_token"])
+    heidi = auth(sign_in(client, monkeypatch, 112, "heidi")["access_token"])
+    ivan = auth(sign_in(client, monkeypatch, 113, "ivan")["access_token"])
     assert client.put(
         "/preferences",
         headers=heidi,
@@ -391,3 +402,138 @@ def test_admin_status_and_audit(admin_client):
     assert "suspend" in actions
     assert "policy_update" in actions
     assert all(set(row) == {"id", "at", "actor", "action", "detail"} for row in rows)
+
+def test_auth_endpoints_are_rate_limited(admin_client):
+    set_rate_limit(admin_client, "auth_rate_limit", 3)
+    try:
+        with TestClient(app_module.app, client=("203.0.113.20", 40000)) as probe:
+            codes = [probe.post("/auth/device/start").status_code for _ in range(4)]
+            assert codes == [200, 200, 200, 429]
+            blocked = probe.post("/auth/device/start")
+            assert blocked.json() == {"detail": "rate limit exceeded"}
+            assert 0 < int(blocked.headers["retry-after"]) <= core.RATE_WINDOW
+            assert probe.get("/health").status_code == 200
+    finally:
+        set_rate_limit(admin_client, "auth_rate_limit", 10000)
+
+
+def test_auth_rate_limit_is_per_client_address(admin_client):
+    set_rate_limit(admin_client, "auth_rate_limit", 2)
+    try:
+        with TestClient(app_module.app, client=("203.0.113.21", 40000)) as first:
+            with TestClient(app_module.app, client=("203.0.113.22", 40000)) as second:
+                assert first.post("/auth/device/start").status_code == 200
+                assert first.post("/auth/device/start").status_code == 200
+                assert first.post("/auth/device/start").status_code == 429
+                assert second.post("/auth/device/start").status_code == 200
+                assert second.post("/auth/device/start").status_code == 200
+                assert second.post("/auth/device/start").status_code == 429
+    finally:
+        set_rate_limit(admin_client, "auth_rate_limit", 10000)
+
+
+def test_forwarded_for_is_ignored_unless_the_peer_is_trusted(admin_client, monkeypatch):
+    set_rate_limit(admin_client, "auth_rate_limit", 1)
+    monkeypatch.setattr(core, "TRUSTED_PROXIES", {"198.51.100.7"})
+    try:
+        with TestClient(app_module.app, client=("203.0.113.4", 40000)) as stranger:
+            first = stranger.post("/auth/device/start", headers={"X-Forwarded-For": "192.0.2.1"})
+            second = stranger.post("/auth/device/start", headers={"X-Forwarded-For": "192.0.2.2"})
+            assert first.status_code == 200
+            assert second.status_code == 429
+        with TestClient(app_module.app, client=("198.51.100.7", 40000)) as proxy:
+            first = proxy.post("/auth/device/start", headers={"X-Forwarded-For": "192.0.2.1"})
+            second = proxy.post("/auth/device/start", headers={"X-Forwarded-For": "192.0.2.2"})
+            third = proxy.post("/auth/device/start", headers={"X-Forwarded-For": "192.0.2.2"})
+            assert first.status_code == 200
+            assert second.status_code == 200
+            assert third.status_code == 429
+    finally:
+        set_rate_limit(admin_client, "auth_rate_limit", 10000)
+
+
+def test_preference_rate_limit_is_per_account(client, admin_client, monkeypatch):
+    set_rate_limit(admin_client, "sync_rate_limit", 2)
+    try:
+        judy = auth(sign_in(client, monkeypatch, 114, "judy")["access_token"])
+        ken = auth(sign_in(client, monkeypatch, 115, "ken")["access_token"])
+        assert client.get("/preferences", headers=judy).status_code == 200
+        assert client.get("/preferences", headers=judy).status_code == 200
+        assert client.get("/preferences", headers=judy).status_code == 429
+        assert client.get("/preferences", headers=ken).status_code == 200
+        put = client.put(
+            "/preferences",
+            headers=ken,
+            json={"base_revision": 0, "data": {"theme": "dark"}},
+        )
+        assert put.status_code == 200
+        blocked = client.put(
+            "/preferences",
+            headers=ken,
+            json={"base_revision": 1, "data": {"theme": "light"}},
+        )
+        assert blocked.status_code == 429
+    finally:
+        set_rate_limit(admin_client, "sync_rate_limit", 100000)
+    assert client.get("/preferences", headers=ken).json()["data"] == {"theme": "dark"}
+
+
+def test_rate_limit_window_resets(monkeypatch):
+    clock = {"now": 1000}
+    monkeypatch.setattr(core.time, "time", lambda: clock["now"])
+    with closing(core.db()) as conn, conn:
+        assert core.rate_limit(conn, "window-test", "subject", 2) == 0
+        assert core.rate_limit(conn, "window-test", "subject", 2) == 0
+        assert core.rate_limit(conn, "window-test", "subject", 2) == core.RATE_WINDOW
+        clock["now"] += core.RATE_WINDOW
+        assert core.rate_limit(conn, "window-test", "subject", 2) == 0
+        assert core.rate_limit(conn, "window-test", "other", 2) == 0
+
+
+def test_rate_limit_policy_is_validated(admin_client):
+    assert admin_client.put("/admin/policy", json={"key": "auth_rate_limit", "value": "0"}).status_code == 400
+    assert admin_client.put("/admin/policy", json={"key": "sync_rate_limit", "value": "abc"}).status_code == 400
+    assert admin_client.put("/admin/policy", json={"key": "sync_rate_limit", "value": "100001"}).status_code == 400
+    policy = admin_client.get("/admin/policy").json()
+    assert policy["auth_rate_limit"] == "10000"
+    assert policy["sync_rate_limit"] == "100000"
+
+
+def test_legacy_database_migrates_without_losing_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(core, "DB_PATH", str(tmp_path / "legacy.db"))
+    try:
+        core.init_db()
+        with closing(core.db()) as conn, conn:
+            conn.execute("DROP TABLE rate_limits")
+            conn.execute("DELETE FROM policy WHERE key IN ('auth_rate_limit','sync_rate_limit')")
+            conn.execute("ALTER TABLE sessions DROP COLUMN expires_at")
+            conn.execute(
+                "INSERT INTO accounts(github_id,login,created_at,suspended) VALUES(900,'legacy',?,0)",
+                (core.now_iso(),),
+            )
+            conn.execute(
+                "INSERT INTO preferences(account_id,revision,data,updated_at) VALUES(1,4,'{\"theme\":\"dark\"}',?)",
+                (core.now_iso(),),
+            )
+            conn.execute("PRAGMA user_version=1")
+        core.init_db()
+        with closing(core.db()) as conn, conn:
+            policy = core.get_policy(conn)
+            assert policy["auth_rate_limit"] == "300"
+            assert policy["sync_rate_limit"] == "120"
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+            assert conn.execute("SELECT login FROM accounts WHERE github_id=900").fetchone()["login"] == "legacy"
+            row = conn.execute("SELECT revision, data FROM preferences WHERE account_id=1").fetchone()
+            assert row["revision"] == 4
+            assert row["data"] == '{"theme":"dark"}'
+            assert core.rate_limit(conn, "auth", "203.0.113.30", 1) == 0
+            assert core.rate_limit(conn, "auth", "203.0.113.30", 1) == core.RATE_WINDOW
+            token = core.create_session(conn, 1)
+            digest = hashlib.sha256(token.encode()).hexdigest()
+            session = conn.execute(
+                "SELECT expires_at FROM sessions WHERE refresh_hash=?", (digest,)
+            ).fetchone()
+            assert not core.is_expired(session["expires_at"])
+    finally:
+        monkeypatch.undo()
+        core._load_keys()

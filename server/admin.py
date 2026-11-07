@@ -15,6 +15,8 @@ app = FastAPI(title="StickMate Admin")
 POLICY_LIMITS = {
     "offline_grace_days": (1, 3650),
     "preference_max_bytes": (1, 10485760),
+    "auth_rate_limit": (1, 10000),
+    "sync_rate_limit": (1, 100000),
 }
 
 PANEL_HTML = """<!doctype html>
@@ -42,14 +44,30 @@ label{margin-right:12px}
 <section><h2>Status</h2><pre id="status"></pre></section>
 <section><h2>Accounts</h2><table id="accounts"></table></section>
 <section><h2>Policy</h2>
-<label>offline_grace_days <input id="grace" type="number" min="1"></label>
-<label>preference_max_bytes <input id="maxbytes" type="number" min="1"></label>
+<div id="policy"></div>
 <button onclick="savePolicy()">Save</button> <span id="policymsg"></span>
 </section>
 <section><button onclick="loadAudit()">Load audit</button><pre id="audit"></pre></section>
 </div>
 <script>
 let token = "";
+const POLICY_KEYS = [
+  ["offline_grace_days", 1, 3650],
+  ["preference_max_bytes", 1, 10485760],
+  ["auth_rate_limit", 1, 10000],
+  ["sync_rate_limit", 1, 100000]
+];
+for (const [key, low, high] of POLICY_KEYS) {
+  const label = document.createElement("label");
+  label.textContent = key + " ";
+  const input = document.createElement("input");
+  input.type = "number";
+  input.id = "policy-" + key;
+  input.min = low;
+  input.max = high;
+  label.appendChild(input);
+  document.getElementById("policy").appendChild(label);
+}
 async function api(path, opts) {
   opts = opts || {};
   opts.headers = Object.assign({"Authorization": "Bearer " + token}, opts.headers || {});
@@ -94,19 +112,16 @@ async function refresh() {
     t.appendChild(tr);
   }
   const p = await api("/admin/policy");
-  document.getElementById("grace").value = p.offline_grace_days;
-  document.getElementById("maxbytes").value = p.preference_max_bytes;
+  for (const [key] of POLICY_KEYS) {
+    document.getElementById("policy-" + key).value = p[key];
+  }
 }
 async function savePolicy() {
-  const items = [
-    ["offline_grace_days", document.getElementById("grace").value],
-    ["preference_max_bytes", document.getElementById("maxbytes").value]
-  ];
-  for (const [key, value] of items) {
+  for (const [key] of POLICY_KEYS) {
     await api("/admin/policy", {
       method: "PUT",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({key: key, value: value})
+      body: JSON.stringify({key: key, value: document.getElementById("policy-" + key).value})
     });
   }
   document.getElementById("policymsg").textContent = "Saved";
