@@ -1,12 +1,19 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import en from "@/i18n/en.json";
+import mk from "@/i18n/mk.json";
+import { usePrefs } from "@/lib/prefs";
 import { authRefresh, checkForUpdate, installUpdate, tokenLoad } from "@/lib/tauri";
 import logoDark from "@/assets/logo-dark.png";
 import "./splash.css";
 
 export default function Splash() {
   const started = useRef(false);
+  const { prefs } = usePrefs();
+  const [failure, setFailure] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const catalog = prefs.language === "mk" ? mk : en;
 
   useEffect(() => {
     if (started.current) {
@@ -33,18 +40,25 @@ export default function Splash() {
       }
       try {
         const main = await WebviewWindow.getByLabel("main");
-        if (main) {
-          await main.show();
-          await main.setFocus();
+        if (!main) {
+          throw new Error("main window is unavailable");
         }
+        await main.show();
+        await main.setFocus();
         await getCurrentWindow().hide();
-      } catch {
-        return;
+      } catch (error) {
+        started.current = false;
+        setFailure(String(error));
       }
     }
 
     void startup();
-  }, []);
+  }, [attempt]);
+
+  const retry = () => {
+    setFailure(null);
+    setAttempt((value) => value + 1);
+  };
 
   return (
     <div className="flex h-screen w-screen flex-col bg-[#111111]">
@@ -56,7 +70,21 @@ export default function Splash() {
           draggable={false}
         />
       </div>
-      <span className="loader" />
+      {failure === null ? (
+        <span className="loader" />
+      ) : (
+        <div className="flex flex-col items-center gap-2 px-4 pb-4 text-center">
+          <p className="text-xs text-white">{catalog["splash.failed"]}</p>
+          <p className="max-w-full truncate text-xs text-white/60">{failure}</p>
+          <button
+            type="button"
+            onClick={retry}
+            className="border border-white/30 px-3 py-1 text-xs text-white hover:bg-white/10"
+          >
+            {catalog["splash.retry"]}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
