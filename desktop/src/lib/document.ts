@@ -112,6 +112,110 @@ export function polygonVertices(
   });
 }
 
+export interface Affine {
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+  e: number;
+  f: number;
+}
+
+export function affineFrom(
+  pivot: Point,
+  dx: number,
+  dy: number,
+  sx: number,
+  sy: number,
+  rotation: number
+): Affine {
+  const angle = (rotation * Math.PI) / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const a = cos * sx;
+  const b = sin * sx;
+  const c = -sin * sy;
+  const d = cos * sy;
+  return {
+    a,
+    b,
+    c,
+    d,
+    e: pivot.x - a * pivot.x - c * pivot.y + dx,
+    f: pivot.y - b * pivot.x - d * pivot.y + dy
+  };
+}
+
+export function applyAffine(matrix: Affine, point: Point): Point {
+  return {
+    x: matrix.a * point.x + matrix.c * point.y + matrix.e,
+    y: matrix.b * point.x + matrix.d * point.y + matrix.f
+  };
+}
+
+export interface Bounds {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+function pointsBounds(points: Point[], width: number): Bounds {
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const pad = width / 2;
+  const x = Math.min(...xs) - pad;
+  const y = Math.min(...ys) - pad;
+  return {
+    x,
+    y,
+    w: Math.max(...xs) + pad - x,
+    h: Math.max(...ys) + pad - y
+  };
+}
+
+export function shapeBounds(shape: Shape): Bounds {
+  if (shape.kind === "Stroke") {
+    return pointsBounds(shape.points, shape.width);
+  }
+  if (shape.kind === "Path") {
+    return pointsBounds(flattenPath(shape.nodes, shape.closed), shape.width);
+  }
+  if (shape.kind === "Text") {
+    return {
+      x: shape.x,
+      y: shape.y,
+      w: textWidth(shape.text, shape.size),
+      h: shape.size
+    };
+  }
+  return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
+}
+
+export function unionBounds(shapes: Shape[], indices: number[]): Bounds | null {
+  let box: Bounds | null = null;
+  for (const index of indices) {
+    const shape = shapes[index];
+    if (!shape) {
+      continue;
+    }
+    const item = shapeBounds(shape);
+    if (!box) {
+      box = item;
+      continue;
+    }
+    const x = Math.min(box.x, item.x);
+    const y = Math.min(box.y, item.y);
+    box = {
+      x,
+      y,
+      w: Math.max(box.x + box.w, item.x + item.w) - x,
+      h: Math.max(box.y + box.h, item.y + item.h) - y
+    };
+  }
+  return box;
+}
+
 export interface Transform {
   x: number;
   y: number;
@@ -419,6 +523,62 @@ export function docDeleteShape(
   index: number
 ): Promise<Document> {
   return invoke<Document>("doc_delete_shape", { id, sceneId, layerId, frame, index });
+}
+
+export function docTransformShapes(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  indices: number[],
+  pivot: Point,
+  dx: number,
+  dy: number,
+  sx: number,
+  sy: number,
+  rotation: number
+): Promise<Document> {
+  return invoke<Document>("doc_transform_shapes", {
+    id,
+    sceneId,
+    layerId,
+    frame,
+    indices,
+    pivot,
+    dx,
+    dy,
+    sx,
+    sy,
+    rotation
+  });
+}
+
+export function docReorderShapes(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  indices: number[],
+  toFront: boolean
+): Promise<Document> {
+  return invoke<Document>("doc_reorder_shapes", {
+    id,
+    sceneId,
+    layerId,
+    frame,
+    indices,
+    toFront
+  });
+}
+
+export function docDeleteShapes(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  indices: number[]
+): Promise<Document> {
+  return invoke<Document>("doc_delete_shapes", { id, sceneId, layerId, frame, indices });
 }
 
 export function docSetTransform(

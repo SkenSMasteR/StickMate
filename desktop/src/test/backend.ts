@@ -1,11 +1,13 @@
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import { flattenPath, polygonVertices, textWidth } from "@/lib/document";
+import { affineFrom, applyAffine, flattenPath, polygonVertices, textWidth } from "@/lib/document";
 import type {
+  Affine,
   Document,
   EvalFrame,
   EvalLayer,
   Keyframe,
   Layer,
+  PathNode,
   Point,
   Scene,
   Shape,
@@ -196,6 +198,94 @@ function validateShape(shape: Shape): void {
       throw new Error("width must be between 0.5 and 200");
     }
   }
+}
+
+function cornersPath(
+  corners: Point[],
+  matrix: Affine,
+  fill: string,
+  stroke: string,
+  width: number
+): Shape {
+  const nodes: PathNode[] = corners.map((point) => ({
+    point: applyAffine(matrix, point),
+    handle_in: null,
+    handle_out: null
+  }));
+  return { kind: "Path", nodes, closed: true, fill, stroke, width };
+}
+
+function transformShape(
+  shape: Shape,
+  matrix: Affine,
+  sx: number,
+  sy: number,
+  rotation: number
+): Shape {
+  if (shape.kind === "Stroke") {
+    return {
+      ...shape,
+      points: shape.points.map((point) => applyAffine(matrix, point))
+    };
+  }
+  if (shape.kind === "Path") {
+    return {
+      ...shape,
+      nodes: shape.nodes.map((node) => ({
+        point: applyAffine(matrix, node.point),
+        handle_in: node.handle_in ? applyAffine(matrix, node.handle_in) : null,
+        handle_out: node.handle_out ? applyAffine(matrix, node.handle_out) : null
+      }))
+    };
+  }
+  if (shape.kind === "Text") {
+    if (rotation !== 0) {
+      throw new Error("text cannot be rotated");
+    }
+    if (sx !== sy) {
+      throw new Error("text supports uniform scale only");
+    }
+    const q = applyAffine(matrix, { x: shape.x, y: shape.y });
+    return { ...shape, x: q.x, y: q.y, size: shape.size * sx };
+  }
+  if (shape.kind === "Ellipse" && rotation !== 0) {
+    if (rotation % 90 !== 0) {
+      throw new Error("ellipse cannot be rotated");
+    }
+    const center = applyAffine(matrix, {
+      x: shape.x + shape.w / 2,
+      y: shape.y + shape.h / 2
+    });
+    const odd = Math.abs(Math.trunc(rotation / 90)) % 2 === 1;
+    const nw = odd ? shape.h * sy : shape.w * sx;
+    const nh = odd ? shape.w * sx : shape.h * sy;
+    return { ...shape, x: center.x - nw / 2, y: center.y - nh / 2, w: nw, h: nh };
+  }
+  if (shape.kind === "Rect" && rotation !== 0) {
+    return cornersPath(
+      [
+        { x: shape.x, y: shape.y },
+        { x: shape.x + shape.w, y: shape.y },
+        { x: shape.x + shape.w, y: shape.y + shape.h },
+        { x: shape.x, y: shape.y + shape.h }
+      ],
+      matrix,
+      shape.fill,
+      shape.stroke,
+      shape.width
+    );
+  }
+  if (shape.kind === "Polygon" && rotation !== 0) {
+    return cornersPath(
+      polygonVertices(shape.x, shape.y, shape.w, shape.h, shape.sides),
+      matrix,
+      shape.fill,
+      shape.stroke,
+      shape.width
+    );
+  }
+  const q = applyAffine(matrix, { x: shape.x, y: shape.y });
+  return { ...shape, x: q.x, y: q.y, w: shape.w * sx, h: shape.h * sy };
 }
 
 const emptyKey = (frame: number): Keyframe => ({
@@ -732,6 +822,106 @@ mockIPC(
           }
           key.shapes.splice(index, 1);
         });
+      case "doc_transform_shapes": {
+        const indices = a.indices as number[];
+        if (indices.length === 0) {
+          throw new Error("no shapes selected");
+        }
+        const sx = a.sx as number;
+        const sy = a.sy as number;
+        const dx = a.dx as number;
+        const dy = a.dy as number;
+        const rotation = a.rotation as number;
+        const pivot = a.pivot as Point;
+        if (!Number.isFinite(sx) || sx <= 0 || !Number.isFinite(sy) || sy <= 0) {
+          throw new Error("scale must be positive");
+        }
+        if (
+          !Number.isFinite(dx) ||
+          !Number.isFinite(dy) ||
+          !Number.isFinite(rotation) ||
+          !Number.isFinite(pivot.x) ||
+          !Number.isFinite(pivot.y)
+        ) {
+          throw new Error("transform values must be finite");
+        }
+        const matrix = affineFrom(pivot, dx, dy, sx, sy, rotation);
+        return edit(a.id as string, (doc) => {
+          const target = layer(doc, a.sceneId as string, a.layerId as string);
+          writable(target);
+          const frame = a.frame as number;
+          const held = heldIndex(target, frame);
+          const source = held >= 0 ? structuredClone(target.keys[held].shapes) : [];
+          const updated: Array<[number, Shape]> = [];
+          for (const shapeIndex of indices) {
+            const shape = source[shapeIndex];
+            if (!shape) {
+              throw new Error("unknown shape");
+            }
+            const next = transformShape(shape, matrix, sx, sy, rotation);
+            validateShape(next);
+            updated.push([shapeIndex, next]);
+          }
+          const key = target.keys[keyAt(target, frame)];
+          for (const [shapeIndex, next] of updated) {
+            key.shapes[shapeIndex] = next;
+          }
+        });
+      }
+      case "doc_reorder_shapes": {
+        const indices = a.indices as number[];
+        if (indices.length === 0) {
+          throw new Error("no shapes selected");
+        }
+        const sorted = [...new Set(indices)].sort((x, y) => x - y);
+        const toFront = a.toFront as boolean;
+        return edit(a.id as string, (doc) => {
+          const target = layer(doc, a.sceneId as string, a.layerId as string);
+          writable(target);
+          const frame = a.frame as number;
+          const held = heldIndex(target, frame);
+          const len = held >= 0 ? target.keys[held].shapes.length : 0;
+          for (const shapeIndex of sorted) {
+            if (shapeIndex >= len) {
+              throw new Error("unknown shape");
+            }
+          }
+          const key = target.keys[keyAt(target, frame)];
+          const moved: Shape[] = [];
+          for (const shapeIndex of [...sorted].reverse()) {
+            moved.push(key.shapes.splice(shapeIndex, 1)[0]);
+          }
+          moved.reverse();
+          if (toFront) {
+            key.shapes.push(...moved);
+          } else {
+            key.shapes.unshift(...moved);
+          }
+        });
+      }
+      case "doc_delete_shapes": {
+        const indices = a.indices as number[];
+        if (indices.length === 0) {
+          throw new Error("no shapes selected");
+        }
+        const sorted = [...new Set(indices)].sort((x, y) => x - y);
+        return edit(a.id as string, (doc) => {
+          const target = layer(doc, a.sceneId as string, a.layerId as string);
+          writable(target);
+          const frame = a.frame as number;
+          const held = heldIndex(target, frame);
+          const len = held >= 0 ? target.keys[held].shapes.length : 0;
+          for (const shapeIndex of sorted) {
+            if (shapeIndex >= len) {
+              throw new Error("unknown shape");
+            }
+          }
+          const key = target.keys[keyAt(target, frame)];
+          for (const shapeIndex of [...sorted].reverse()) {
+            key.shapes.splice(shapeIndex, 1);
+          }
+        });
+      }
       case "doc_set_transform":
         return edit(a.id as string, (doc) => {
           const target = layer(doc, a.sceneId as string, a.layerId as string);

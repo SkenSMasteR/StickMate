@@ -14,7 +14,7 @@ import {
   docAddScene,
   docClose,
   docDelete,
-  docDeleteShape,
+  docDeleteShapes,
   docDraw,
   docDuplicateScene,
   docErase,
@@ -31,11 +31,13 @@ import {
   docRemoveScene,
   docRename,
   docRenameScene,
+  docReorderShapes,
   docReplaceShape,
   docSetLabel,
   docSetLayer,
   docSetTransform,
   docSetTween,
+  docTransformShapes,
   docUndo,
   docRedo,
   heldKey,
@@ -61,6 +63,7 @@ import {
   frameClipboard,
   setFrameClipboard
 } from "@/lib/frames";
+import { docDuplicateLayer } from "@/lib/tauri";
 
 export type Tool =
   | "select"
@@ -89,7 +92,8 @@ export interface TabState {
   loop: boolean;
   onion: boolean;
   onionRange: number;
-  selected: number | null;
+  selected: number[];
+  pivot: Point | null;
   selectedNode: number | null;
   stroke: string;
   fill: string;
@@ -124,7 +128,8 @@ function firstTab(doc: Document): TabState {
     loop: true,
     onion: false,
     onionRange: 2,
-    selected: null,
+    selected: [],
+    pivot: null,
     selectedNode: null,
     stroke: "#000000",
     fill: "#3b82f6",
@@ -170,6 +175,17 @@ interface WorkspaceValue {
 export interface Actions {
   setTool: (tool: Tool) => void;
   select: (index: number | null) => void;
+  selectMany: (indices: number[]) => void;
+  toggleSelect: (index: number) => void;
+  transformShapes: (
+    pivot: Point,
+    dx: number,
+    dy: number,
+    sx: number,
+    sy: number,
+    rotation: number
+  ) => void;
+  reorderSelected: (toFront: boolean) => void;
   selectLayer: (layerId: string) => void;
   selectScene: (sceneId: string) => void;
   seek: (frame: number) => void;
@@ -207,6 +223,7 @@ export interface Actions {
   ) => void;
   moveLayer: (layerId: string, index: number) => void;
   removeLayer: (layerId: string) => void;
+  duplicateLayer: (layerId: string) => void;
   addScene: () => void;
   renameScene: (sceneId: string, name: string) => void;
   moveScene: (sceneId: string, index: number) => void;
@@ -439,7 +456,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
             sceneId: following.id,
             layerId: following.layers[0].id,
             frame: 0,
-            selected: null,
+            selected: [],
+            pivot: null,
             selectedFrames: []
           }
         };
@@ -459,9 +477,50 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   };
 
   const actions: Actions = {
-    setTool: (tool) => setTab({ tool, selected: null, selectedNode: null }),
-    select: (index) => setTab({ selected: index, selectedNode: null }),
-    selectLayer: (layerId) => setTab({ layerId, selected: null, selectedFrames: [] }),
+    setTool: (tool) => setTab({ tool, selected: [], pivot: null, selectedNode: null }),
+    select: (index) =>
+      setTab({ selected: index === null ? [] : [index], pivot: null, selectedNode: null }),
+    selectMany: (indices) =>
+      setTab({
+        selected: [...new Set(indices)].sort((a, b) => a - b),
+        pivot: null,
+        selectedNode: null
+      }),
+    toggleSelect: (index) => {
+      const current = tab?.selected ?? [];
+      setTab({
+        selected: current.includes(index)
+          ? current.filter((item) => item !== index)
+          : [...current, index],
+        pivot: null,
+        selectedNode: null
+      });
+    },
+    transformShapes: (pivot, dx, dy, sx, sy, rotation) => {
+      const indices = tab?.selected ?? [];
+      if (indices.length === 0) {
+        return;
+      }
+      edit((d, s, l) =>
+        docTransformShapes(d.id, s.id, l.id, frame, indices, pivot, dx, dy, sx, sy, rotation)
+      );
+    },
+    reorderSelected: (toFront) => {
+      const indices = tab?.selected ?? [];
+      if (indices.length === 0 || !layer) {
+        return;
+      }
+      const count = heldKey(layer, frame)?.shapes.length ?? 0;
+      void edit((d, s, l) =>
+        docReorderShapes(d.id, s.id, l.id, frame, indices, toFront)
+      ).then((ok) => {
+        if (ok) {
+          const start = toFront ? count - indices.length : 0;
+          setTab({ selected: frameRange(start, indices.length), pivot: null });
+        }
+      });
+    },
+    selectLayer: (layerId) => setTab({ layerId, selected: [], pivot: null, selectedFrames: [] }),
     selectScene: (sceneId) => {
       const next = doc?.scenes.find((item) => item.id === sceneId);
       if (!next) {
@@ -471,7 +530,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         sceneId,
         layerId: next.layers[0].id,
         frame: 0,
-        selected: null,
+        selected: [],
+        pivot: null,
         selectedFrames: [],
         playing: false
       });
@@ -499,12 +559,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     replaceShape: (index, shape) =>
       edit((d, s, l) => docReplaceShape(d.id, s.id, l.id, frame, index, shape)),
     deleteSelected: () => {
-      if (tab?.selected == null) {
+      const indices = tab?.selected ?? [];
+      if (indices.length === 0) {
         return;
       }
-      const index = tab.selected;
-      setTab({ selected: null });
-      edit((d, s, l) => docDeleteShape(d.id, s.id, l.id, frame, index));
+      setTab({ selected: [], pivot: null });
+      edit((d, s, l) => docDeleteShapes(d.id, s.id, l.id, frame, indices));
     },
     setTransform: (patch) =>
       edit((d, s, l) => docSetTransform(d.id, s.id, l.id, frame, { ...transform, ...patch })),
@@ -628,6 +688,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         }
       });
     },
+    duplicateLayer: (layerId) =>
+      edit((d, s) => docDuplicateLayer(d.id, s.id, layerId)),
     addScene: () => edit((d) => docAddScene(d.id, "")),
     renameScene: (sceneId, name) => edit((d) => docRenameScene(d.id, sceneId, name)),
     moveScene: (sceneId, index) => edit((d) => docMoveScene(d.id, sceneId, index)),

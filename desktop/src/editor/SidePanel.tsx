@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Copy, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/i18n";
-import { heldKey } from "@/lib/document";
-import type { Shape } from "@/lib/document";
+import { heldKey, unionBounds } from "@/lib/document";
+import type { Point, Shape } from "@/lib/document";
 import { cn } from "@/lib/utils";
 import Picker from "@/components/color-field";
 import NumberField from "./NumberField";
@@ -252,9 +252,15 @@ export default function SidePanel() {
 
   const key = heldKey(layer, frame);
   const rounded = (value: number) => Number(value.toFixed(2));
-  const selectedIndex = tab.selected;
+  const selectedIndex = tab.selected.length === 1 ? tab.selected[0] : null;
   const selectedShape =
     selectedIndex === null ? null : key?.shapes[selectedIndex] ?? null;
+  const selBounds = unionBounds(key?.shapes ?? [], tab.selected);
+  const pivot: Point =
+    tab.pivot ??
+    (selBounds
+      ? { x: selBounds.x + selBounds.w / 2, y: selBounds.y + selBounds.h / 2 }
+      : { x: 0, y: 0 });
   const nodeIndex = tab.selectedNode;
   const pathNode =
     selectedShape?.kind === "Path" && nodeIndex !== null
@@ -417,7 +423,7 @@ export default function SidePanel() {
           </button>
           <button
             type="button"
-            disabled={selectedShape === null}
+            disabled={tab.selected.length === 0}
             onClick={actions.deleteSelected}
             className="flex h-7 items-center gap-1 border border-border px-2 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
           >
@@ -426,6 +432,73 @@ export default function SidePanel() {
           </button>
         </div>
       </Section>
+
+      {selBounds && tab.selected.length > 0 && (
+        <Section title={t("editor.selection")}>
+          <NumberField
+            label={t("editor.selectionX")}
+            value={rounded(selBounds.x)}
+            step={1}
+            onCommit={(x) => actions.transformShapes(pivot, x - selBounds.x, 0, 1, 1, 0)}
+          />
+          <NumberField
+            label={t("editor.selectionY")}
+            value={rounded(selBounds.y)}
+            step={1}
+            onCommit={(y) => actions.transformShapes(pivot, 0, y - selBounds.y, 1, 1, 0)}
+          />
+          <NumberField
+            label={t("editor.selectionWidth")}
+            value={rounded(selBounds.w)}
+            step={0.5}
+            min={0.5}
+            onCommit={(w) => {
+              if (selBounds.w > 0) {
+                actions.transformShapes(pivot, 0, 0, w / selBounds.w, 1, 0);
+              }
+            }}
+          />
+          <NumberField
+            label={t("editor.selectionHeight")}
+            value={rounded(selBounds.h)}
+            step={0.5}
+            min={0.5}
+            onCommit={(h) => {
+              if (selBounds.h > 0) {
+                actions.transformShapes(pivot, 0, 0, 1, h / selBounds.h, 0);
+              }
+            }}
+          />
+          <NumberField
+            label={t("editor.pivotX")}
+            value={rounded(pivot.x)}
+            step={1}
+            onCommit={(x) => setTab({ pivot: { x, y: pivot.y } })}
+          />
+          <NumberField
+            label={t("editor.pivotY")}
+            value={rounded(pivot.y)}
+            step={1}
+            onCommit={(y) => setTab({ pivot: { x: pivot.x, y } })}
+          />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => actions.reorderSelected(true)}
+              className="h-7 flex-1 border border-border px-2 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            >
+              {t("editor.bringToFront")}
+            </button>
+            <button
+              type="button"
+              onClick={() => actions.reorderSelected(false)}
+              className="h-7 flex-1 border border-border px-2 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            >
+              {t("editor.sendToBack")}
+            </button>
+          </div>
+        </Section>
+      )}
 
       {selectedShape !== null && selectedIndex !== null && (
         <Section title={t("editor.shape")}>
@@ -579,6 +652,15 @@ export default function SidePanel() {
                 className={iconButton}
               >
                 <ArrowDown className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                title={t("editor.duplicateLayer")}
+                aria-label={t("editor.duplicateLayer")}
+                onClick={() => actions.duplicateLayer(item.id)}
+                className={iconButton}
+              >
+                <Copy className="h-3.5 w-3.5" />
               </button>
               <button
                 type="button"

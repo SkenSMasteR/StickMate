@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { Document } from "./document";
 
 export interface DeviceAuth {
   device_code: string;
@@ -96,4 +97,12 @@ export function onUpdateProgress(
   callback: (percent: number) => void
 ): Promise<() => void> {
   return listen<number>("update-progress", (event) => callback(event.payload));
+}
+
+export function docDuplicateLayer(
+  id: string,
+  sceneId: string,
+  layerId: string
+): Promise<Document> {
+  return invoke<Document>("doc_duplicate_layer", { id, sceneId, layerId });
 }

@@ -37,7 +37,7 @@ export default function ScenesBar() {
   };
 
   const commitEditing = () => {
-    if (editing) {
+    if (editing && draft.trim() !== "") {
       actions.renameScene(editing, draft);
     }
     setEditing(null);
@@ -75,7 +75,10 @@ export default function ScenesBar() {
             ) : (
               <button
                 type="button"
-                onClick={() => actions.selectScene(item.id)}
+                onClick={() => {
+                  setMenu(null);
+                  actions.selectScene(item.id);
+                }}
                 onDoubleClick={() => startEditing(item.id, item.name)}
                 title={`${item.name} (${sceneLength(item)})`}
                 aria-label={`${item.name} (${sceneLength(item)})`}
@@ -101,7 +104,7 @@ export default function ScenesBar() {
                 <MoreHorizontal className="h-4 w-4" />
               </button>
             )}
-            {menu === item.id && (
+            {active && menu === item.id && (
               <div className="absolute left-0 top-8 z-40 w-44 border border-border bg-background py-1 shadow-lg">
                 <button type="button" className={itemClass} onClick={() => startEditing(item.id, item.name)}>
                   {t("editor.rename")}

@@ -4,20 +4,32 @@ import { Frame, ZoomIn, ZoomOut } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/i18n";
 import {
-  flattenPath,
+  affineFrom,
   heldKey,
   identityTransform,
   polygonVertices,
-  textWidth
+  shapeBounds,
+  unionBounds
 } from "@/lib/document";
-import type { EvalLayer, PathNode, Point, Shape, Transform } from "@/lib/document";
+import type { Bounds, EvalLayer, PathNode, Point, Shape, Transform } from "@/lib/document";
 import { useWorkspace } from "./workspace";
 import type { Tool, TabState } from "./workspace";
 
 type PathShape = Extract<Shape, { kind: "Path" }>;
 
 interface Drag {
-  mode: "draw" | "pan" | "move" | "erase" | "pen" | "anchor" | "handle";
+  mode:
+    | "draw"
+    | "pan"
+    | "erase"
+    | "pen"
+    | "anchor"
+    | "handle"
+    | "marquee"
+    | "selmove"
+    | "scale"
+    | "rotate"
+    | "pivot";
   start: Point;
   clientStart: Point;
   panStart: Point;
@@ -25,43 +37,22 @@ interface Drag {
   nodeIndex?: number;
   handle?: "in" | "out";
   path?: PathShape;
+  indices?: number[];
+  pivot?: Point;
+  angle?: number;
+}
+
+interface SelPreview {
+  indices: number[];
+  pivot: Point;
+  dx: number;
+  dy: number;
+  sx: number;
+  sy: number;
+  rotation: number;
 }
 
 const PICK_TOOLS: Tool[] = ["select", "node", "fill", "eyedropper", "text"];
-
-function bounds(shape: Shape): { x: number; y: number; w: number; h: number } {
-  if (shape.kind === "Stroke") {
-    const xs = shape.points.map((point) => point.x);
-    const ys = shape.points.map((point) => point.y);
-    const pad = shape.width / 2;
-    const x = Math.min(...xs) - pad;
-    const y = Math.min(...ys) - pad;
-    return {
-      x,
-      y,
-      w: Math.max(...xs) + pad - x,
-      h: Math.max(...ys) + pad - y
-    };
-  }
-  if (shape.kind === "Text") {
-    return { x: shape.x, y: shape.y, w: textWidth(shape.text, shape.size), h: shape.size };
-  }
-  if (shape.kind === "Path") {
-    const points = flattenPath(shape.nodes, shape.closed);
-    const xs = points.map((point) => point.x);
-    const ys = points.map((point) => point.y);
-    const pad = shape.width / 2;
-    const x = Math.min(...xs) - pad;
-    const y = Math.min(...ys) - pad;
-    return {
-      x,
-      y,
-      w: Math.max(...xs) + pad - x,
-      h: Math.max(...ys) + pad - y
-    };
-  }
-  return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
-}
 
 function pathData(nodes: PathNode[], closed: boolean): string {
   const first = nodes[0];
@@ -177,7 +168,7 @@ function ShapeNode({
   selected: boolean;
   onDown: (event: ReactPointerEvent) => void;
 }) {
-  const box = bounds(shape);
+  const box = shapeBounds(shape);
   const down = (event: ReactPointerEvent) => {
     if (!interactive) {
       return;
@@ -343,7 +334,7 @@ function LayerContent({
   transform: Transform;
   interactive: boolean;
   cursor: string;
-  selected: number | null;
+  selected: number[];
   onDown: (index: number, event: ReactPointerEvent) => void;
 }) {
   return (
@@ -357,7 +348,7 @@ function LayerContent({
           shape={shape}
           interactive={interactive}
           cursor={cursor}
-          selected={interactive && selected === index}
+          selected={interactive && selected.includes(index)}
           onDown={(event) => onDown(index, event)}
         />
       ))}
@@ -377,7 +368,8 @@ export default function Canvas() {
   const [host, setHost] = useState({ width: 0, height: 0 });
   const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
   const [draft, setDraft] = useState<Shape | null>(null);
-  const [preview, setPreview] = useState<Transform | null>(null);
+  const [marquee, setMarquee] = useState<Bounds | null>(null);
+  const [selPreview, setSelPreview] = useState<SelPreview | null>(null);
   const [hover, setHover] = useState<Point | null>(null);
   const [penNodes, setPenNodes] = useState<PathNode[]>([]);
   const [nodePreview, setNodePreview] = useState<PathShape | null>(null);
@@ -418,6 +410,8 @@ export default function Canvas() {
     penRef.current = [];
     setPenNodes([]);
     setNodePreview(null);
+    setMarquee(null);
+    setSelPreview(null);
     dragRef.current = null;
   }, [doc?.id, tab?.sceneId, tab?.layerId, tab?.frame]);
 
@@ -494,7 +488,14 @@ export default function Canvas() {
 
   const activeShapes =
     current?.layers.find((item) => item.id === layer.id)?.shapes ?? [];
-  const selectedShape = tab.selected === null ? undefined : activeShapes[tab.selected];
+  const selectedShape =
+    tab.selected.length === 1 ? activeShapes[tab.selected[0]] : undefined;
+  const selectionBounds = unionBounds(activeShapes, tab.selected);
+  const pivotPoint: Point =
+    tab.pivot ??
+    (selectionBounds
+      ? { x: selectionBounds.x + selectionBounds.w / 2, y: selectionBounds.y + selectionBounds.h / 2 }
+      : { x: 0, y: 0 });
   const nodePath: PathShape | null =
     tab.tool === "node" && selectedShape?.kind === "Path"
       ? nodePreview ?? selectedShape
@@ -548,6 +549,19 @@ export default function Canvas() {
     svgRef.current?.setPointerCapture(event.pointerId);
   };
 
+  const startSelMove = (point: Point, indices: number[], event: ReactPointerEvent) => {
+    dragRef.current = {
+      mode: "selmove",
+      start: point,
+      clientStart: { x: event.clientX, y: event.clientY },
+      panStart: pan,
+      origin: transform,
+      indices,
+      pivot: pivotPoint
+    };
+    svgRef.current?.setPointerCapture(event.pointerId);
+  };
+
   const onShapeDown = (index: number, shape: Shape, event: ReactPointerEvent) => {
     if (tab.tool === "node") {
       actions.select(index);
@@ -557,20 +571,19 @@ export default function Canvas() {
       return;
     }
     if (tab.tool === "select") {
-      actions.select(index);
+      if (event.shiftKey) {
+        actions.toggleSelect(index);
+        return;
+      }
+      const indices = tab.selected.includes(index) ? tab.selected : [index];
+      if (!tab.selected.includes(index)) {
+        actions.select(index);
+      }
       if (layer.locked) {
         toast.error(t("editor.layerLocked"));
         return;
       }
-      const point = toDoc(event.clientX, event.clientY);
-      dragRef.current = {
-        mode: "move",
-        start: point,
-        clientStart: point,
-        panStart: pan,
-        origin: transform
-      };
-      svgRef.current?.setPointerCapture(event.pointerId);
+      startSelMove(toShape(toDoc(event.clientX, event.clientY)), indices, event);
       return;
     }
     if (layer.locked && tab.tool !== "eyedropper") {
@@ -590,6 +603,87 @@ export default function Canvas() {
     }
   };
 
+  const onBoxDown = (event: ReactPointerEvent) => {
+    event.stopPropagation();
+    const point = toShape(toDoc(event.clientX, event.clientY));
+    if (event.shiftKey) {
+      for (let index = activeShapes.length - 1; index >= 0; index -= 1) {
+        const shape = activeShapes[index];
+        if (!shape) {
+          continue;
+        }
+        const box = shapeBounds(shape);
+        if (
+          point.x >= box.x &&
+          point.x <= box.x + box.w &&
+          point.y >= box.y &&
+          point.y <= box.y + box.h
+        ) {
+          actions.toggleSelect(index);
+          return;
+        }
+      }
+      return;
+    }
+    if (layer.locked) {
+      toast.error(t("editor.layerLocked"));
+      return;
+    }
+    startSelMove(point, tab.selected, event);
+  };
+
+  const onCornerDown = (event: ReactPointerEvent) => {
+    event.stopPropagation();
+    if (layer.locked) {
+      toast.error(t("editor.layerLocked"));
+      return;
+    }
+    dragRef.current = {
+      mode: "scale",
+      start: toShape(toDoc(event.clientX, event.clientY)),
+      clientStart: { x: event.clientX, y: event.clientY },
+      panStart: pan,
+      origin: transform,
+      indices: tab.selected,
+      pivot: pivotPoint
+    };
+    svgRef.current?.setPointerCapture(event.pointerId);
+  };
+
+  const onRotateDown = (event: ReactPointerEvent) => {
+    event.stopPropagation();
+    if (layer.locked) {
+      toast.error(t("editor.layerLocked"));
+      return;
+    }
+    const point = toShape(toDoc(event.clientX, event.clientY));
+    dragRef.current = {
+      mode: "rotate",
+      start: point,
+      clientStart: { x: event.clientX, y: event.clientY },
+      panStart: pan,
+      origin: transform,
+      indices: tab.selected,
+      pivot: pivotPoint,
+      angle: Math.atan2(point.y - pivotPoint.y, point.x - pivotPoint.x)
+    };
+    svgRef.current?.setPointerCapture(event.pointerId);
+  };
+
+  const onPivotDown = (event: ReactPointerEvent) => {
+    event.stopPropagation();
+    dragRef.current = {
+      mode: "pivot",
+      start: toShape(toDoc(event.clientX, event.clientY)),
+      clientStart: { x: event.clientX, y: event.clientY },
+      panStart: pan,
+      origin: transform,
+      indices: tab.selected,
+      pivot: pivotPoint
+    };
+    svgRef.current?.setPointerCapture(event.pointerId);
+  };
+
   const onPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (event.button === 1) {
       dragRef.current = {
@@ -605,7 +699,20 @@ export default function Canvas() {
     if (event.button !== 0) {
       return;
     }
-    if (tab.tool === "select" || tab.tool === "node") {
+    if (tab.tool === "select") {
+      const point = toShape(toDoc(event.clientX, event.clientY));
+      dragRef.current = {
+        mode: "marquee",
+        start: point,
+        clientStart: { x: event.clientX, y: event.clientY },
+        panStart: pan,
+        origin: identityTransform
+      };
+      setMarquee({ x: point.x, y: point.y, w: 0, h: 0 });
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
+    if (tab.tool === "node") {
       actions.select(null);
       return;
     }
@@ -699,12 +806,44 @@ export default function Canvas() {
       eraseRef.current = [...eraseRef.current, point];
       return;
     }
-    if (drag.mode === "move") {
-      setPreview({
-        ...transform,
-        x: drag.origin.x + point.x - drag.start.x,
-        y: drag.origin.y + point.y - drag.start.y
+    if (drag.mode === "marquee") {
+      const local = toShape(point);
+      setMarquee({
+        x: Math.min(drag.start.x, local.x),
+        y: Math.min(drag.start.y, local.y),
+        w: Math.abs(local.x - drag.start.x),
+        h: Math.abs(local.y - drag.start.y)
       });
+      return;
+    }
+    if (drag.mode === "pivot") {
+      setTab({ pivot: toShape(point) });
+      return;
+    }
+    if (drag.mode === "selmove" || drag.mode === "scale" || drag.mode === "rotate") {
+      const local = toShape(point);
+      const pivot = drag.pivot ?? pivotPoint;
+      const indices = drag.indices ?? tab.selected;
+      if (drag.mode === "selmove") {
+        const dx = local.x - drag.start.x;
+        const dy = local.y - drag.start.y;
+        setSelPreview(
+          dx === 0 && dy === 0 ? null : { indices, pivot, dx, dy, sx: 1, sy: 1, rotation: 0 }
+        );
+        return;
+      }
+      if (drag.mode === "scale") {
+        const startX = drag.start.x - pivot.x;
+        const startY = drag.start.y - pivot.y;
+        const sx = Math.abs(startX) > 0.001 ? Math.max(0.01, (local.x - pivot.x) / startX) : 1;
+        const sy = Math.abs(startY) > 0.001 ? Math.max(0.01, (local.y - pivot.y) / startY) : 1;
+        setSelPreview({ indices, pivot, dx: 0, dy: 0, sx, sy, rotation: 0 });
+        return;
+      }
+      const angle =
+        ((Math.atan2(local.y - pivot.y, local.x - pivot.x) - (drag.angle ?? 0)) * 180) /
+        Math.PI;
+      setSelPreview({ indices, pivot, dx: 0, dy: 0, sx: 1, sy: 1, rotation: angle });
       return;
     }
     if (drag.mode === "pen") {
@@ -793,48 +932,115 @@ export default function Canvas() {
       }
       return;
     }
-    if (drag.mode === "move" && preview) {
-      const next = preview;
-      setPreview(null);
-      actions.setTransform({ x: next.x, y: next.y });
+    if (drag.mode === "marquee") {
+      const rect = marquee;
+      setMarquee(null);
+      if (!rect) {
+        return;
+      }
+      if (rect.w === 0 && rect.h === 0) {
+        actions.selectMany([]);
+        return;
+      }
+      const hits: number[] = [];
+      activeShapes.forEach((shape, index) => {
+        const box = shapeBounds(shape);
+        if (
+          box.x < rect.x + rect.w &&
+          box.x + box.w > rect.x &&
+          box.y < rect.y + rect.h &&
+          box.y + box.h > rect.y
+        ) {
+          hits.push(index);
+        }
+      });
+      actions.selectMany(hits);
+      return;
+    }
+    if (drag.mode === "pivot") {
+      return;
+    }
+    if (
+      (drag.mode === "selmove" || drag.mode === "scale" || drag.mode === "rotate") &&
+      selPreview
+    ) {
+      const next = selPreview;
+      setSelPreview(null);
+      actions.transformShapes(next.pivot, next.dx, next.dy, next.sx, next.sy, next.rotation);
       return;
     }
     if (
       (drag.mode === "anchor" || drag.mode === "handle") &&
       nodePreview &&
-      tab.selected !== null
+      tab.selected.length === 1
     ) {
       const next = nodePreview;
       setNodePreview(null);
-      actions.replaceShape(tab.selected, next);
+      actions.replaceShape(tab.selected[0], next);
     }
   };
 
   const renderLayers = (evaluated: EvalLayer[], faded: boolean) =>
     [...evaluated].reverse().map((item) => {
       const isActive = item.id === layer.id;
-      const shown = isActive && !faded && preview ? preview : item.transform;
+      const previewing = isActive && !faded && selPreview !== null;
       const content =
-        isActive && !faded && nodePreview && tab.selected !== null
+        isActive && !faded && nodePreview && tab.selected.length === 1
           ? {
               ...item,
               shapes: item.shapes.map((shape, index) =>
-                index === tab.selected ? nodePreview : shape
+                index === tab.selected[0] ? nodePreview : shape
               )
             }
           : item;
+      const shownShapes = previewing
+        ? content.shapes.filter((_, index) => !selPreview.indices.includes(index))
+        : content.shapes;
+      const matrix = selPreview
+        ? affineFrom(
+            selPreview.pivot,
+            selPreview.dx,
+            selPreview.dy,
+            selPreview.sx,
+            selPreview.sy,
+            selPreview.rotation
+          )
+        : null;
       return (
         <g key={item.id} opacity={faded ? 0.2 : 1}>
           <LayerContent
-            evaluated={content}
-            transform={shown}
-            interactive={!faded && isActive && PICK_TOOLS.includes(tab.tool)}
+            evaluated={{ ...content, shapes: shownShapes }}
+            transform={item.transform}
+            interactive={!faded && isActive && PICK_TOOLS.includes(tab.tool) && !previewing}
             cursor={shapeCursor}
             selected={tab.selected}
             onDown={(index, event) =>
               onShapeDown(index, item.shapes[index], event)
             }
           />
+          {previewing && matrix && (
+            <g
+              transform={`translate(${item.transform.x} ${item.transform.y}) rotate(${item.transform.rotation}) scale(${item.transform.scale})`}
+            >
+              <g
+                transform={`matrix(${matrix.a} ${matrix.b} ${matrix.c} ${matrix.d} ${matrix.e} ${matrix.f})`}
+              >
+                {selPreview.indices.map((index) => {
+                  const shape = item.shapes[index];
+                  return shape ? (
+                    <ShapeNode
+                      key={index}
+                      shape={shape}
+                      interactive={false}
+                      cursor={shapeCursor}
+                      selected={false}
+                      onDown={() => undefined}
+                    />
+                  ) : null;
+                })}
+              </g>
+            </g>
+          )}
         </g>
       );
     });
@@ -870,6 +1076,106 @@ export default function Canvas() {
             <g key={item.frame}>{renderLayers(item.layers, true)}</g>
           ))}
           {current && renderLayers(current.layers, false)}
+          {tab.tool === "select" && selectionBounds && !selPreview && (
+            <g
+              transform={`translate(${transform.x} ${transform.y}) rotate(${transform.rotation}) scale(${transform.scale})`}
+            >
+              <rect
+                data-selection-box
+                x={selectionBounds.x}
+                y={selectionBounds.y}
+                width={selectionBounds.w}
+                height={selectionBounds.h}
+                fill="transparent"
+                stroke="#3b82f6"
+                strokeWidth={1}
+                vectorEffect="non-scaling-stroke"
+                style={{ cursor: "move" }}
+                onPointerDown={onBoxDown}
+              />
+              {(["nw", "ne", "sw", "se"] as const).map((corner) => {
+                const cx =
+                  corner === "nw" || corner === "sw"
+                    ? selectionBounds.x
+                    : selectionBounds.x + selectionBounds.w;
+                const cy =
+                  corner === "nw" || corner === "ne"
+                    ? selectionBounds.y
+                    : selectionBounds.y + selectionBounds.h;
+                return (
+                  <rect
+                    key={corner}
+                    data-corner={corner}
+                    x={cx - 4}
+                    y={cy - 4}
+                    width={8}
+                    height={8}
+                    fill="#ffffff"
+                    stroke="#3b82f6"
+                    strokeWidth={1}
+                    vectorEffect="non-scaling-stroke"
+                    style={{
+                      cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize"
+                    }}
+                    onPointerDown={onCornerDown}
+                  />
+                );
+              })}
+              <line
+                x1={selectionBounds.x + selectionBounds.w / 2}
+                y1={selectionBounds.y}
+                x2={selectionBounds.x + selectionBounds.w / 2}
+                y2={selectionBounds.y - 24}
+                stroke="#3b82f6"
+                strokeWidth={1}
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="none"
+              />
+              <circle
+                data-rotate-handle
+                cx={selectionBounds.x + selectionBounds.w / 2}
+                cy={selectionBounds.y - 24}
+                r={5}
+                fill="#ffffff"
+                stroke="#3b82f6"
+                strokeWidth={1}
+                vectorEffect="non-scaling-stroke"
+                style={{ cursor: "grab" }}
+                onPointerDown={onRotateDown}
+              />
+              <circle
+                data-pivot-handle
+                cx={pivotPoint.x}
+                cy={pivotPoint.y}
+                r={5}
+                fill="#3b82f6"
+                stroke="#ffffff"
+                strokeWidth={1}
+                vectorEffect="non-scaling-stroke"
+                style={{ cursor: "move" }}
+                onPointerDown={onPivotDown}
+              />
+            </g>
+          )}
+          {marquee && (
+            <g
+              transform={`translate(${transform.x} ${transform.y}) rotate(${transform.rotation}) scale(${transform.scale})`}
+            >
+              <rect
+                data-marquee
+                x={marquee.x}
+                y={marquee.y}
+                width={marquee.w}
+                height={marquee.h}
+                fill="#3b82f6"
+                fillOpacity={0.1}
+                stroke="#3b82f6"
+                strokeWidth={1}
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="none"
+              />
+            </g>
+          )}
           {shown && (
             <ShapeNode
               shape={shown}
