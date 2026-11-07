@@ -34,4 +34,10 @@ for (const [file, pattern] of targets) {
   }
 }
 
+const lockPath = join(root, "package-lock.json");
+const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+lock.version = version;
+lock.packages[""].version = version;
+writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+
 console.log(version);
