@@ -537,3 +537,47 @@ def test_legacy_database_migrates_without_losing_data(tmp_path, monkeypatch):
     finally:
         monkeypatch.undo()
         core._load_keys()
+
+
+def oauth_state(client, monkeypatch, github_id, login):
+    monkeypatch.setattr(core, "exchange_code", lambda code: "gh-token-" + code)
+    monkeypatch.setattr(core, "fetch_user", lambda token: {"id": github_id, "login": login})
+    start = client.post("/auth/device/start").json()
+    redirect = client.get(
+        "/auth/github/start",
+        params={"user_code": start["user_code"]},
+        follow_redirects=False,
+    )
+    assert redirect.status_code == 302
+    state = parse_qs(urlparse(redirect.headers["location"]).query)["state"][0]
+    return start, state
+
+
+def test_oauth_state_and_device_code_are_single_use(client, monkeypatch):
+    start, state = oauth_state(client, monkeypatch, 116, "lena")
+    first = client.get("/auth/github/callback", params={"code": "fake-code", "state": state})
+    assert first.status_code == 200
+    replay = client.get("/auth/github/callback", params={"code": "fake-code", "state": state})
+    assert replay.status_code == 400
+    assert replay.text == "Sign in failed"
+    poll = client.post("/auth/device/poll", json={"device_code": start["device_code"]})
+    assert poll.json()["status"] == "ok"
+    again = client.post("/auth/device/poll", json={"device_code": start["device_code"]})
+    assert again.status_code == 400
+    reuse = client.get(
+        "/auth/github/start",
+        params={"user_code": start["user_code"]},
+        follow_redirects=False,
+    )
+    assert reuse.status_code == 400
+
+
+def test_expired_oauth_state_is_rejected(client, monkeypatch):
+    start, state = oauth_state(client, monkeypatch, 117, "mona")
+    past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(timespec="seconds")
+    with closing(core.db()) as conn, conn:
+        conn.execute("UPDATE oauth_states SET expires_at=? WHERE state=?", (past, state))
+    response = client.get("/auth/github/callback", params={"code": "fake-code", "state": state})
+    assert response.status_code == 400
+    poll = client.post("/auth/device/poll", json={"device_code": start["device_code"]})
+    assert poll.json() == {"status": "pending"}
