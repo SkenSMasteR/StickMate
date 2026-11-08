@@ -47,6 +47,21 @@ function firstPath(): Element {
   return found;
 }
 
+function preview(): Element | null {
+  return getCanvas().querySelector("[data-pen-preview]");
+}
+
+async function hoverAt(x: number, y: number): Promise<void> {
+  await act(async () => {
+    fireEvent.pointerMove(getCanvas(), { ...base, clientX: x, clientY: y });
+  });
+  await flush();
+}
+
+function number(element: Element, name: string): number {
+  return Number(element.getAttribute(name));
+}
+
 async function penClicks(points: Array<[number, number]>): Promise<void> {
   await press("n");
   for (const point of points) {
@@ -87,6 +102,34 @@ describe("pen tool", () => {
     expect(firstPath().getAttribute("fill")).toBe("none");
     await press("z", { ctrlKey: true });
     expect(shapes(doc.id)).toHaveLength(0);
+  }, 15000);
+
+  it("previews a rubber band from the last node to the cursor", async () => {
+    const { doc } = await renderEditor();
+    await press("n");
+    expect(preview()).toBeNull();
+    await click(getCanvas(), [100, 100]);
+    await click(getCanvas(), [200, 100]);
+    await hoverAt(260, 180);
+    const band = preview();
+    if (!band) {
+      throw new Error("pen preview not rendered");
+    }
+    expect(number(band, "x1")).toBe(200);
+    expect(number(band, "y1")).toBe(100);
+    expect(number(band, "x2")).toBe(260);
+    expect(number(band, "y2")).toBe(180);
+    expect(band.getAttribute("stroke-dasharray")).toBe("4 3");
+    expect(shapes(doc.id)).toHaveLength(0);
+    await act(async () => {
+      fireEvent.pointerLeave(getCanvas());
+    });
+    await flush();
+    expect(preview()).toBeNull();
+    await press("Enter");
+    await hoverAt(300, 300);
+    expect(preview()).toBeNull();
+    expect(shapes(doc.id)).toHaveLength(1);
   }, 15000);
 
   it("pulls mirrored handles when dragging while placing a node", async () => {

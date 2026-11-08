@@ -102,25 +102,44 @@ describe("duplicate layer", () => {
     expect(layersOf(doc.id)[1].keys[0].shapes).toHaveLength(2);
   });
 
+  test("adding a layer makes it the active layer", async () => {
+    const { doc } = await renderEditor();
+    await press("p");
+    await drag(getCanvas(), [
+      [10, 10],
+      [40, 40]
+    ]);
+    await clickButton(en["command.addLayer"]);
+    await waitFor(() => expect(layersOf(doc.id)).toHaveLength(2));
+    await press("p");
+    await drag(getCanvas(), [
+      [60, 60],
+      [90, 90]
+    ]);
+    expect(layersOf(doc.id)[0].keys[0].shapes).toHaveLength(1);
+    expect(layersOf(doc.id)[1].keys[0].shapes).toHaveLength(1);
+  });
+
   test("the copy lands directly after its source", async () => {
     const { doc } = await renderEditor();
     await clickButton(en["command.addLayer"]);
     await waitFor(() => expect(layersOf(doc.id)).toHaveLength(2));
+    expect(layersOf(doc.id).map((item) => item.name)).toEqual(["Layer 2", "Layer 1"]);
     await clickDuplicate(0);
     await waitFor(() =>
       expect(layersOf(doc.id).map((item) => item.name)).toEqual([
-        "Layer 1",
-        "Layer 1 copy",
-        "Layer 2"
+        "Layer 2",
+        "Layer 2 copy",
+        "Layer 1"
       ])
     );
     await clickDuplicate(2);
     await waitFor(() =>
       expect(layersOf(doc.id).map((item) => item.name)).toEqual([
-        "Layer 1",
-        "Layer 1 copy",
         "Layer 2",
-        "Layer 2 copy"
+        "Layer 2 copy",
+        "Layer 1",
+        "Layer 1 copy"
       ])
     );
     expect(

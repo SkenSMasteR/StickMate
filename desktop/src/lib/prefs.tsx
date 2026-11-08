@@ -12,6 +12,9 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import { prefsGet, prefsPut, setUpdateChannel } from "@/lib/tauri";
 import type { ShortcutOverrides } from "@/lib/shortcuts";
+import type { WorkspacePreset } from "@/lib/workspace-presets";
+import { defaultView, mergeView, sanitizeView } from "@/lib/view";
+import type { ViewPrefs } from "@/lib/view";
 import type { ThemeName } from "@/theme";
 import type { Language } from "@/i18n";
 import en from "@/i18n/en.json";
@@ -25,6 +28,8 @@ export interface PrefsData {
   channel: UpdateChannel;
   login: string | null;
   shortcuts: ShortcutOverrides;
+  workspaces?: Record<string, WorkspacePreset>;
+  view: ViewPrefs;
 }
 
 const defaultPrefs: PrefsData = {
@@ -32,7 +37,9 @@ const defaultPrefs: PrefsData = {
   theme: "dark",
   channel: "stable",
   login: null,
-  shortcuts: {}
+  shortcuts: {},
+  workspaces: {},
+  view: defaultView
 };
 
 const fallbackKey = "stickmate.prefs";
@@ -123,6 +130,41 @@ function mergeShortcuts(
   return { data: merged, contested };
 }
 
+function mergeWorkspaces(
+  ours: Record<string, WorkspacePreset>,
+  theirs: Record<string, WorkspacePreset>,
+  base: Record<string, WorkspacePreset>
+): { data: Record<string, WorkspacePreset>; contested: boolean } {
+  const merged: Record<string, WorkspacePreset> = { ...ours };
+  let contested = false;
+  const ids = new Set([
+    ...Object.keys(ours),
+    ...Object.keys(theirs),
+    ...Object.keys(base)
+  ]);
+  for (const id of ids) {
+    const a = ours[id];
+    const b = theirs[id];
+    const start = base[id];
+    const sa = JSON.stringify(a);
+    const sb = JSON.stringify(b);
+    const ss = JSON.stringify(start);
+    if (sa === sb) {
+      continue;
+    }
+    if (sa === ss) {
+      if (b === undefined) {
+        delete merged[id];
+      } else {
+        merged[id] = b;
+      }
+    } else if (sb !== ss) {
+      contested = true;
+    }
+  }
+  return { data: merged, contested };
+}
+
 function mergePrefs(
   ours: PrefsData,
   theirs: PrefsData,
@@ -137,6 +179,22 @@ function mergePrefs(
     if (key === "shortcuts") {
       const part = mergeShortcuts(ours.shortcuts, theirs.shortcuts, base.shortcuts);
       merged.shortcuts = part.data;
+      contested = contested || part.contested;
+      continue;
+    }
+    if (key === "workspaces") {
+      const part = mergeWorkspaces(
+        ours.workspaces ?? {},
+        theirs.workspaces ?? {},
+        base.workspaces ?? {}
+      );
+      merged.workspaces = part.data;
+      contested = contested || part.contested;
+      continue;
+    }
+    if (key === "view") {
+      const part = mergeView(ours.view, theirs.view, base.view);
+      merged.view = part.data;
       contested = contested || part.contested;
       continue;
     }
@@ -192,7 +250,11 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
       if (cancelled) {
         return;
       }
-      const merged = { ...defaultPrefs, ...data };
+      const merged: PrefsData = {
+        ...defaultPrefs,
+        ...data,
+        view: sanitizeView(data.view)
+      };
       baseRef.current = { revision, data: merged };
       setPrefs(merged);
       setLoaded(true);
@@ -305,7 +367,8 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
       }
       const theirs: PrefsData = {
         ...defaultPrefs,
-        ...(remote.data as Partial<PrefsData>)
+        ...(remote.data as Partial<PrefsData>),
+        view: sanitizeView((remote.data as Partial<PrefsData>)?.view)
       };
       const merged = mergePrefs(next, theirs, base.data);
       if (!merged.contested) {

@@ -6,7 +6,7 @@ import "./index.css";
 async function start() {
   if (import.meta.env.DEV && !("__TAURI_INTERNALS__" in window)) {
     const { installBackend } = await import("./test/backend");
-    installBackend("main");
+    installBackend(new URLSearchParams(window.location.search).get("window") ?? "main");
   }
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>

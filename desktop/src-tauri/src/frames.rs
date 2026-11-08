@@ -126,7 +126,7 @@ impl DocStore {
         frame: u32,
         count: u32,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "insert_frames", |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             check_count(count)?;
@@ -149,7 +149,7 @@ impl DocStore {
         frame: u32,
         count: u32,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "remove_frames", |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             check_count(count)?;
@@ -191,7 +191,7 @@ impl DocStore {
         frame: u32,
         clip: FrameClip,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "paste_frames", |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             check_clip(&clip)?;
@@ -209,7 +209,7 @@ impl DocStore {
         frame: u32,
         count: u32,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "duplicate_frames", |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             check_count(count)?;
@@ -229,7 +229,7 @@ impl DocStore {
         count: u32,
         target: u32,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "move_frames", |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             check_count(count)?;
@@ -843,5 +843,54 @@ mod tests {
         );
         assert!(target.keys[0].shapes.is_empty());
         fixture.undo_restores(&fixture.doc);
+    }
+
+    #[test]
+    fn frame_operations_are_named_steps() {
+        let fixture = Fixture::new("named", vec![key(0, 1.0), key(4, 2.0), key(7, 3.0)], 10);
+        let id = &fixture.doc.id;
+        let s = &fixture.scene;
+        let l = &fixture.layer;
+        let current_name = |store: &DocStore| {
+            let steps = store.history(id).expect("history");
+            steps.last().expect("step").name.clone()
+        };
+        fixture
+            .store
+            .insert_frames(id, s, l, 2, 2)
+            .expect("insert");
+        assert_eq!(current_name(&fixture.store), "insert_frames");
+        fixture
+            .store
+            .remove_frames(id, s, l, 2, 2)
+            .expect("remove");
+        assert_eq!(current_name(&fixture.store), "remove_frames");
+        fixture
+            .store
+            .paste_frames(id, s, l, 1, FrameClip { span: 2, keys: vec![key(0, 9.0)] })
+            .expect("paste");
+        assert_eq!(current_name(&fixture.store), "paste_frames");
+        fixture
+            .store
+            .duplicate_frames(id, s, l, 0, 2)
+            .expect("duplicate");
+        assert_eq!(current_name(&fixture.store), "duplicate_frames");
+        fixture
+            .store
+            .move_frames(id, s, l, 0, 2, 5)
+            .expect("move");
+        assert_eq!(current_name(&fixture.store), "move_frames");
+        let steps = fixture.store.history(id).expect("history");
+        assert_eq!(
+            steps.iter().map(|step| step.name.as_str()).collect::<Vec<_>>(),
+            vec![
+                "recovered_document",
+                "insert_frames",
+                "remove_frames",
+                "paste_frames",
+                "duplicate_frames",
+                "move_frames"
+            ]
+        );
     }
 }

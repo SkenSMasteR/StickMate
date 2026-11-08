@@ -105,7 +105,10 @@ function recorder(index: number): CanvasRenderingContext2D {
     "ellipse",
     "fill",
     "stroke",
-    "fillText"
+    "fillText",
+    "save",
+    "transform",
+    "restore"
   ];
   for (const name of methods) {
     target[name] = (...args: unknown[]) => {

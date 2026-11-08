@@ -5,6 +5,7 @@ mod export;
 mod frames;
 mod path;
 mod prefs;
+mod shapes;
 mod templates;
 mod tokens;
 mod updater;
@@ -95,12 +96,20 @@ pub fn run() {
             document::doc_undo,
             document::doc_redo,
             document::doc_evaluate,
+            document::doc_history,
+            document::doc_history_jump,
+            document::doc_checkpoint_save,
+            document::doc_checkpoint_list,
+            document::doc_checkpoint_restore,
+            document::doc_checkpoint_delete,
             frames::doc_insert_frames,
             frames::doc_remove_frames,
             frames::doc_copy_frames,
             frames::doc_paste_frames,
             frames::doc_duplicate_frames,
             frames::doc_move_frames,
+            shapes::doc_copy_shapes,
+            shapes::doc_paste_shapes,
             templates::templates_catalog,
             templates::templates_preview,
             templates::templates_open,

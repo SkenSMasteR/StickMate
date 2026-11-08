@@ -5,6 +5,8 @@ import { ThemeProvider, useTheme } from "next-themes";
 import Main from "@/app/App";
 import { Toaster } from "@/components/ui/sonner";
 import EditorWindow from "@/editor/EditorWindow";
+import DetachedPanel from "@/editor/DetachedPanel";
+import { panelFromLabel } from "@/lib/windows";
 import { WorkspaceProvider } from "@/editor/workspace";
 import { I18nProvider } from "@/i18n";
 import type { Language } from "@/i18n";
@@ -41,6 +43,13 @@ function Routed() {
   const label = windowLabel();
   if (label === "splash") {
     return <Splash />;
+  }
+  if (panelFromLabel(label)) {
+    return (
+      <AppProviders>
+        <DetachedPanel />
+      </AppProviders>
+    );
   }
   if (label === "editor") {
     return (

@@ -10,7 +10,7 @@ import Picker from "@/components/color-field";
 import NumberField from "./NumberField";
 import { useWorkspace } from "./workspace";
 
-function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
+export function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
     <section className="border-b border-border">
       <header className="flex h-8 items-center justify-between px-2">

@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { Toaster } from "@/components/ui/sonner";
 import { PrefsProvider, usePrefs } from "@/lib/prefs";
 import type { PrefsData } from "@/lib/prefs";
+import { defaultView } from "@/lib/view";
 import { server } from "./backend/prefs";
 import { channelState } from "./backend/updater";
 
@@ -11,7 +12,8 @@ const defaults: PrefsData = {
   theme: "dark",
   channel: "stable",
   login: null,
-  shortcuts: {}
+  shortcuts: {},
+  view: defaultView
 };
 
 let api: {

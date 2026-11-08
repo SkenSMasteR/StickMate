@@ -4,10 +4,15 @@ import {
   affineFrom,
   applyAffine,
   docDeleteShapes,
+  docDraw,
+  docErase,
+  docRedo,
   docReorderShapes,
   docSetLayer,
   docTransformShapes,
+  docUndo,
   shapeBounds,
+  textCorners,
   unionBounds
 } from "@/lib/document";
 import type { Point, Shape } from "@/lib/document";
@@ -77,6 +82,14 @@ function corner(name: string): Element {
   return found;
 }
 
+function edge(name: string): Element {
+  const found = getCanvas().querySelector(`[data-edge="${name}"]`);
+  if (!found) {
+    throw new Error(`edge not found: ${name}`);
+  }
+  return found;
+}
+
 function rotateHandle(): Element {
   const found = getCanvas().querySelector("[data-rotate-handle]");
   if (!found) {
@@ -103,15 +116,21 @@ async function down(target: Element, x: number, y: number, shiftKey = false): Pr
   });
 }
 
-async function move(x: number, y: number): Promise<void> {
+async function move(x: number, y: number, shiftKey = false): Promise<void> {
   await act(async () => {
-    fireEvent.pointerMove(getCanvas(), { ...base, clientX: x, clientY: y });
+    fireEvent.pointerMove(getCanvas(), { ...base, clientX: x, clientY: y, shiftKey });
   });
 }
 
-async function up(x: number, y: number): Promise<void> {
+async function up(x: number, y: number, shiftKey = false): Promise<void> {
   await act(async () => {
-    fireEvent.pointerUp(getCanvas(), { ...base, buttons: 0, clientX: x, clientY: y });
+    fireEvent.pointerUp(getCanvas(), {
+      ...base,
+      buttons: 0,
+      clientX: x,
+      clientY: y,
+      shiftKey
+    });
   });
   await flush();
 }
@@ -217,6 +236,42 @@ describe("selection and transforms", () => {
     expect(undoLen(doc.id)).toBe(2);
   }, 20000);
 
+  test("edge handles stretch only the axis they sit on", async () => {
+    const { doc } = await renderEditor();
+    await drawRect(100, 100, 200, 200);
+    await press("v");
+    await selectShape(visibleRects()[0], 150, 150);
+    const undoBefore = undoLen(doc.id);
+    await down(edge("e"), 200, 150);
+    await move(250, 175);
+    await up(250, 175);
+    expect(shapes(doc.id)[0]).toMatchObject({ kind: "Rect", x: 100, y: 100, w: 150, h: 100 });
+    await down(edge("n"), 175, 100);
+    await move(175, 50);
+    await up(175, 50);
+    expect(shapes(doc.id)[0]).toMatchObject({ kind: "Rect", x: 100, y: 50, w: 150, h: 150 });
+    expect(undoLen(doc.id)).toBe(undoBefore + 2);
+    await press("z", { ctrlKey: true });
+    await press("z", { ctrlKey: true });
+    expect(shapes(doc.id)[0]).toMatchObject({ kind: "Rect", x: 100, y: 100, w: 100, h: 100 });
+  }, 20000);
+
+  test("shift on a corner keeps the aspect ratio and free drag deforms it", async () => {
+    const { doc } = await renderEditor();
+    await drawRect(100, 100, 300, 200);
+    await press("v");
+    await selectShape(visibleRects()[0], 200, 150);
+    await down(corner("se"), 300, 200);
+    await move(350, 200);
+    await up(350, 200);
+    expect(shapes(doc.id)[0]).toMatchObject({ kind: "Rect", x: 50, y: 100, w: 300, h: 100 });
+    await press("z", { ctrlKey: true });
+    await down(corner("se"), 300, 200, true);
+    await move(350, 200, true);
+    await up(350, 200, true);
+    expect(shapes(doc.id)[0]).toMatchObject({ kind: "Rect", x: 50, y: 75, w: 300, h: 150 });
+  }, 20000);
+
   test("rotating a rectangle produces a faithful closed four node path", async () => {
     const { doc } = await renderEditor();
     await drawRect(0, 0, 20, 20);
@@ -247,7 +302,7 @@ describe("selection and transforms", () => {
     }
   }, 20000);
 
-  test("rotating text is rejected and changes nothing", async () => {
+  test("rotating text preserves editable content and undo restores it", async () => {
     const { doc } = await renderEditor();
     await press("t");
     await click(getCanvas(), [300, 10]);
@@ -262,11 +317,22 @@ describe("selection and transforms", () => {
     await down(rotateHandle(), 338.4, -14);
     await move(378.4, 26);
     await up(378.4, 26);
+    const transformed = shapes(doc.id)[0];
+    expect(transformed).toMatchObject({ kind: "Text", x: 300, y: 10 });
+    if (transformed.kind !== "Text" || !transformed.matrix) {
+      throw new Error("text matrix is missing");
+    }
+    expect(transformed.matrix.a).toBeCloseTo(0);
+    expect(transformed.matrix.b).toBeCloseTo(1);
+    expect(transformed.matrix.c).toBeCloseTo(-1);
+    expect(transformed.matrix.d).toBeCloseTo(0);
+    const rendered = getCanvas().querySelector("text")!;
+    const hit = rendered.parentElement?.querySelector('rect[fill="transparent"]');
+    expect(hit?.getAttribute("transform")).toBe(rendered.getAttribute("transform"));
+    expect(hit?.getAttribute("x")).toBe("300");
+    expect(undoLen(doc.id)).toBe(undoBefore + 1);
+    await press("z", { ctrlKey: true });
     expect(docJSON(doc.id)).toBe(before);
-    expect(undoLen(doc.id)).toBe(undoBefore);
-    await waitFor(() =>
-      expect(document.body.textContent).toContain("text cannot be rotated")
-    );
   }, 20000);
 
   test("a locked layer rejects every shape transform command", async () => {
@@ -411,9 +477,6 @@ describe("selection and transforms", () => {
     const pivot: Point = { x: 0, y: 0 };
     const before = docJSON(doc.id);
     await expect(
-      docTransformShapes(doc.id, sceneId, layerId, 0, [0], pivot, 0, 0, 2, 3, 0)
-    ).rejects.toThrow("text supports uniform scale only");
-    await expect(
       docTransformShapes(doc.id, sceneId, layerId, 0, [0], pivot, 0, 0, -1, 1, 0)
     ).rejects.toThrow("scale must be positive");
     await expect(
@@ -424,6 +487,69 @@ describe("selection and transforms", () => {
     ).rejects.toThrow("unknown shape");
     expect(docJSON(doc.id)).toBe(before);
   }, 20000);
+
+  test("text rotation and nonuniform scales compose in selection order", async () => {
+    const { doc } = await renderEditor();
+    const { sceneId, layerId } = ids(doc.id);
+    const original: Shape = { kind: "Text", x: 10, y: 20, text: "A𐐀", size: 10, family: "Segoe UI", color: "#000000" };
+    await docDraw(doc.id, sceneId, layerId, 0, original);
+    const before = docJSON(doc.id);
+    const pivot = { x: 15, y: -4 };
+    const steps = [[7, -9, 2, 3, 35], [-2, 8, 4, 0.5, -70], [5, 6, 2, 2, 0]];
+    let expected = textCorners(original);
+    for (const [dx, dy, sx, sy, rotation] of steps) {
+      await docTransformShapes(doc.id, sceneId, layerId, 0, [0], pivot, dx, dy, sx, sy, rotation);
+      const m = affineFrom(pivot, dx, dy, sx, sy, rotation);
+      expected = expected.map((point) => applyAffine(m, point));
+      const shape = shapes(doc.id)[0];
+      expect(shape).toMatchObject(original);
+      if (shape.kind !== "Text") throw new Error("expected text");
+      textCorners(shape).forEach((point, index) => {
+        expect(point.x).toBeCloseTo(expected[index].x, 9);
+        expect(point.y).toBeCloseTo(expected[index].y, 9);
+      });
+    }
+    const after = docJSON(doc.id);
+    for (const _ of steps) await docUndo(doc.id);
+    expect(docJSON(doc.id)).toBe(before);
+    for (const _ of steps) await docRedo(doc.id);
+    expect(docJSON(doc.id)).toBe(after);
+  });
+
+  test("text bounds and eraser radius follow the transformed rectangle", async () => {
+    const { doc } = await renderEditor();
+    const { sceneId, layerId } = ids(doc.id);
+    const shape: Shape = {
+      kind: "Text", x: 0, y: 0, text: "AB", size: 10, family: "Segoe UI", color: "#000000",
+      matrix: { a: 2, b: 2, c: -1, d: 1, e: 10, f: 20 }
+    };
+    expect(shapeBounds(shape)).toEqual({ x: 0, y: 20, w: 34, h: 34 });
+    await docDraw(doc.id, sceneId, layerId, 0, shape);
+    for (const [x, y, radius, hit] of [[1, 21, 1, false], [23, 31, 1, false], [23, 31, 1.5, true], [10, 18, 1.5, false], [10, 18, 2, true], [17, 37, 1, true]] as const) {
+      await docErase(doc.id, sceneId, layerId, 0, [{ x, y }], radius);
+      expect(shapes(doc.id)).toHaveLength(hit ? 0 : 1);
+      if (hit) await docUndo(doc.id);
+    }
+  });
+
+  test("text validates all affine entries and finite positive font sizes", async () => {
+    const { doc } = await renderEditor();
+    const { sceneId, layerId } = ids(doc.id);
+    const shape: Extract<Shape, { kind: "Text" }> = {
+      kind: "Text", x: 0, y: 0, text: "AB", size: 10, family: "Segoe UI", color: "#000000"
+    };
+    const before = docJSON(doc.id);
+    for (const size of [0, -1, NaN, Infinity]) {
+      await expect(docDraw(doc.id, sceneId, layerId, 0, { ...shape, size })).rejects.toThrow("text size must be positive");
+    }
+    for (const field of ["a", "b", "c", "d", "e", "f"]) {
+      for (const value of [NaN, Infinity, -Infinity]) {
+        const matrix = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0, [field]: value };
+        await expect(docDraw(doc.id, sceneId, layerId, 0, { ...shape, matrix })).rejects.toThrow("text matrix must be finite");
+      }
+    }
+    expect(docJSON(doc.id)).toBe(before);
+  });
 
   test("shared affine and bounds helpers match the Rust contract", async () => {
     const pivot: Point = { x: 10, y: 10 };

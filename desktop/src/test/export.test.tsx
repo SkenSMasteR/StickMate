@@ -9,6 +9,7 @@ import { I18nProvider } from "@/i18n";
 import { ConfirmProvider } from "@/lib/confirm";
 import type { Document, Keyframe, Layer, Scene, Shape, Transform } from "@/lib/document";
 import { exportWeb } from "@/lib/export";
+import { PrefsProvider } from "@/lib/prefs";
 import source from "@/export/runtime.js?raw";
 import { store } from "./backend";
 import { disk } from "./backend/export";
@@ -52,7 +53,10 @@ function recorder(index: number): CanvasRenderingContext2D {
     "ellipse",
     "fill",
     "stroke",
-    "fillText"
+    "fillText",
+    "save",
+    "transform",
+    "restore"
   ];
   for (const name of methods) {
     target[name] = (...args: unknown[]) => {
@@ -153,6 +157,11 @@ function translateShape(el: Element, calls: unknown[][]): void {
     return;
   }
   if (tag === "text") {
+    calls.push([1, "save"]);
+    const matrix = el.getAttribute("transform");
+    if (matrix) {
+      calls.push([1, "transform", ...(matrix.match(/-?\d+(?:\.\d+)?(?:e[-+]?\d+)?/gi) ?? []).map(Number)]);
+    }
     calls.push([1, "set:fillStyle", el.getAttribute("fill")]);
     calls.push([
       1,
@@ -167,6 +176,7 @@ function translateShape(el: Element, calls: unknown[][]): void {
       Number(el.getAttribute("x")),
       Number(el.getAttribute("y"))
     ]);
+    calls.push([1, "restore"]);
     return;
   }
   if (tag === "path") {
@@ -305,9 +315,11 @@ function mountProbe(): void {
   render(
     <I18nProvider language="en" onLanguageChange={() => {}}>
       <ConfirmProvider>
-        <WorkspaceProvider>
-          <Probe />
-        </WorkspaceProvider>
+        <PrefsProvider>
+          <WorkspaceProvider>
+            <Probe />
+          </WorkspaceProvider>
+        </PrefsProvider>
       </ConfirmProvider>
     </I18nProvider>
   );
@@ -607,9 +619,11 @@ async function mountDialog(doc: Document): Promise<void> {
   render(
     <I18nProvider language="en" onLanguageChange={() => {}}>
       <ConfirmProvider>
-        <WorkspaceProvider>
-          <DialogHost docId={doc.id} />
-        </WorkspaceProvider>
+        <PrefsProvider>
+          <WorkspaceProvider>
+            <DialogHost docId={doc.id} />
+          </WorkspaceProvider>
+        </PrefsProvider>
       </ConfirmProvider>
     </I18nProvider>
   );

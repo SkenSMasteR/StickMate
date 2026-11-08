@@ -46,6 +46,7 @@ export type Shape =
       size: number;
       family: string;
       color: string;
+      matrix?: Affine | null;
     }
   | {
       kind: "Path";
@@ -153,6 +154,28 @@ export function applyAffine(matrix: Affine, point: Point): Point {
   };
 }
 
+export function composeAffine(outer: Affine, inner: Affine): Affine {
+  return {
+    a: outer.a * inner.a + outer.c * inner.b,
+    b: outer.b * inner.a + outer.d * inner.b,
+    c: outer.a * inner.c + outer.c * inner.d,
+    d: outer.b * inner.c + outer.d * inner.d,
+    e: outer.a * inner.e + outer.c * inner.f + outer.e,
+    f: outer.b * inner.e + outer.d * inner.f + outer.f
+  };
+}
+
+export function textCorners(shape: Extract<Shape, { kind: "Text" }>): Point[] {
+  const { x, y, size, matrix } = shape;
+  const w = textWidth(shape.text, size);
+  return [
+    { x, y },
+    { x: x + w, y },
+    { x: x + w, y: y + size },
+    { x, y: y + size }
+  ].map((point) => matrix ? applyAffine(matrix, point) : point);
+}
+
 export interface Bounds {
   x: number;
   y: number;
@@ -182,12 +205,7 @@ export function shapeBounds(shape: Shape): Bounds {
     return pointsBounds(flattenPath(shape.nodes, shape.closed), shape.width);
   }
   if (shape.kind === "Text") {
-    return {
-      x: shape.x,
-      y: shape.y,
-      w: textWidth(shape.text, shape.size),
-      h: shape.size
-    };
+    return pointsBounds(textCorners(shape), 0);
   }
   return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
 }

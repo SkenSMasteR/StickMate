@@ -448,6 +448,7 @@ mod tests {
             size: 12.0,
             family: "Segoe UI".to_string(),
             color: "#000000".to_string(),
+            matrix: None,
         }];
         assert_eq!(
             build_package(&heavy, &options(ExportRange::Whole)).expect_err("size"),

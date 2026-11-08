@@ -9,9 +9,11 @@ import {
   identityTransform,
   polygonVertices,
   shapeBounds,
+  textWidth,
   unionBounds
 } from "@/lib/document";
 import type { Bounds, EvalLayer, PathNode, Point, Shape, Transform } from "@/lib/document";
+import { usePrefs } from "@/lib/prefs";
 import { useWorkspace } from "./workspace";
 import type { Tool, TabState } from "./workspace";
 
@@ -39,6 +41,8 @@ interface Drag {
   path?: PathShape;
   indices?: number[];
   pivot?: Point;
+  axis?: "x" | "y";
+  scaleAxis?: "x" | "y";
   angle?: number;
 }
 
@@ -155,6 +159,85 @@ function sampleColor(shape: Shape): { stroke: string; fill: string } {
   return { stroke: shape.stroke, fill: shape.fill };
 }
 
+const RULER_STEPS = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000];
+const RULER_SIZE = 20;
+
+function rulerStep(scale: number): number {
+  return RULER_STEPS.find((value) => value * scale >= 40) ?? 2000;
+}
+
+function gridPositions(size: number, length: number): number[] {
+  const out: number[] = [];
+  if (!(size > 0)) {
+    return out;
+  }
+  for (let value = size; value < length; value += size) {
+    out.push(value);
+  }
+  return out;
+}
+
+function RulerStrip({
+  dimension,
+  scale,
+  vertical,
+  background,
+  left,
+  top
+}: {
+  dimension: number;
+  scale: number;
+  vertical: boolean;
+  background: string;
+  left: number;
+  top: number;
+}) {
+  const step = rulerStep(scale);
+  const pixels = dimension * scale;
+  const ticks = gridPositions(step, dimension).map((value) => ({
+    at: value * scale,
+    label: String(value),
+    major: Math.round(value / step) % 5 === 0
+  }));
+  return (
+    <svg
+      data-ruler={vertical ? "left" : "top"}
+      width={vertical ? RULER_SIZE : pixels}
+      height={vertical ? pixels : RULER_SIZE}
+      className="absolute select-none"
+      style={{ left, top, pointerEvents: "none" }}
+    >
+      <rect
+        width={vertical ? RULER_SIZE : pixels}
+        height={vertical ? pixels : RULER_SIZE}
+        fill={background}
+      />
+      {ticks.map((tick) => (
+        <g key={tick.label + String(tick.at)}>
+          <line
+            x1={vertical ? (tick.major ? 8 : 14) : tick.at}
+            y1={vertical ? tick.at : tick.major ? 8 : 14}
+            x2={vertical ? RULER_SIZE : tick.at}
+            y2={vertical ? tick.at : RULER_SIZE}
+            stroke="#94a3b8"
+            strokeWidth={1}
+          />
+          {tick.major &&
+            (vertical ? (
+              <text x={1} y={tick.at - 2} fontSize={9} fill="#94a3b8">
+                {tick.label}
+              </text>
+            ) : (
+              <text x={tick.at + 2} y={9} fontSize={9} fill="#94a3b8">
+                {tick.label}
+              </text>
+            ))}
+        </g>
+      ))}
+    </svg>
+  );
+}
+
 function ShapeNode({
   shape,
   interactive,
@@ -217,12 +300,15 @@ function ShapeNode({
   }
 
   if (shape.kind === "Text") {
+    const m = shape.matrix;
+    const transform = m ? `matrix(${m.a} ${m.b} ${m.c} ${m.d} ${m.e} ${m.f})` : undefined;
     return (
       <g onPointerDown={down} style={{ cursor: interactive ? cursor : undefined }}>
         {interactive && (
-          <rect x={box.x} y={box.y} width={box.w} height={box.h} fill="transparent" />
+          <rect x={shape.x} y={shape.y} width={textWidth(shape.text, shape.size)} height={shape.size} fill="transparent" transform={transform} />
         )}
         <text
+          transform={transform}
           x={shape.x}
           y={shape.y}
           dominantBaseline="hanging"
@@ -359,6 +445,8 @@ function LayerContent({
 export default function Canvas() {
   const { doc, layer, tab, frames, transform, actions, setTab } = useWorkspace();
   const { t } = useI18n();
+  const prefs = usePrefs();
+  const view = prefs.prefs.view;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<Drag | null>(null);
@@ -372,6 +460,7 @@ export default function Canvas() {
   const [selPreview, setSelPreview] = useState<SelPreview | null>(null);
   const [hover, setHover] = useState<Point | null>(null);
   const [penNodes, setPenNodes] = useState<PathNode[]>([]);
+  const [penHover, setPenHover] = useState<Point | null>(null);
   const [nodePreview, setNodePreview] = useState<PathShape | null>(null);
   const penRef = useRef<PathNode[]>([]);
   const commitRef = useRef<(closed: boolean) => void>(() => undefined);
@@ -409,6 +498,7 @@ export default function Canvas() {
   useEffect(() => {
     penRef.current = [];
     setPenNodes([]);
+    setPenHover(null);
     setNodePreview(null);
     setMarquee(null);
     setSelPreview(null);
@@ -432,7 +522,13 @@ export default function Canvas() {
   }, []);
 
   if (!doc || !layer || !tab) {
-    return <div ref={hostRef} className="min-h-0 flex-1 bg-muted" />;
+    return (
+      <div
+        ref={hostRef}
+        className="min-h-0 flex-1"
+        style={{ backgroundColor: view.backdrop }}
+      />
+    );
   }
 
   const fit =
@@ -473,6 +569,7 @@ export default function Canvas() {
     const nodes = penRef.current;
     penRef.current = [];
     setPenNodes([]);
+    setPenHover(null);
     if (nodes.length >= 2) {
       actions.draw({
         kind: "Path",
@@ -650,6 +747,35 @@ export default function Canvas() {
     svgRef.current?.setPointerCapture(event.pointerId);
   };
 
+  const onEdgeDown = (edge: "n" | "e" | "s" | "w", event: ReactPointerEvent) => {
+    event.stopPropagation();
+    if (layer.locked) {
+      toast.error(t("editor.layerLocked"));
+      return;
+    }
+    if (!selectionBounds) {
+      return;
+    }
+    const box = selectionBounds;
+    const anchors = {
+      n: { x: box.x + box.w / 2, y: box.y + box.h },
+      s: { x: box.x + box.w / 2, y: box.y },
+      e: { x: box.x, y: box.y + box.h / 2 },
+      w: { x: box.x + box.w, y: box.y + box.h / 2 }
+    };
+    dragRef.current = {
+      mode: "scale",
+      start: toShape(toDoc(event.clientX, event.clientY)),
+      clientStart: { x: event.clientX, y: event.clientY },
+      panStart: pan,
+      origin: transform,
+      indices: tab.selected,
+      pivot: anchors[edge],
+      axis: edge === "n" || edge === "s" ? "y" : "x"
+    };
+    svgRef.current?.setPointerCapture(event.pointerId);
+  };
+
   const onRotateDown = (event: ReactPointerEvent) => {
     event.stopPropagation();
     if (layer.locked) {
@@ -791,6 +917,9 @@ export default function Canvas() {
     if (erasing) {
       setHover(point);
     }
+    if (tab.tool === "pen" && penRef.current.length > 0) {
+      setPenHover(point);
+    }
     const drag = dragRef.current;
     if (!drag) {
       return;
@@ -833,10 +962,22 @@ export default function Canvas() {
         return;
       }
       if (drag.mode === "scale") {
+        const axis = drag.axis;
         const startX = drag.start.x - pivot.x;
         const startY = drag.start.y - pivot.y;
-        const sx = Math.abs(startX) > 0.001 ? Math.max(0.01, (local.x - pivot.x) / startX) : 1;
-        const sy = Math.abs(startY) > 0.001 ? Math.max(0.01, (local.y - pivot.y) / startY) : 1;
+        let sx =
+          axis !== "y" && Math.abs(startX) > 0.001
+            ? Math.max(0.01, (local.x - pivot.x) / startX)
+            : 1;
+        let sy =
+          axis !== "x" && Math.abs(startY) > 0.001
+            ? Math.max(0.01, (local.y - pivot.y) / startY)
+            : 1;
+        if (event.shiftKey && !axis) {
+          const locked = Math.abs(sx - 1) >= Math.abs(sy - 1) ? sx : sy;
+          sx = locked;
+          sy = locked;
+        }
         setSelPreview({ indices, pivot, dx: 0, dy: 0, sx, sy, rotation: 0 });
         return;
       }
@@ -1007,7 +1148,7 @@ export default function Canvas() {
           )
         : null;
       return (
-        <g key={item.id} opacity={faded ? 0.2 : 1}>
+        <g key={item.id} opacity={faded ? view.onionOpacity : 1}>
           <LayerContent
             evaluated={{ ...content, shapes: shownShapes }}
             transform={item.transform}
@@ -1047,8 +1188,35 @@ export default function Canvas() {
 
   const shown = draft ? finishDraft(draft, tab) : null;
 
+  const stageLeft = (host.width - doc.width * scale) / 2 + pan.x;
+  const stageTop = (host.height - doc.height * scale) / 2 + pan.y;
+
   return (
-    <div ref={hostRef} className="relative min-h-0 flex-1 overflow-hidden bg-muted">
+    <div
+      ref={hostRef}
+      className="relative min-h-0 flex-1 overflow-hidden"
+      style={{ backgroundColor: view.backdrop }}
+    >
+      {view.rulers && (
+        <>
+          <RulerStrip
+            dimension={doc.width}
+            scale={scale}
+            vertical={false}
+            background={view.backdrop}
+            left={stageLeft}
+            top={stageTop - RULER_SIZE}
+          />
+          <RulerStrip
+            dimension={doc.height}
+            scale={scale}
+            vertical
+            background={view.backdrop}
+            left={stageLeft - RULER_SIZE}
+            top={stageTop}
+          />
+        </>
+      )}
       <div
         className="absolute inset-0 flex items-center justify-center"
         style={{ transform: `translate(${pan.x}px, ${pan.y}px)` }}
@@ -1064,16 +1232,71 @@ export default function Canvas() {
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
-          onPointerLeave={() => setHover(null)}
+          onPointerLeave={() => {
+            setHover(null);
+            setPenHover(null);
+          }}
           onDoubleClick={() => {
             if (tab.tool === "pen") {
               commitPen(false);
             }
           }}
         >
-          <rect x={0} y={0} width={doc.width} height={doc.height} fill={doc.background} />
+          {(view.grid || view.checkerboard) && (
+            <defs>
+              {view.checkerboard && (
+                <pattern
+                  id="stickmate-transparency"
+                  width={16}
+                  height={16}
+                  patternUnits="userSpaceOnUse"
+                >
+                  <rect width={16} height={16} fill="#ffffff" />
+                  <rect width={8} height={8} fill="#cbd5e1" />
+                  <rect x={8} y={8} width={8} height={8} fill="#cbd5e1" />
+                </pattern>
+              )}
+              {view.grid && (
+                <pattern
+                  id="stickmate-grid"
+                  width={view.gridSize}
+                  height={view.gridSize}
+                  patternUnits="userSpaceOnUse"
+                >
+                  <path
+                    d={`M ${view.gridSize} 0 L 0 0 0 ${view.gridSize}`}
+                    fill="none"
+                    stroke="#64748b"
+                    strokeOpacity={0.45}
+                    strokeWidth={1}
+                  />
+                </pattern>
+              )}
+            </defs>
+          )}
+          <rect
+            data-stage
+            x={0}
+            y={0}
+            width={doc.width}
+            height={doc.height}
+            fill={view.checkerboard ? "url(#stickmate-transparency)" : doc.background}
+          />
+          {view.grid && (
+            <rect
+              data-view-grid
+              x={0}
+              y={0}
+              width={doc.width}
+              height={doc.height}
+              fill="url(#stickmate-grid)"
+              pointerEvents="none"
+            />
+          )}
           {onion.map((item) => (
-            <g key={item.frame}>{renderLayers(item.layers, true)}</g>
+            <g key={item.frame} data-onion-mode={view.onionMode}>
+              {renderLayers(item.layers, true)}
+            </g>
           ))}
           {current && renderLayers(current.layers, false)}
           {tab.tool === "select" && selectionBounds && !selPreview && (
@@ -1119,6 +1342,41 @@ export default function Canvas() {
                     }}
                     onPointerDown={onCornerDown}
                   />
+                );
+              })}
+              {(["n", "s", "e", "w"] as const).map((edge) => {
+                const horizontal = edge === "n" || edge === "s";
+                const y = edge === "n" ? selectionBounds.y : selectionBounds.y + selectionBounds.h;
+                const x = edge === "w" ? selectionBounds.x : selectionBounds.x + selectionBounds.w;
+                const cx = horizontal ? selectionBounds.x + selectionBounds.w / 2 : x;
+                const cy = horizontal ? y : selectionBounds.y + selectionBounds.h / 2;
+                const cursor = horizontal ? "ns-resize" : "ew-resize";
+                return (
+                  <g key={edge}>
+                    <line
+                      x1={horizontal ? selectionBounds.x : x}
+                      y1={horizontal ? y : selectionBounds.y}
+                      x2={horizontal ? selectionBounds.x + selectionBounds.w : x}
+                      y2={horizontal ? y : selectionBounds.y + selectionBounds.h}
+                      stroke="transparent"
+                      strokeWidth={8}
+                      style={{ cursor }}
+                      onPointerDown={(event) => onEdgeDown(edge, event)}
+                    />
+                    <rect
+                      data-edge={edge}
+                      x={cx - 4}
+                      y={cy - 4}
+                      width={8}
+                      height={8}
+                      fill="#ffffff"
+                      stroke="#3b82f6"
+                      strokeWidth={1}
+                      vectorEffect="non-scaling-stroke"
+                      style={{ cursor }}
+                      onPointerDown={(event) => onEdgeDown(edge, event)}
+                    />
+                  </g>
                 );
               })}
               <line
@@ -1211,6 +1469,19 @@ export default function Canvas() {
                   fill="#3b82f6"
                 />
               ))}
+              {penHover && (
+                <line
+                  data-pen-preview
+                  x1={penNodes[penNodes.length - 1].point.x}
+                  y1={penNodes[penNodes.length - 1].point.y}
+                  x2={penHover.x}
+                  y2={penHover.y}
+                  stroke="#3b82f6"
+                  strokeWidth={1}
+                  strokeDasharray="4 3"
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
             </g>
           )}
           {nodePath && (
@@ -1279,6 +1550,27 @@ export default function Canvas() {
               vectorEffect="non-scaling-stroke"
               pointerEvents="none"
             />
+          )}
+          {view.safeAreas && (
+            <g data-view-safe pointerEvents="none">
+              {[
+                { ratio: 0.9, color: "#f59e0b" },
+                { ratio: 0.8, color: "#22c55e" }
+              ].map((ring) => (
+                <rect
+                  key={ring.ratio}
+                  x={(doc.width * (1 - ring.ratio)) / 2}
+                  y={(doc.height * (1 - ring.ratio)) / 2}
+                  width={doc.width * ring.ratio}
+                  height={doc.height * ring.ratio}
+                  fill="none"
+                  stroke={ring.color}
+                  strokeWidth={1}
+                  strokeDasharray="6 4"
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
+            </g>
           )}
         </svg>
       </div>

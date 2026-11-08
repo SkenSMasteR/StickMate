@@ -84,3 +84,8 @@
     user-select: none;
   }
 }
+
+[data-onion-mode="trace"] :is(rect, circle, ellipse, polyline, polygon, path, text) {
+  fill: none;
+  stroke: #94a3b8;
+}

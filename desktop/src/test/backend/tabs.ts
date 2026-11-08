@@ -1,4 +1,5 @@
 import type { MockExtension } from "../backend";
+import { dockingState } from "./docking";
 
 export const handlers: MockExtension = () => ({
   "plugin:window|get_all_windows": () => {
@@ -9,7 +10,14 @@ export const handlers: MockExtension = () => ({
         };
       }
     ).__TAURI_INTERNALS__;
-    const label = internals.metadata?.currentWindow?.label;
-    return label ? [label] : [];
+    const labels = ["splash", "main", "editor"];
+    const current = internals.metadata?.currentWindow?.label;
+    if (current) {
+      labels.push(current);
+    }
+    for (const item of dockingState.created) {
+      labels.push(item.label);
+    }
+    return [...new Set(labels)];
   }
 });

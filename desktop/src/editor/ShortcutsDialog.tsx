@@ -23,7 +23,7 @@ import type { ShortcutOverrides } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import type { Command } from "./commands";
 
-const groups = ["tool", "playback", "edit", "frame", "view", "layer", "scene"];
+const groups = ["tool", "playback", "edit", "frame", "view", "layer", "scene", "project"];
 
 const maxProfileBytes = 65536;
 

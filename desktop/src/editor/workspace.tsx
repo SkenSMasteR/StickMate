@@ -3,12 +3,15 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState
 } from "react";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { useI18n } from "@/i18n";
 import { useConfirm } from "@/lib/confirm";
+import { usePrefs } from "@/lib/prefs";
+import type { ViewPrefs } from "@/lib/view";
 import {
   docAddLayer,
   docAddScene,
@@ -64,6 +67,8 @@ import {
   setFrameClipboard
 } from "@/lib/frames";
 import { docDuplicateLayer } from "@/lib/tauri";
+import { docCopyShapes, docPasteShapes } from "@/lib/shapes";
+import type { ShapeClip } from "@/lib/shapes";
 
 export type Tool =
   | "select"
@@ -186,6 +191,9 @@ export interface Actions {
     rotation: number
   ) => void;
   reorderSelected: (toFront: boolean) => void;
+  nudgeSelected: (dx: number, dy: number) => void;
+  copySelected: () => Promise<void>;
+  pasteSelected: () => Promise<void>;
   selectLayer: (layerId: string) => void;
   selectScene: (sceneId: string) => void;
   seek: (frame: number) => void;
@@ -194,6 +202,7 @@ export interface Actions {
   toggleLoop: () => void;
   toggleOnion: () => void;
   setOnionRange: (range: number) => void;
+  setView: (patch: Partial<ViewPrefs>) => void;
   zoomBy: (factor: number) => void;
   zoomFit: () => void;
   draw: (shape: Shape) => void;
@@ -239,11 +248,13 @@ const WorkspaceContext = createContext<WorkspaceValue | null>(null);
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const { t } = useI18n();
   const confirm = useConfirm();
+  const prefs = usePrefs();
   const [docs, setDocs] = useState<Record<string, Document>>({});
   const [ids, setIds] = useState<string[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tabs, setTabs] = useState<Record<string, TabState>>({});
   const [frames, setFrames] = useState<EvalFrame[]>([]);
+  const shapeClipboard = useRef<Promise<ShapeClip | null>>(Promise.resolve(null));
 
   const doc = activeId ? docs[activeId] ?? null : null;
   const tab = activeId ? tabs[activeId] ?? null : null;
@@ -520,6 +531,54 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         }
       });
     },
+    nudgeSelected: (dx, dy) => {
+      if (tab?.tool !== "select" || tab.playing || layer?.locked || !tab.selected.length) {
+        return;
+      }
+      const angle = (transform.rotation * Math.PI) / 180;
+      const x = (dx * Math.cos(angle) + dy * Math.sin(angle)) / transform.scale;
+      const y = (-dx * Math.sin(angle) + dy * Math.cos(angle)) / transform.scale;
+      actions.transformShapes({ x: 0, y: 0 }, x, y, 1, 1, 0);
+    },
+    copySelected: async () => {
+      if (!doc || !scene || !layer || !tab || tab.playing || !tab.selected.length) {
+        return;
+      }
+      const previous = shapeClipboard.current;
+      const pending = docCopyShapes(doc.id, scene.id, layer.id, frame, tab.selected)
+        .catch((error) => {
+          toast.error(String(error));
+          return previous;
+        });
+      shapeClipboard.current = pending;
+      await pending;
+    },
+    pasteSelected: async () => {
+      if (!doc || !scene || !layer || !tab || tab.playing || layer.locked) {
+        return;
+      }
+      const clip = await shapeClipboard.current;
+      if (!clip?.shapes.length) {
+        return;
+      }
+      try {
+        const result = await docPasteShapes(doc.id, scene.id, layer.id, frame, clip);
+        setDocs((prev) => prev[doc.id] ? { ...prev, [doc.id]: result.document } : prev);
+        setTabs((prev) => {
+          const current = prev[doc.id];
+          if (!current || current.sceneId !== scene.id || current.layerId !== layer.id
+            || current.frame !== tab.frame) {
+            return prev;
+          }
+          return {
+            ...prev,
+            [doc.id]: { ...current, selected: result.indices, pivot: null, selectedNode: null }
+          };
+        });
+      } catch (error) {
+        toast.error(String(error));
+      }
+    },
     selectLayer: (layerId) => setTab({ layerId, selected: [], pivot: null, selectedFrames: [] }),
     selectScene: (sceneId) => {
       const next = doc?.scenes.find((item) => item.id === sceneId);
@@ -543,6 +602,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     toggleLoop: () => setTab({ loop: !tab?.loop }),
     toggleOnion: () => setTab({ onion: !tab?.onion }),
     setOnionRange: (range) => setTab({ onionRange: clamp(range, 1, 5) }),
+    setView: (patch) => {
+      void prefs.update({ view: { ...prefs.prefs.view, ...patch } });
+    },
     zoomBy: (factor) => setTab({ zoom: clamp((tab?.zoom ?? 1) * factor, 0.1, 8) }),
     zoomFit: () => setTab({ zoom: 1 }),
     draw: (shape) => edit((d, s, l) => docDraw(d.id, s.id, l.id, frame, shape)),
@@ -661,7 +723,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         const key = heldKey(l, frame);
         return docSetLabel(d.id, s.id, l.id, key?.frame ?? frame, label);
       }),
-    addLayer: () => edit((d, s) => docAddLayer(d.id, s.id, "")),
+    addLayer: () =>
+      edit(async (d, s) => {
+        const next = await docAddLayer(d.id, s.id, "");
+        const target = next.scenes.find((item) => item.id === s.id);
+        if (target) {
+          setTab({ layerId: target.layers[0].id, selected: [], pivot: null, selectedFrames: [] });
+        }
+        return next;
+      }),
     renameLayer: (layerId, name) =>
       edit((d, s) => docSetLayer(d.id, s.id, layerId, { name })),
     setLayerFlags: (layerId, patch) =>

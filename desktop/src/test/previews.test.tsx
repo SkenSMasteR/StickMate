@@ -8,6 +8,7 @@ import { WorkspaceProvider } from "@/editor/workspace";
 import { I18nProvider } from "@/i18n";
 import { ConfirmProvider } from "@/lib/confirm";
 import type { Document, Keyframe, Layer, Scene, Shape, Transform } from "@/lib/document";
+import { PrefsProvider } from "@/lib/prefs";
 import source from "@/export/runtime.js?raw";
 import { store } from "./backend";
 
@@ -35,7 +36,10 @@ function recorder(index: number): CanvasRenderingContext2D {
     "ellipse",
     "fill",
     "stroke",
-    "fillText"
+    "fillText",
+    "save",
+    "transform",
+    "restore"
   ];
   for (const name of methods) {
     target[name] = (...args: unknown[]) => {
@@ -139,14 +143,16 @@ function mount(): RenderResult {
   return render(
     <I18nProvider language="en" onLanguageChange={() => {}}>
       <ConfirmProvider>
-        <WorkspaceProvider>
-          <Toaster />
-          <Projects
-            onOpened={(id) => {
-              opened.push(id);
-            }}
-          />
-        </WorkspaceProvider>
+        <PrefsProvider>
+          <WorkspaceProvider>
+            <Toaster />
+            <Projects
+              onOpened={(id) => {
+                opened.push(id);
+              }}
+            />
+          </WorkspaceProvider>
+        </PrefsProvider>
       </ConfirmProvider>
     </I18nProvider>
   );
