@@ -14,10 +14,16 @@ import {
 } from "@/lib/document";
 import type { Bounds, EvalLayer, PathNode, Point, Shape, Transform } from "@/lib/document";
 import { usePrefs } from "@/lib/prefs";
+import { collectTargets, mapBounds, snapDelta, snapPoint } from "@/lib/snapping";
+import type { SnapLines, SnapTargets } from "@/lib/snapping";
 import { useWorkspace } from "./workspace";
 import type { Tool, TabState } from "./workspace";
 
 type PathShape = Extract<Shape, { kind: "Path" }>;
+
+const SNAP_TOLERANCE_PX = 6;
+const SNAP_DRAW_TOOLS: Tool[] = ["rect", "ellipse", "line", "polygon"];
+const NO_SNAP_LINES: SnapLines = { x: null, y: null };
 
 interface Drag {
   mode:
@@ -459,6 +465,7 @@ export default function Canvas() {
   const [marquee, setMarquee] = useState<Bounds | null>(null);
   const [selPreview, setSelPreview] = useState<SelPreview | null>(null);
   const [hover, setHover] = useState<Point | null>(null);
+  const [snapLines, setSnapLines] = useState<SnapLines>(NO_SNAP_LINES);
   const [penNodes, setPenNodes] = useState<PathNode[]>([]);
   const [penHover, setPenHover] = useState<Point | null>(null);
   const [nodePreview, setNodePreview] = useState<PathShape | null>(null);
@@ -502,6 +509,7 @@ export default function Canvas() {
     setNodePreview(null);
     setMarquee(null);
     setSelPreview(null);
+    setSnapLines(NO_SNAP_LINES);
     dragRef.current = null;
   }, [doc?.id, tab?.sceneId, tab?.layerId, tab?.frame]);
 
@@ -563,6 +571,64 @@ export default function Canvas() {
       x: dx * Math.cos(angle) - dy * Math.sin(angle),
       y: dx * Math.sin(angle) + dy * Math.cos(angle)
     };
+  };
+
+  const snapTolerance = SNAP_TOLERANCE_PX / scale;
+
+  const fromShape = (point: Point): Point => {
+    const angle = (transform.rotation * Math.PI) / 180;
+    const cos = Math.cos(angle) * transform.scale;
+    const sin = Math.sin(angle) * transform.scale;
+    return {
+      x: transform.x + point.x * cos - point.y * sin,
+      y: transform.y + point.x * sin + point.y * cos
+    };
+  };
+
+  const offsetToDoc = (offset: Point): Point => {
+    const angle = (transform.rotation * Math.PI) / 180;
+    const cos = Math.cos(angle) * transform.scale;
+    const sin = Math.sin(angle) * transform.scale;
+    return { x: offset.x * cos - offset.y * sin, y: offset.x * sin + offset.y * cos };
+  };
+
+  const offsetToShape = (offset: Point): Point => {
+    const angle = (-transform.rotation * Math.PI) / 180;
+    const cos = Math.cos(angle) / transform.scale;
+    const sin = Math.sin(angle) / transform.scale;
+    return { x: offset.x * cos - offset.y * sin, y: offset.x * sin + offset.y * cos };
+  };
+
+  const snapTargetsFor = (moving: number[]): SnapTargets => {
+    const boxes: Bounds[] = [];
+    for (const item of current?.layers ?? []) {
+      item.shapes.forEach((shape, index) => {
+        if (item.id === layer.id && moving.includes(index)) {
+          return;
+        }
+        boxes.push(mapBounds(shapeBounds(shape), item.transform));
+      });
+    }
+    return collectTargets(
+      { width: doc.width, height: doc.height },
+      { enabled: view.grid, size: view.gridSize },
+      boxes
+    );
+  };
+
+  const snapAt = (point: Point, moving: number[]): Point => {
+    const snapped = snapPoint(point, snapTargetsFor(moving), snapTolerance);
+    setSnapLines({ x: snapped.x, y: snapped.y });
+    return snapped.point;
+  };
+
+  const snapDrawPoint = (point: Point): Point => (view.snap ? snapAt(point, []) : point);
+
+  const snapHandlePoint = (point: Point, moving: number[]): Point => {
+    if (!view.snap) {
+      return point;
+    }
+    return toShape(snapAt(fromShape(point), moving));
   };
 
   const commitPen = (closed: boolean) => {
@@ -866,22 +932,23 @@ export default function Canvas() {
       return;
     }
     if (tab.tool === "pen") {
+      const placed = snapDrawPoint(point);
       const nodes = penRef.current;
       const first = nodes[0];
       if (
         nodes.length >= 3 &&
         first &&
-        Math.hypot(point.x - first.point.x, point.y - first.point.y) <= 5
+        Math.hypot(placed.x - first.point.x, placed.y - first.point.y) <= 5
       ) {
         commitPen(true);
         return;
       }
-      const next = [...nodes, { point, handle_in: null, handle_out: null }];
+      const next = [...nodes, { point: placed, handle_in: null, handle_out: null }];
       penRef.current = next;
       setPenNodes(next);
       dragRef.current = {
         mode: "pen",
-        start: point,
+        start: placed,
         clientStart: point,
         panStart: pan,
         origin: identityTransform
@@ -901,14 +968,15 @@ export default function Canvas() {
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
     }
+    const start = SNAP_DRAW_TOOLS.includes(tab.tool) ? snapDrawPoint(point) : point;
     dragRef.current = {
       mode: "draw",
-      start: point,
+      start,
       clientStart: point,
       panStart: pan,
       origin: identityTransform
     };
-    setDraft(makeShape(tab.tool, point, point, tab));
+    setDraft(makeShape(tab.tool, start, start, tab));
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
@@ -950,12 +1018,28 @@ export default function Canvas() {
       return;
     }
     if (drag.mode === "selmove" || drag.mode === "scale" || drag.mode === "rotate") {
-      const local = toShape(point);
       const pivot = drag.pivot ?? pivotPoint;
       const indices = drag.indices ?? tab.selected;
+      const local =
+        drag.mode === "scale" ? snapHandlePoint(toShape(point), indices) : toShape(point);
       if (drag.mode === "selmove") {
-        const dx = local.x - drag.start.x;
-        const dy = local.y - drag.start.y;
+        let dx = local.x - drag.start.x;
+        let dy = local.y - drag.start.y;
+        if (view.snap) {
+          const box = unionBounds(activeShapes, indices);
+          if (box) {
+            const snapped = snapDelta(
+              mapBounds(box, transform),
+              offsetToDoc({ x: dx, y: dy }),
+              snapTargetsFor(indices),
+              snapTolerance
+            );
+            setSnapLines({ x: snapped.x, y: snapped.y });
+            const shifted = offsetToShape({ x: snapped.dx, y: snapped.dy });
+            dx = shifted.x;
+            dy = shifted.y;
+          }
+        }
         setSelPreview(
           dx === 0 && dy === 0 ? null : { indices, pivot, dx, dy, sx: 1, sy: 1, rotation: 0 }
         );
@@ -1045,17 +1129,19 @@ export default function Canvas() {
       });
       return;
     }
+    const end = SNAP_DRAW_TOOLS.includes(tab.tool) ? snapDrawPoint(point) : point;
     setDraft((prev) => {
       if ((tab.tool === "pencil" || tab.tool === "brush") && prev && prev.kind === "Stroke") {
         return { ...prev, points: [...prev.points, point] };
       }
-      return makeShape(tab.tool, drag.start, point, tab);
+      return makeShape(tab.tool, drag.start, end, tab);
     });
   };
 
   const onPointerUp = () => {
     const drag = dragRef.current;
     dragRef.current = null;
+    setSnapLines(NO_SNAP_LINES);
     if (!drag) {
       return;
     }
@@ -1442,6 +1528,34 @@ export default function Canvas() {
               selected={false}
               onDown={() => undefined}
             />
+          )}
+          {view.snap && (snapLines.x !== null || snapLines.y !== null) && (
+            <g data-snap-lines pointerEvents="none">
+              {snapLines.x !== null && (
+                <line
+                  data-snap-line="x"
+                  x1={snapLines.x}
+                  y1={0}
+                  x2={snapLines.x}
+                  y2={doc.height}
+                  stroke="#f43f5e"
+                  strokeWidth={1}
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+              {snapLines.y !== null && (
+                <line
+                  data-snap-line="y"
+                  x1={0}
+                  y1={snapLines.y}
+                  x2={doc.width}
+                  y2={snapLines.y}
+                  stroke="#f43f5e"
+                  strokeWidth={1}
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+            </g>
           )}
           {tab.tool === "pen" && penNodes.length > 0 && (
             <g pointerEvents="none">

@@ -90,6 +90,26 @@ describe("view panel", () => {
     expect(document.querySelectorAll("[data-ruler]")).toHaveLength(0);
   });
 
+  test("snapping is a persisted guides toggle", async () => {
+    await renderEditor();
+    await openView();
+    expect(toggle("snap").getAttribute("aria-pressed")).toBe("false");
+
+    await clickToggle("snap");
+    expect(toggle("snap").getAttribute("aria-pressed")).toBe("true");
+    await waitFor(() => {
+      const stored = server.data.view as Record<string, unknown> | undefined;
+      expect(stored?.snap).toBe(true);
+    });
+
+    await clickToggle("snap");
+    expect(toggle("snap").getAttribute("aria-pressed")).toBe("false");
+    await waitFor(() => {
+      const stored = server.data.view as Record<string, unknown> | undefined;
+      expect(stored?.snap).toBe(false);
+    });
+  });
+
   test("onion skin follows the view settings", async () => {
     const { doc } = await renderEditor();
     await act(async () => {

@@ -100,6 +100,12 @@ export default function ViewPanel() {
           active={view.safeAreas}
           onToggle={() => actions.setView({ safeAreas: !view.safeAreas })}
         />
+        <Toggle
+          id="snap"
+          label={t("view.snap")}
+          active={view.snap}
+          onToggle={() => actions.setView({ snap: !view.snap })}
+        />
       </Section>
       <Section title={t("view.canvas")}>
         <Toggle

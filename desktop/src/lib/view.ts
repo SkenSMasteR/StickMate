@@ -3,6 +3,7 @@ export type ViewPrefs = {
   gridSize: number;
   rulers: boolean;
   safeAreas: boolean;
+  snap: boolean;
   checkerboard: boolean;
   backdrop: string;
   onionMode: "ghost" | "trace";
@@ -14,6 +15,7 @@ export const defaultView: ViewPrefs = {
   gridSize: 50,
   rulers: false,
   safeAreas: false,
+  snap: false,
   checkerboard: false,
   backdrop: "#1f2430",
   onionMode: "ghost",
@@ -25,6 +27,7 @@ export const VIEW_KEYS: (keyof ViewPrefs)[] = [
   "gridSize",
   "rulers",
   "safeAreas",
+  "snap",
   "checkerboard",
   "backdrop",
   "onionMode",
@@ -48,6 +51,7 @@ export function sanitizeView(raw: unknown): ViewPrefs {
     rulers: typeof input.rulers === "boolean" ? input.rulers : defaultView.rulers,
     safeAreas:
       typeof input.safeAreas === "boolean" ? input.safeAreas : defaultView.safeAreas,
+    snap: typeof input.snap === "boolean" ? input.snap : defaultView.snap,
     checkerboard:
       typeof input.checkerboard === "boolean"
         ? input.checkerboard
