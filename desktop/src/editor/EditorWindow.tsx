@@ -7,8 +7,31 @@ import ProjectTabs from "./ProjectTabs";
 import { useWorkspace } from "./workspace";
 
 export default function EditorWindow() {
-  const { ids, open } = useWorkspace();
+  const { ids, open, create } = useWorkspace();
   const previous = useRef(0);
+  const bootstrapped = useRef(false);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || bootstrapped.current) {
+      return;
+    }
+    bootstrapped.current = true;
+    const params = new URLSearchParams(window.location.search);
+    const docId = params.get("doc");
+    if (docId) {
+      void open(docId);
+      return;
+    }
+    if (params.get("new") !== null) {
+      void create({
+        name: "Verification project",
+        width: Number(params.get("width") ?? 800),
+        height: Number(params.get("height") ?? 600),
+        fps: 24,
+        background: "#ffffff"
+      });
+    }
+  }, [create, open]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
