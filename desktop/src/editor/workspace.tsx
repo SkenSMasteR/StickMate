@@ -15,6 +15,7 @@ import type { ViewPrefs } from "@/lib/view";
 import {
   docAddLayer,
   docAddScene,
+  docAlignShapes,
   docClose,
   docDelete,
   docDeleteShapes,
@@ -48,6 +49,8 @@ import {
   sceneLength
 } from "@/lib/document";
 import type {
+  AlignMode,
+  AlignReference,
   Document,
   EvalFrame,
   Layer,
@@ -100,6 +103,7 @@ export interface TabState {
   selected: number[];
   pivot: Point | null;
   selectedNode: number | null;
+  alignReference: AlignReference;
   stroke: string;
   fill: string;
   strokeWidth: number;
@@ -136,6 +140,7 @@ function firstTab(doc: Document): TabState {
     selected: [],
     pivot: null,
     selectedNode: null,
+    alignReference: "selection",
     stroke: "#000000",
     fill: "#3b82f6",
     strokeWidth: 3,
@@ -192,6 +197,7 @@ export interface Actions {
   ) => void;
   reorderSelected: (toFront: boolean) => void;
   nudgeSelected: (dx: number, dy: number) => void;
+  alignSelected: (mode: AlignMode) => void;
   copySelected: () => Promise<void>;
   pasteSelected: () => Promise<void>;
   selectLayer: (layerId: string) => void;
@@ -539,6 +545,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const x = (dx * Math.cos(angle) + dy * Math.sin(angle)) / transform.scale;
       const y = (-dx * Math.sin(angle) + dy * Math.cos(angle)) / transform.scale;
       actions.transformShapes({ x: 0, y: 0 }, x, y, 1, 1, 0);
+    },
+    alignSelected: (mode) => {
+      const indices = tab?.selected ?? [];
+      if (indices.length === 0) {
+        return;
+      }
+      const reference = tab?.alignReference ?? "selection";
+      edit((d, s, l) =>
+        docAlignShapes(d.id, s.id, l.id, frame, indices, mode, reference)
+      );
     },
     copySelected: async () => {
       if (!doc || !scene || !layer || !tab || tab.playing || !tab.selected.length) {

@@ -1,7 +1,19 @@
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import { affineFrom, applyAffine, composeAffine, flattenPath, polygonVertices, textCorners } from "@/lib/document";
+import {
+  affineFrom,
+  applyAffine,
+  composeAffine,
+  flattenPath,
+  polygonVertices,
+  shapeBounds,
+  textCorners,
+  unionBounds
+} from "@/lib/document";
 import type {
   Affine,
+  AlignMode,
+  AlignReference,
+  Bounds,
   Document,
   EvalFrame,
   EvalLayer,
@@ -292,6 +304,93 @@ export function transformShape(
   }
   const q = applyAffine(matrix, { x: shape.x, y: shape.y });
   return { ...shape, x: q.x, y: q.y, w: shape.w * sx, h: shape.h * sy };
+}
+
+const alignModes: AlignMode[] = [
+  "left",
+  "center_h",
+  "right",
+  "top",
+  "center_v",
+  "bottom",
+  "distribute_h",
+  "distribute_v"
+];
+
+const alignReferences: AlignReference[] = ["stage", "selection"];
+
+function parseAlignMode(value: unknown): AlignMode {
+  if (alignModes.includes(value as AlignMode)) {
+    return value as AlignMode;
+  }
+  throw new Error("unknown align mode");
+}
+
+function parseAlignReference(value: unknown): AlignReference {
+  if (alignReferences.includes(value as AlignReference)) {
+    return value as AlignReference;
+  }
+  throw new Error("unknown align reference");
+}
+
+function alignOffsets(
+  stage: Bounds,
+  source: Shape[],
+  indices: number[],
+  mode: AlignMode,
+  reference: AlignReference
+): Array<[number, number, number]> {
+  const referenceBox =
+    reference === "stage"
+      ? stage
+      : unionBounds(source, indices) ?? { x: 0, y: 0, w: 0, h: 0 };
+  const offsets: Array<[number, number, number]> = [];
+  if (mode === "left" || mode === "center_h" || mode === "right") {
+    for (const index of indices) {
+      const item = shapeBounds(source[index]);
+      const dx =
+        mode === "left"
+          ? referenceBox.x - item.x
+          : mode === "right"
+            ? referenceBox.x + referenceBox.w - (item.x + item.w)
+            : referenceBox.x + referenceBox.w / 2 - (item.x + item.w / 2);
+      offsets.push([index, dx, 0]);
+    }
+  } else if (mode === "top" || mode === "center_v" || mode === "bottom") {
+    for (const index of indices) {
+      const item = shapeBounds(source[index]);
+      const dy =
+        mode === "top"
+          ? referenceBox.y - item.y
+          : mode === "bottom"
+            ? referenceBox.y + referenceBox.h - (item.y + item.h)
+            : referenceBox.y + referenceBox.h / 2 - (item.y + item.h / 2);
+      offsets.push([index, 0, dy]);
+    }
+  } else if (indices.length >= 3) {
+    const horizontal = mode === "distribute_h";
+    const placed = indices
+      .map((index) => {
+        const item = shapeBounds(source[index]);
+        return {
+          edge: horizontal ? item.x : item.y,
+          size: horizontal ? item.w : item.h,
+          index
+        };
+      })
+      .sort((a, b) => a.edge - b.edge || a.index - b.index);
+    const start = horizontal ? referenceBox.x : referenceBox.y;
+    const span = horizontal ? referenceBox.w : referenceBox.h;
+    const total = placed.reduce((sum, item) => sum + item.size, 0);
+    const gap = (span - total) / (placed.length - 1);
+    let cursor = start;
+    for (const item of placed) {
+      const delta = cursor - item.edge;
+      offsets.push(horizontal ? [item.index, delta, 0] : [item.index, 0, delta]);
+      cursor += item.size + gap;
+    }
+  }
+  return offsets.filter(([, dx, dy]) => dx !== 0 || dy !== 0);
 }
 
 const emptyKey = (frame: number): Keyframe => ({
@@ -1046,6 +1145,44 @@ mockIPC(
               throw new Error("unknown shape");
             }
             const next = transformShape(shape, matrix, sx, sy, rotation);
+            validateShape(next);
+            updated.push([shapeIndex, next]);
+          }
+          const key = target.keys[keyAt(target, frame)];
+          for (const [shapeIndex, next] of updated) {
+            key.shapes[shapeIndex] = next;
+          }
+        });
+      }
+      case "doc_align_shapes": {
+        const mode = parseAlignMode(a.mode);
+        const reference = parseAlignReference(a.reference);
+        const indices = a.indices as number[];
+        if (indices.length === 0) {
+          throw new Error("no shapes selected");
+        }
+        const sorted = [...new Set(indices)].sort((x, y) => x - y);
+        return edit(a.id as string, (doc) => {
+          const stage: Bounds = { x: 0, y: 0, w: doc.width, h: doc.height };
+          const target = layer(doc, a.sceneId as string, a.layerId as string);
+          writable(target);
+          const frame = a.frame as number;
+          const held = heldIndex(target, frame);
+          const source = held >= 0 ? structuredClone(target.keys[held].shapes) : [];
+          for (const shapeIndex of sorted) {
+            if (shapeIndex >= source.length) {
+              throw new Error("unknown shape");
+            }
+          }
+          const offsets = alignOffsets(stage, source, sorted, mode, reference);
+          if (offsets.length === 0) {
+            return;
+          }
+          const pivot: Point = { x: 0, y: 0 };
+          const updated: Array<[number, Shape]> = [];
+          for (const [shapeIndex, dx, dy] of offsets) {
+            const matrix = affineFrom(pivot, dx, dy, 1, 1, 0);
+            const next = transformShape(source[shapeIndex], matrix, 1, 1, 0);
             validateShape(next);
             updated.push([shapeIndex, next]);
           }

@@ -67,6 +67,7 @@ function fixtureTab(): TabState {
     selected: [],
     pivot: null,
     selectedNode: null,
+    alignReference: "selection",
     stroke: "#000000",
     fill: "#3b82f6",
     strokeWidth: 3,
@@ -121,10 +122,11 @@ function tick(): Promise<void> {
 describe("command model", () => {
   test("the five argument call keeps only zero argument commands", () => {
     const commands = buildCommands(stubActions(), t, {}, vi.fn(), vi.fn());
-    expect(commands.length).toBe(51);
+    expect(commands.length).toBe(59);
     expect(commands.every((item) => item.args === undefined)).toBe(true);
     expect(commands.find((item) => item.id === "view.palette")?.disabled).toBe(true);
     expect(commands.some((item) => item.id === "layer.rename")).toBe(false);
+    expect(commands.some((item) => item.id === "align.left")).toBe(true);
   });
 
   test("the context call registers every parameterized action", () => {
@@ -138,6 +140,14 @@ describe("command model", () => {
     );
     const ids = commands.map((item) => item.id);
     for (const id of [
+      "align.left",
+      "align.centerH",
+      "align.right",
+      "align.top",
+      "align.centerV",
+      "align.bottom",
+      "align.distributeH",
+      "align.distributeV",
       "view.palette",
       "playback.loopClear",
       "edit.bringToFront",
@@ -170,7 +180,7 @@ describe("command model", () => {
     ]) {
       expect(ids, id).toContain(id);
     }
-    expect(commands.length).toBe(79);
+    expect(commands.length).toBe(87);
     for (const command of commands) {
       if (command.args) {
         expect(typeof command.runArgs, command.id).toBe("function");
@@ -307,6 +317,14 @@ describe("command model", () => {
     expect(context.close).toHaveBeenCalledWith("d1");
     byId("playback.loopClear")?.run();
     expect(actions.setLoopRange).toHaveBeenCalledWith(null, null);
+    byId("align.left")?.run();
+    expect(actions.alignSelected).toHaveBeenCalledWith("left");
+    byId("align.centerV")?.run();
+    expect(actions.alignSelected).toHaveBeenCalledWith("center_v");
+    byId("align.distributeH")?.run();
+    expect(actions.alignSelected).toHaveBeenCalledWith("distribute_h");
+    byId("align.distributeV")?.run();
+    expect(actions.alignSelected).toHaveBeenCalledWith("distribute_v");
   });
 
   test("removing frames by count asks for confirmation first", async () => {

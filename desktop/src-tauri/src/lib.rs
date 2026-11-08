@@ -90,6 +90,7 @@ pub fn run() {
             document::doc_replace_shape,
             document::doc_delete_shape,
             document::doc_transform_shapes,
+            document::doc_align_shapes,
             document::doc_reorder_shapes,
             document::doc_delete_shapes,
             document::doc_set_transform,

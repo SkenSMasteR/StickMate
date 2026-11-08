@@ -440,6 +440,162 @@ pub(crate) fn transform_shape(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlignMode {
+    Left,
+    CenterH,
+    Right,
+    Top,
+    CenterV,
+    Bottom,
+    DistributeH,
+    DistributeV,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlignReference {
+    Stage,
+    Selection,
+}
+
+impl AlignMode {
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "left" => Ok(Self::Left),
+            "center_h" => Ok(Self::CenterH),
+            "right" => Ok(Self::Right),
+            "top" => Ok(Self::Top),
+            "center_v" => Ok(Self::CenterV),
+            "bottom" => Ok(Self::Bottom),
+            "distribute_h" => Ok(Self::DistributeH),
+            "distribute_v" => Ok(Self::DistributeV),
+            _ => Err("unknown align mode".to_string()),
+        }
+    }
+}
+
+impl AlignReference {
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "stage" => Ok(Self::Stage),
+            "selection" => Ok(Self::Selection),
+            _ => Err("unknown align reference".to_string()),
+        }
+    }
+}
+
+fn union_of(source: &[Shape], indices: &[usize]) -> Bounds {
+    let mut union: Option<Bounds> = None;
+    for &index in indices {
+        let Some(shape) = source.get(index) else {
+            continue;
+        };
+        let item = shape_bounds(shape);
+        union = Some(match union {
+            None => item,
+            Some(current) => {
+                let x = current.x.min(item.x);
+                let y = current.y.min(item.y);
+                Bounds {
+                    x,
+                    y,
+                    w: (current.x + current.w).max(item.x + item.w) - x,
+                    h: (current.y + current.h).max(item.y + item.h) - y,
+                }
+            }
+        });
+    }
+    union.unwrap_or(Bounds {
+        x: 0.0,
+        y: 0.0,
+        w: 0.0,
+        h: 0.0,
+    })
+}
+
+fn align_offsets(
+    stage: Bounds,
+    source: &[Shape],
+    indices: &[usize],
+    mode: AlignMode,
+    reference: AlignReference,
+) -> Vec<(usize, f64, f64)> {
+    let reference_box = match reference {
+        AlignReference::Stage => stage,
+        AlignReference::Selection => union_of(source, indices),
+    };
+    let mut offsets: Vec<(usize, f64, f64)> = Vec::new();
+    match mode {
+        AlignMode::Left | AlignMode::CenterH | AlignMode::Right => {
+            for &index in indices {
+                let item = shape_bounds(&source[index]);
+                let dx = match mode {
+                    AlignMode::Left => reference_box.x - item.x,
+                    AlignMode::Right => reference_box.x + reference_box.w - (item.x + item.w),
+                    _ => reference_box.x + reference_box.w / 2.0 - (item.x + item.w / 2.0),
+                };
+                offsets.push((index, dx, 0.0));
+            }
+        }
+        AlignMode::Top | AlignMode::CenterV | AlignMode::Bottom => {
+            for &index in indices {
+                let item = shape_bounds(&source[index]);
+                let dy = match mode {
+                    AlignMode::Top => reference_box.y - item.y,
+                    AlignMode::Bottom => reference_box.y + reference_box.h - (item.y + item.h),
+                    _ => reference_box.y + reference_box.h / 2.0 - (item.y + item.h / 2.0),
+                };
+                offsets.push((index, 0.0, dy));
+            }
+        }
+        AlignMode::DistributeH | AlignMode::DistributeV => {
+            if indices.len() >= 3 {
+                let horizontal = mode == AlignMode::DistributeH;
+                let mut placed: Vec<(f64, f64, usize)> = indices
+                    .iter()
+                    .map(|&index| {
+                        let item = shape_bounds(&source[index]);
+                        if horizontal {
+                            (item.x, item.w, index)
+                        } else {
+                            (item.y, item.h, index)
+                        }
+                    })
+                    .collect();
+                placed.sort_by(|a, b| {
+                    a.0.partial_cmp(&b.0)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then(a.2.cmp(&b.2))
+                });
+                let start = if horizontal {
+                    reference_box.x
+                } else {
+                    reference_box.y
+                };
+                let span = if horizontal {
+                    reference_box.w
+                } else {
+                    reference_box.h
+                };
+                let total: f64 = placed.iter().map(|item| item.1).sum();
+                let gap = (span - total) / (placed.len() as f64 - 1.0);
+                let mut cursor = start;
+                for (edge, size, index) in placed {
+                    let delta = cursor - edge;
+                    if horizontal {
+                        offsets.push((index, delta, 0.0));
+                    } else {
+                        offsets.push((index, 0.0, delta));
+                    }
+                    cursor += size + gap;
+                }
+            }
+        }
+    }
+    offsets.retain(|(_, dx, dy)| *dx != 0.0 || *dy != 0.0);
+    offsets
+}
+
 fn within(a: &Point, b: &Point, radius: f64) -> bool {
     let dx = a.x - b.x;
     let dy = a.y - b.y;
@@ -1879,6 +2035,61 @@ impl DocStore {
         })
     }
 
+    pub fn align_shapes(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        indices: Vec<usize>,
+        mode: AlignMode,
+        reference: AlignReference,
+    ) -> Result<Document, String> {
+        if indices.is_empty() {
+            return Err("no shapes selected".to_string());
+        }
+        let mut sorted = indices;
+        sorted.sort_unstable();
+        sorted.dedup();
+        self.edit_named(id, "align_shapes", |doc| {
+            let stage = Bounds {
+                x: 0.0,
+                y: 0.0,
+                w: f64::from(doc.width),
+                h: f64::from(doc.height),
+            };
+            let layer = doc.layer_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let source = layer
+                .held_index(frame)
+                .map(|index| layer.keys[index].shapes.clone())
+                .unwrap_or_default();
+            for &shape_index in &sorted {
+                if shape_index >= source.len() {
+                    return Err("unknown shape".to_string());
+                }
+            }
+            let offsets = align_offsets(stage, &source, &sorted, mode, reference);
+            if offsets.is_empty() {
+                return Ok(());
+            }
+            let pivot = Point { x: 0.0, y: 0.0 };
+            let mut updated = Vec::new();
+            for (shape_index, dx, dy) in offsets {
+                let matrix = affine_from(&pivot, dx, dy, 1.0, 1.0, 0.0);
+                let next = transform_shape(&source[shape_index], &matrix, 1.0, 1.0, 0.0)?;
+                validate(&next)?;
+                updated.push((shape_index, next));
+            }
+            let index = layer.key_at(frame);
+            let key = &mut layer.keys[index];
+            for (shape_index, next) in updated {
+                key.shapes[shape_index] = next;
+            }
+            Ok(())
+        })
+    }
+
     pub fn reorder_shapes(
         &self,
         id: &str,
@@ -2539,6 +2750,30 @@ pub fn doc_transform_shapes(
 ) -> Result<Document, String> {
     store.transform_shapes(
         &id, &scene_id, &layer_id, frame, indices, pivot, dx, dy, sx, sy, rotation,
+    )
+}
+
+#[tauri::command]
+pub fn doc_align_shapes(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    indices: Vec<usize>,
+    mode: String,
+    reference: String,
+) -> Result<Document, String> {
+    let parsed_mode = AlignMode::parse(&mode)?;
+    let parsed_reference = AlignReference::parse(&reference)?;
+    store.align_shapes(
+        &id,
+        &scene_id,
+        &layer_id,
+        frame,
+        indices,
+        parsed_mode,
+        parsed_reference,
     )
 }
 
@@ -4805,6 +5040,384 @@ mod tests {
                 .delete_shapes(id, &fixture.scene, &fixture.layer, 0, Vec::new())
                 .expect_err("empty"),
             "no shapes selected"
+        );
+    }
+
+    fn rect_xs(layer: &Layer) -> Vec<f64> {
+        rect_axis(layer, true)
+    }
+
+    fn rect_ys(layer: &Layer) -> Vec<f64> {
+        rect_axis(layer, false)
+    }
+
+    fn rect_axis(layer: &Layer, horizontal: bool) -> Vec<f64> {
+        layer.keys[0]
+            .shapes
+            .iter()
+            .map(|shape| match shape {
+                Shape::Rect { x, y, .. } => {
+                    if horizontal {
+                        *x
+                    } else {
+                        *y
+                    }
+                }
+                _ => panic!("expected rect"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn align_shapes_moves_edges_and_centers_to_the_stage_reference() {
+        let fixture = Fixture::new("align-stage");
+        let id = &fixture.doc.id;
+        for (x, y) in [(100.0, 50.0), (300.0, 200.0)] {
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(x, y))
+                .expect("draw");
+        }
+        let edges = [
+            (AlignMode::Left, true, 0.0),
+            (AlignMode::Right, true, 780.0),
+            (AlignMode::CenterH, true, 390.0),
+            (AlignMode::Top, false, 0.0),
+            (AlignMode::Bottom, false, 580.0),
+            (AlignMode::CenterV, false, 290.0),
+        ];
+        for (mode, horizontal, wanted) in edges {
+            let edited = fixture
+                .store
+                .align_shapes(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    vec![0, 1],
+                    mode,
+                    AlignReference::Stage,
+                )
+                .expect("align");
+            let placed = if horizontal {
+                rect_xs(fixture.target(&edited))
+            } else {
+                rect_ys(fixture.target(&edited))
+            };
+            assert_eq!(placed, vec![wanted, wanted], "{:?}", mode);
+        }
+    }
+
+    #[test]
+    fn align_shapes_uses_the_selection_bounds_when_reference_is_selection() {
+        let fixture = Fixture::new("align-selection");
+        let id = &fixture.doc.id;
+        for (x, y) in [(100.0, 50.0), (300.0, 200.0)] {
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(x, y))
+                .expect("draw");
+        }
+        let spread = fixture.store.get(id).expect("spread");
+        let cases = [
+            (AlignMode::Left, vec![100.0, 100.0]),
+            (AlignMode::Right, vec![300.0, 300.0]),
+            (AlignMode::CenterH, vec![200.0, 200.0]),
+        ];
+        for (mode, expected) in cases {
+            let edited = fixture
+                .store
+                .align_shapes(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    vec![0, 1],
+                    mode,
+                    AlignReference::Selection,
+                )
+                .expect("align");
+            assert_eq!(rect_xs(fixture.target(&edited)), expected, "{:?}", mode);
+            assert_eq!(fixture.store.undo(id).expect("undo"), spread, "{:?}", mode);
+        }
+        let centered = fixture
+            .store
+            .align_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![0, 1],
+                AlignMode::CenterV,
+                AlignReference::Selection,
+            )
+            .expect("center");
+        assert_eq!(rect_ys(fixture.target(&centered)), vec![125.0, 125.0]);
+    }
+
+    #[test]
+    fn align_shapes_distributes_across_the_stage_edges() {
+        let fixture = Fixture::new("align-distribute");
+        let id = &fixture.doc.id;
+        for x in [100.0, 200.0, 300.0] {
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(x, 40.0))
+                .expect("draw");
+        }
+        let edited = fixture
+            .store
+            .align_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![0, 1, 2],
+                AlignMode::DistributeH,
+                AlignReference::Stage,
+            )
+            .expect("distribute");
+        let shapes = &fixture.target(&edited).keys[0].shapes;
+        assert_eq!(rect_xs(fixture.target(&edited)), vec![0.0, 390.0, 780.0]);
+        for shape in shapes {
+            let Shape::Rect { y, w, h, .. } = shape else {
+                panic!("expected rect");
+            };
+            assert_eq!(*y, 40.0);
+            assert_eq!(*w, 20.0);
+            assert_eq!(*h, 20.0);
+        }
+        let before = fixture.store.get(id).expect("get");
+        let steps = fixture.store.history(id).expect("history").len();
+        for tag in ["distribute_h", "distribute_v"] {
+            let mode = AlignMode::parse(tag).expect("mode");
+            let edited = fixture
+                .store
+                .align_shapes(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    vec![0, 1],
+                    mode,
+                    AlignReference::Stage,
+                )
+                .expect("two shapes");
+            assert_eq!(edited, before);
+            assert_eq!(fixture.store.history(id).expect("history").len(), steps);
+        }
+    }
+
+    #[test]
+    fn align_shapes_distributes_by_position_and_fills_the_selection_box() {
+        let fixture = Fixture::new("align-distribute-order");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 50.0))
+            .expect("first");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 300.0))
+            .expect("second");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 100.0))
+            .expect("third");
+        let edited = fixture
+            .store
+            .align_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![2, 0, 1],
+                AlignMode::DistributeV,
+                AlignReference::Selection,
+            )
+            .expect("distribute");
+        assert_eq!(rect_ys(fixture.target(&edited)), vec![50.0, 300.0, 175.0]);
+    }
+
+    #[test]
+    fn align_shapes_is_one_undo_step_and_a_no_op_pushes_no_history() {
+        let fixture = Fixture::new("align-history");
+        let id = &fixture.doc.id;
+        for x in [100.0, 200.0, 300.0] {
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(x, 0.0))
+                .expect("draw");
+        }
+        let before = fixture.store.get(id).expect("get");
+        let steps = fixture.store.history(id).expect("history").len();
+        let untouched = fixture
+            .store
+            .align_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![0, 1, 2],
+                AlignMode::Top,
+                AlignReference::Stage,
+            )
+            .expect("no-op");
+        assert_eq!(untouched, before);
+        assert_eq!(fixture.store.history(id).expect("history").len(), steps);
+        let edited = fixture
+            .store
+            .align_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![0, 1, 2],
+                AlignMode::DistributeH,
+                AlignReference::Stage,
+            )
+            .expect("distribute");
+        assert_ne!(edited, before);
+        let history = fixture.store.history(id).expect("history");
+        assert_eq!(history.len(), steps + 1);
+        assert_eq!(history.last().expect("step").name, "align_shapes");
+        drop(history);
+        assert_eq!(fixture.store.undo(id).expect("undo"), before);
+        let restored = fixture.store.get(id).expect("get");
+        assert_eq!(
+            rect_xs(&restored.scenes[0].layers[0]),
+            vec![100.0, 200.0, 300.0]
+        );
+    }
+
+    #[test]
+    fn align_shapes_moves_every_shape_kind_and_keeps_the_text_matrix() {
+        let fixture = Fixture::new("align-kinds");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(100.0))
+            .expect("stroke");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, ellipse_shape(200.0, 0.0, 40.0, 20.0))
+            .expect("ellipse");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, polygon(6))
+            .expect("polygon");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, curve_path(false))
+            .expect("path");
+        fixture
+            .store
+            .draw(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                Shape::Text {
+                    x: 100.0,
+                    y: 50.0,
+                    text: "hi".to_string(),
+                    size: 20.0,
+                    family: "Segoe UI".to_string(),
+                    color: "#000000".to_string(),
+                    matrix: Some(affine_from(&Point { x: 110.0, y: 60.0 }, 0.0, 0.0, 1.0, 1.0, 30.0)),
+                },
+            )
+            .expect("text");
+        let indices: Vec<usize> = (0..5).collect();
+        let edited = fixture
+            .store
+            .align_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                indices,
+                AlignMode::Left,
+                AlignReference::Stage,
+            )
+            .expect("align");
+        let shapes = &fixture.target(&edited).keys[0].shapes;
+        assert_eq!(shapes.len(), 5);
+        for shape in shapes {
+            close(shape_bounds(shape).x, 0.0);
+        }
+        let Shape::Text { matrix, text, size, .. } = &shapes[4] else {
+            panic!("expected text");
+        };
+        assert_eq!(text.as_str(), "hi");
+        assert_eq!(*size, 20.0);
+        assert!(matrix.is_some());
+    }
+
+    #[test]
+    fn align_shapes_rejects_unknown_arguments_and_locked_layers() {
+        let fixture = Fixture::new("align-errors");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(10.0, 10.0))
+            .expect("draw");
+        assert_eq!(
+            fixture
+                .store
+                .align_shapes(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    Vec::new(),
+                    AlignMode::Left,
+                    AlignReference::Stage
+                )
+                .expect_err("empty"),
+            "no shapes selected"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .align_shapes(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    vec![9],
+                    AlignMode::CenterH,
+                    AlignReference::Selection
+                )
+                .expect_err("index"),
+            "unknown shape"
+        );
+        assert_eq!(
+            AlignMode::parse("sideways").expect_err("mode"),
+            "unknown align mode"
+        );
+        assert_eq!(
+            AlignReference::parse("canvas").expect_err("reference"),
+            "unknown align reference"
+        );
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .expect("lock");
+        assert_eq!(
+            fixture
+                .store
+                .align_shapes(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    vec![0],
+                    AlignMode::Top,
+                    AlignReference::Stage
+                )
+                .expect_err("locked"),
+            "layer is locked"
         );
     }
 

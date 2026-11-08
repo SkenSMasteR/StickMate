@@ -547,6 +547,23 @@ export function buildCommands(
       });
     }
   }
+  for (const [commandId, labelKey, mode] of [
+    ["align.left", "command.alignLeft", "left"],
+    ["align.centerH", "command.alignCenterH", "center_h"],
+    ["align.right", "command.alignRight", "right"],
+    ["align.top", "command.alignTop", "top"],
+    ["align.centerV", "command.alignCenterV", "center_v"],
+    ["align.bottom", "command.alignBottom", "bottom"],
+    ["align.distributeH", "command.distributeH", "distribute_h"],
+    ["align.distributeV", "command.distributeV", "distribute_v"]
+  ] as const) {
+    defaults.push({
+      id: commandId,
+      label: t(labelKey),
+      keys: null,
+      run: () => actions.alignSelected(mode)
+    });
+  }
   const all = context
     ? [...defaults, ...parameterCommands(actions, t, context)]
     : defaults;

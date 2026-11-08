@@ -571,6 +571,38 @@ export function docTransformShapes(
   });
 }
 
+export type AlignMode =
+  | "left"
+  | "center_h"
+  | "right"
+  | "top"
+  | "center_v"
+  | "bottom"
+  | "distribute_h"
+  | "distribute_v";
+
+export type AlignReference = "stage" | "selection";
+
+export function docAlignShapes(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  indices: number[],
+  mode: AlignMode,
+  reference: AlignReference
+): Promise<Document> {
+  return invoke<Document>("doc_align_shapes", {
+    id,
+    sceneId,
+    layerId,
+    frame,
+    indices,
+    mode,
+    reference
+  });
+}
+
 export function docReorderShapes(
   id: string,
   sceneId: string,

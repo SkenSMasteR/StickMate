@@ -1,14 +1,46 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { ArrowDown, ArrowUp, Copy, Plus, Trash2 } from "lucide-react";
+import {
+  AlignCenterHorizontal,
+  AlignCenterVertical,
+  AlignEndHorizontal,
+  AlignEndVertical,
+  AlignHorizontalDistributeCenter,
+  AlignStartHorizontal,
+  AlignStartVertical,
+  AlignVerticalDistributeCenter,
+  ArrowDown,
+  ArrowUp,
+  Copy,
+  Plus,
+  Trash2
+} from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/i18n";
 import { heldKey, unionBounds } from "@/lib/document";
-import type { Point, Shape } from "@/lib/document";
+import type { AlignMode, AlignReference, Point, Shape } from "@/lib/document";
 import { cn } from "@/lib/utils";
 import Picker from "@/components/color-field";
 import NumberField from "./NumberField";
 import { useWorkspace } from "./workspace";
+
+const alignModes: Array<{
+  mode: AlignMode;
+  labelKey: string;
+  icon: typeof AlignStartVertical;
+  distribute: boolean;
+}> = [
+  { mode: "left", labelKey: "command.alignLeft", icon: AlignStartVertical, distribute: false },
+  { mode: "center_h", labelKey: "command.alignCenterH", icon: AlignCenterVertical, distribute: false },
+  { mode: "right", labelKey: "command.alignRight", icon: AlignEndVertical, distribute: false },
+  { mode: "top", labelKey: "command.alignTop", icon: AlignStartHorizontal, distribute: false },
+  { mode: "center_v", labelKey: "command.alignCenterV", icon: AlignCenterHorizontal, distribute: false },
+  { mode: "bottom", labelKey: "command.alignBottom", icon: AlignEndHorizontal, distribute: false },
+  { mode: "distribute_h", labelKey: "command.distributeH", icon: AlignHorizontalDistributeCenter, distribute: true },
+  { mode: "distribute_v", labelKey: "command.distributeV", icon: AlignVerticalDistributeCenter, distribute: true }
+];
+
+const alignReferences: AlignReference[] = ["selection", "stage"];
 
 export function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
@@ -499,6 +531,45 @@ export default function SidePanel() {
           </div>
         </Section>
       )}
+
+      <Section title={t("align.panel")}>
+        <div className="flex items-center gap-1">
+          {alignModes.map(({ mode, labelKey, icon: Icon, distribute }) => (
+            <button
+              key={mode}
+              type="button"
+              title={t(labelKey)}
+              aria-label={t(labelKey)}
+              disabled={tab.selected.length === 0 || (distribute && tab.selected.length < 3)}
+              onClick={() => actions.alignSelected(mode)}
+              className={iconButton}
+            >
+              <Icon className="h-4 w-4" />
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className="shrink-0 text-muted-foreground">{t("align.target")}</span>
+          <div className="flex gap-1">
+            {alignReferences.map((reference) => (
+              <button
+                key={reference}
+                type="button"
+                aria-pressed={tab.alignReference === reference}
+                onClick={() => setTab({ alignReference: reference })}
+                className={cn(
+                  "h-7 flex-1 border px-2 text-xs",
+                  tab.alignReference === reference
+                    ? "border-border bg-accent text-accent-foreground"
+                    : "border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                )}
+              >
+                {t(`align.${reference}`)}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Section>
 
       {selectedShape !== null && selectedIndex !== null && (
         <Section title={t("editor.shape")}>
