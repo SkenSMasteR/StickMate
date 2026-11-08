@@ -160,7 +160,10 @@ def validate_shape(shape, label):
     if not isinstance(kind, str) or kind not in SHAPE_FIELDS:
         check(False, f"{label}: unknown shape kind {kind!r}")
         return
-    if not fields(shape, SHAPE_FIELDS[kind] | {"kind"}, f"{label} {kind}"):
+    expected = SHAPE_FIELDS[kind] | {"kind"}
+    if kind == "Text" and "matrix" in shape:
+        expected |= {"matrix"}
+    if not fields(shape, expected, f"{label} {kind}"):
         return
     if kind in ("Rect", "Ellipse", "Polygon"):
         for field in ("x", "y", "w", "h", "width"):
@@ -176,6 +179,10 @@ def validate_shape(shape, label):
             for index, point in enumerate(shape["points"]):
                 validate_point(point, f"{label} Stroke point {index}")
     elif kind == "Text":
+        matrix = shape.get("matrix")
+        if matrix is not None and fields(matrix, {"a", "b", "c", "d", "e", "f"}, f"{label} Text matrix"):
+            for field in ("a", "b", "c", "d", "e", "f"):
+                check(is_number(matrix[field]), f"{label} Text matrix: {field} is not a finite number")
         for field in ("x", "y", "size"):
             check(is_number(shape[field]), f"{label} Text: {field} is not a finite number")
         for field in ("text", "family", "color"):

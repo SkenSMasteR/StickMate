@@ -540,6 +540,25 @@ class ShapeTests(ValidatorTest):
         self.withShape(dict(base, size=0))
         self.assertProblem("text size must be positive")
 
+    def test_text_optional_matrix(self):
+        base = {"kind": "Text", "x": 0, "y": 0, "text": "Hi", "size": 24, "family": "Arial", "color": "#000000"}
+        for matrix in [None, {"a": 0, "b": 2, "c": -3, "d": 0, "e": 10, "f": 20}]:
+            self.withShape(dict(base, matrix=matrix))
+            self.assertValid()
+        for matrix in [{}, {"a": 1}, [], False, "matrix"]:
+            self.withShape(dict(base, matrix=matrix))
+            self.assertProblem("Text matrix")
+        valid = {"a": 1, "b": 0, "c": 0, "d": 1, "e": 0, "f": 0}
+        self.withShape(dict(base, matrix=dict(valid, extra=1)))
+        self.assertProblem("Text matrix: fields")
+        for field in valid:
+            for value in [True, "1", None, float("nan"), float("inf"), -float("inf")]:
+                module.problems.clear()
+                module.validate_shape(dict(base, matrix=dict(valid, **{field: value})), "test")
+                self.assertTrue(any("finite number" in problem for problem in module.problems))
+        self.withShape(dict(shape_value(), matrix=valid))
+        self.assertProblem("Rect: fields")
+
     def test_stroke_points(self):
         base = {"kind": "Stroke", "points": [{"x": 0, "y": 0}], "color": "#000000", "width": 2}
         self.withShape(dict(base, points=[{"x": 0}]))
