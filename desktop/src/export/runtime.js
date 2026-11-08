@@ -25,6 +25,154 @@
     return found;
   }
 
+  function mix(a, b, t) {
+    return a + (b - a) * t;
+  }
+
+  function mixPoint(a, b, t) {
+    return { x: mix(a.x, b.x, t), y: mix(a.y, b.y, t) };
+  }
+
+  function mixBytes(value) {
+    if (typeof value !== "string" || value.charAt(0) !== "#") {
+      return null;
+    }
+    const hex = value.slice(1);
+    if (!/^[0-9a-fA-F]{3}$/.test(hex) && !/^[0-9a-fA-F]{6}$/.test(hex)) {
+      return null;
+    }
+    if (hex.length === 3) {
+      return [
+        parseInt(hex.charAt(0), 16) * 17,
+        parseInt(hex.charAt(1), 16) * 17,
+        parseInt(hex.charAt(2), 16) * 17
+      ];
+    }
+    return [
+      parseInt(hex.slice(0, 2), 16),
+      parseInt(hex.slice(2, 4), 16),
+      parseInt(hex.slice(4, 6), 16)
+    ];
+  }
+
+  function mixColor(a, b, t) {
+    const from = mixBytes(a);
+    const to = mixBytes(b);
+    if (!from || !to) {
+      return a;
+    }
+    let out = "#";
+    for (let index = 0; index < 3; index += 1) {
+      out += Math.floor(mix(from[index], to[index], t) + 0.5)
+        .toString(16)
+        .padStart(2, "0");
+    }
+    return out;
+  }
+
+  function mixHandle(a, b, aPoint, bPoint, t) {
+    if (!a && !b) {
+      return null;
+    }
+    return mixPoint(a || aPoint, b || bPoint, t);
+  }
+
+  function mixAffine(a, b, t) {
+    const names = ["a", "b", "c", "d", "e", "f"];
+    const out = {};
+    for (const name of names) {
+      out[name] = mix(a[name], b[name], t);
+    }
+    return out;
+  }
+
+  function mixShape(a, b, t) {
+    if (t <= 0) {
+      return a;
+    }
+    if (t >= 1) {
+      return b;
+    }
+    if (a.kind !== b.kind) {
+      return a;
+    }
+    if (a.kind === "Rect" || a.kind === "Ellipse" || a.kind === "Polygon") {
+      if (a.kind === "Polygon" && a.sides !== b.sides) {
+        return a;
+      }
+      const box = {
+        x: mix(a.x, b.x, t),
+        y: mix(a.y, b.y, t),
+        w: mix(a.w, b.w, t),
+        h: mix(a.h, b.h, t),
+        fill: mixColor(a.fill, b.fill, t),
+        stroke: mixColor(a.stroke, b.stroke, t),
+        width: mix(a.width, b.width, t)
+      };
+      if (a.kind === "Polygon") {
+        box.sides = a.sides;
+      }
+      return Object.assign({ kind: a.kind }, box);
+    }
+    if (a.kind === "Stroke") {
+      if (a.points.length !== b.points.length || a.points.length < 2) {
+        return a;
+      }
+      return {
+        kind: "Stroke",
+        points: a.points.map((point, index) => mixPoint(point, b.points[index], t)),
+        color: mixColor(a.color, b.color, t),
+        width: mix(a.width, b.width, t)
+      };
+    }
+    if (a.kind === "Path") {
+      if (
+        a.closed !== b.closed ||
+        a.nodes.length !== b.nodes.length ||
+        a.nodes.length < 2
+      ) {
+        return a;
+      }
+      return {
+        kind: "Path",
+        nodes: a.nodes.map((node, index) => {
+          const other = b.nodes[index];
+          return {
+            point: mixPoint(node.point, other.point, t),
+            handle_in: mixHandle(node.handle_in, other.handle_in, node.point, other.point, t),
+            handle_out: mixHandle(
+              node.handle_out,
+              other.handle_out,
+              node.point,
+              other.point,
+              t
+            )
+          };
+        }),
+        closed: a.closed,
+        fill: mixColor(a.fill, b.fill, t),
+        stroke: mixColor(a.stroke, b.stroke, t),
+        width: mix(a.width, b.width, t)
+      };
+    }
+    if (a.kind === "Text") {
+      return {
+        kind: "Text",
+        x: mix(a.x, b.x, t),
+        y: mix(a.y, b.y, t),
+        text: a.text,
+        size: mix(a.size, b.size, t),
+        family: a.family,
+        color: mixColor(a.color, b.color, t),
+        matrix:
+          a.matrix && b.matrix
+            ? mixAffine(a.matrix, b.matrix, t)
+            : a.matrix || b.matrix || null
+      };
+    }
+    return a;
+  }
+
   function evaluateLayer(layer, frame) {
     if (!layer.visible || frame >= layer.length) {
       return null;
@@ -34,6 +182,7 @@
       return null;
     }
     let transform = { ...key.transform };
+    let shapes = key.shapes;
     if (key.tween) {
       const next = layer.keys[layer.keys.indexOf(key) + 1];
       if (next) {
@@ -48,13 +197,17 @@
             scale: transform.scale + (next.transform.scale - transform.scale) * t,
             opacity: transform.opacity + (next.transform.opacity - transform.opacity) * t
           };
+          shapes = key.shapes.map((shape, position) => {
+            const other = next.shapes[position];
+            return other ? mixShape(shape, other, t) : shape;
+          });
         }
       }
     }
     return {
       opacity: clamp(layer.opacity * transform.opacity, 0, 1),
       transform,
-      shapes: key.shapes
+      shapes
     };
   }
 
@@ -88,10 +241,16 @@
       return;
     }
     if (shape.kind === "Text") {
+      ctx.save();
+      if (shape.matrix) {
+        const m = shape.matrix;
+        ctx.transform(m.a, m.b, m.c, m.d, m.e, m.f);
+      }
       ctx.fillStyle = shape.color;
       ctx.font = shape.size + "px " + shape.family;
       ctx.textBaseline = "hanging";
       ctx.fillText(shape.text, shape.x, shape.y);
+      ctx.restore();
       return;
     }
     if (shape.kind === "Path") {

@@ -11,6 +11,9 @@ use tauri::State;
 use crate::path::{flatten_path, PathNode};
 
 const HISTORY_LIMIT: usize = 100;
+const CHECKPOINT_NAME_LIMIT: usize = 64;
+const CHECKPOINT_COUNT_LIMIT: usize = 20;
+const CHECKPOINT_SIZE_LIMIT: usize = 8 * 1024 * 1024;
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 fn now() -> u64 {
@@ -82,6 +85,8 @@ pub enum Shape {
         size: f64,
         family: String,
         color: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        matrix: Option<Affine>,
     },
     Path {
         nodes: Vec<PathNode>,
@@ -148,6 +153,30 @@ pub fn apply_affine(matrix: &Affine, point: &Point) -> Point {
     }
 }
 
+fn compose_affine(outer: &Affine, inner: &Affine) -> Affine {
+    Affine {
+        a: outer.a * inner.a + outer.c * inner.b,
+        b: outer.b * inner.a + outer.d * inner.b,
+        c: outer.a * inner.c + outer.c * inner.d,
+        d: outer.b * inner.c + outer.d * inner.d,
+        e: outer.a * inner.e + outer.c * inner.f + outer.e,
+        f: outer.b * inner.e + outer.d * inner.f + outer.f,
+    }
+}
+
+fn text_corners(x: f64, y: f64, text: &str, size: f64, matrix: &Option<Affine>) -> Vec<Point> {
+    let w = text_width(text, size);
+    [
+        Point { x, y },
+        Point { x: x + w, y },
+        Point { x: x + w, y: y + size },
+        Point { x, y: y + size },
+    ]
+    .into_iter()
+    .map(|point| matrix.as_ref().map_or_else(|| point.clone(), |m| apply_affine(m, &point)))
+    .collect()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Bounds {
     pub x: f64,
@@ -188,13 +217,8 @@ pub fn shape_bounds(shape: &Shape) -> Bounds {
             ..
         } => points_bounds(&flatten_path(nodes, *closed), *width),
         Shape::Text {
-            x, y, text, size, ..
-        } => Bounds {
-            x: *x,
-            y: *y,
-            w: text_width(text, *size),
-            h: *size,
-        },
+            x, y, text, size, matrix, ..
+        } => points_bounds(&text_corners(*x, *y, text, *size, matrix), 0.0),
         Shape::Rect { x, y, w, h, .. }
         | Shape::Ellipse { x, y, w, h, .. }
         | Shape::Polygon { x, y, w, h, .. } => Bounds {
@@ -223,7 +247,7 @@ fn corners_path(corners: &[Point], matrix: &Affine, fill: &str, stroke: &str, wi
     }
 }
 
-fn transform_shape(
+pub(crate) fn transform_shape(
     shape: &Shape,
     matrix: &Affine,
     sx: f64,
@@ -267,21 +291,26 @@ fn transform_shape(
             size,
             family,
             color,
+            matrix: local,
         } => {
-            if rotation != 0.0 {
-                return Err("text cannot be rotated".to_string());
-            }
-            if sx != sy {
-                return Err("text supports uniform scale only".to_string());
-            }
-            let q = apply_affine(matrix, &Point { x: *x, y: *y });
+            let simple = local.is_none() && rotation == 0.0 && sx == sy;
+            let q = if simple {
+                apply_affine(matrix, &Point { x: *x, y: *y })
+            } else {
+                Point { x: *x, y: *y }
+            };
             Ok(Shape::Text {
                 x: q.x,
                 y: q.y,
                 text: text.clone(),
-                size: size * sx,
+                size: if simple { size * sx } else { *size },
                 family: family.clone(),
                 color: color.clone(),
+                matrix: if simple {
+                    None
+                } else {
+                    Some(local.as_ref().map_or(*matrix, |inner| compose_affine(matrix, inner)))
+                },
             })
         }
         Shape::Ellipse {
@@ -490,10 +519,13 @@ fn shape_hit(shape: &Shape, p: &Point, radius: f64) -> bool {
                 })
         }
         Shape::Text {
-            x, y, text, size, ..
+            x, y, text, size, matrix, ..
         } => {
-            let w = text_width(text, *size);
-            p.x >= x - radius && p.x <= x + w + radius && p.y >= y - radius && p.y <= y + size + radius
+            let vertices = text_corners(*x, *y, text, *size, matrix);
+            inside_polygon(p, &vertices)
+                || vertices.iter().enumerate().any(|(index, a)| {
+                    near_segment(p, a, &vertices[(index + 1) % vertices.len()], radius)
+                })
         }
         Shape::Path {
             nodes,
@@ -542,12 +574,20 @@ pub(crate) fn validate(shape: &Shape) -> Result<(), String> {
         Shape::Polygon { sides, .. } if *sides < 3 => {
             Err("polygon needs at least 3 sides".to_string())
         }
-        Shape::Text { text, size, .. } => {
+        Shape::Text { x, y, text, size, matrix, .. } => {
             if text.trim().is_empty() {
                 return Err("text is empty".to_string());
             }
-            if *size <= 0.0 {
+            if !size.is_finite() || *size <= 0.0 {
                 return Err("text size must be positive".to_string());
+            }
+            if !x.is_finite() || !y.is_finite() {
+                return Err("text coordinates must be finite".to_string());
+            }
+            if let Some(m) = matrix {
+                if [m.a, m.b, m.c, m.d, m.e, m.f].iter().any(|value| !value.is_finite()) {
+                    return Err("text matrix must be finite".to_string());
+                }
             }
             Ok(())
         }
@@ -802,6 +842,267 @@ pub struct EvalFrame {
     pub layers: Vec<EvalLayer>,
 }
 
+fn mix(a: f64, b: f64, t: f64) -> f64 {
+    a + (b - a) * t
+}
+
+fn mix_point(a: &Point, b: &Point, t: f64) -> Point {
+    Point {
+        x: mix(a.x, b.x, t),
+        y: mix(a.y, b.y, t),
+    }
+}
+
+fn mix_bytes(value: &str) -> Option<[u8; 3]> {
+    let hex = value.strip_prefix('#')?;
+    let digits: Vec<u8> = hex
+        .chars()
+        .filter_map(|c| c.to_digit(16).map(|d| d as u8))
+        .collect();
+    match digits.len() {
+        3 if digits.len() == hex.len() => Some([digits[0] * 17, digits[1] * 17, digits[2] * 17]),
+        6 if digits.len() == hex.len() => Some([
+            digits[0] * 16 + digits[1],
+            digits[2] * 16 + digits[3],
+            digits[4] * 16 + digits[5],
+        ]),
+        _ => None,
+    }
+}
+
+fn mix_color(a: &str, b: &str, t: f64) -> String {
+    match (mix_bytes(a), mix_bytes(b)) {
+        (Some(x), Some(y)) => {
+            let channel = |index: usize| {
+                (mix(x[index] as f64, y[index] as f64, t) + 0.5).floor() as u8
+            };
+            format!("#{:02x}{:02x}{:02x}", channel(0), channel(1), channel(2))
+        }
+        _ => a.to_string(),
+    }
+}
+
+fn mix_handle(
+    a: &Option<Point>,
+    b: &Option<Point>,
+    a_point: &Point,
+    b_point: &Point,
+    t: f64,
+) -> Option<Point> {
+    if a.is_none() && b.is_none() {
+        return None;
+    }
+    Some(mix_point(
+        a.as_ref().unwrap_or(a_point),
+        b.as_ref().unwrap_or(b_point),
+        t,
+    ))
+}
+
+fn mix_affine(a: &Affine, b: &Affine, t: f64) -> Affine {
+    Affine {
+        a: mix(a.a, b.a, t),
+        b: mix(a.b, b.b, t),
+        c: mix(a.c, b.c, t),
+        d: mix(a.d, b.d, t),
+        e: mix(a.e, b.e, t),
+        f: mix(a.f, b.f, t),
+    }
+}
+
+fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
+    if t <= 0.0 {
+        return a.clone();
+    }
+    if t >= 1.0 {
+        return b.clone();
+    }
+    match (a, b) {
+        (
+            Shape::Rect {
+                x,
+                y,
+                w,
+                h,
+                fill,
+                stroke,
+                width,
+            },
+            Shape::Rect {
+                x: bx,
+                y: by,
+                w: bw,
+                h: bh,
+                fill: bf,
+                stroke: bs,
+                width: bwidth,
+            },
+        ) => Shape::Rect {
+            x: mix(*x, *bx, t),
+            y: mix(*y, *by, t),
+            w: mix(*w, *bw, t),
+            h: mix(*h, *bh, t),
+            fill: mix_color(fill, bf, t),
+            stroke: mix_color(stroke, bs, t),
+            width: mix(*width, *bwidth, t),
+        },
+        (
+            Shape::Ellipse {
+                x,
+                y,
+                w,
+                h,
+                fill,
+                stroke,
+                width,
+            },
+            Shape::Ellipse {
+                x: bx,
+                y: by,
+                w: bw,
+                h: bh,
+                fill: bf,
+                stroke: bs,
+                width: bwidth,
+            },
+        ) => Shape::Ellipse {
+            x: mix(*x, *bx, t),
+            y: mix(*y, *by, t),
+            w: mix(*w, *bw, t),
+            h: mix(*h, *bh, t),
+            fill: mix_color(fill, bf, t),
+            stroke: mix_color(stroke, bs, t),
+            width: mix(*width, *bwidth, t),
+        },
+        (
+            Shape::Polygon {
+                sides,
+                x,
+                y,
+                w,
+                h,
+                fill,
+                stroke,
+                width,
+            },
+            Shape::Polygon {
+                sides: bsides,
+                x: bx,
+                y: by,
+                w: bw,
+                h: bh,
+                fill: bf,
+                stroke: bs,
+                width: bwidth,
+            },
+        ) if sides == bsides => Shape::Polygon {
+            sides: *sides,
+            x: mix(*x, *bx, t),
+            y: mix(*y, *by, t),
+            w: mix(*w, *bw, t),
+            h: mix(*h, *bh, t),
+            fill: mix_color(fill, bf, t),
+            stroke: mix_color(stroke, bs, t),
+            width: mix(*width, *bwidth, t),
+        },
+        (
+            Shape::Stroke {
+                points,
+                color,
+                width,
+            },
+            Shape::Stroke {
+                points: bpoints,
+                color: bcolor,
+                width: bwidth,
+            },
+        ) if points.len() == bpoints.len() && points.len() > 1 => Shape::Stroke {
+            points: points
+                .iter()
+                .zip(bpoints)
+                .map(|(left, right)| mix_point(left, right, t))
+                .collect(),
+            color: mix_color(color, bcolor, t),
+            width: mix(*width, *bwidth, t),
+        },
+        (
+            Shape::Path {
+                nodes,
+                closed,
+                fill,
+                stroke,
+                width,
+            },
+            Shape::Path {
+                nodes: bnodes,
+                closed: bclosed,
+                fill: bf,
+                stroke: bs,
+                width: bwidth,
+            },
+        ) if closed == bclosed && nodes.len() == bnodes.len() && nodes.len() > 1 => Shape::Path {
+            nodes: nodes
+                .iter()
+                .zip(bnodes)
+                .map(|(left, right)| PathNode {
+                    point: mix_point(&left.point, &right.point, t),
+                    handle_in: mix_handle(
+                        &left.handle_in,
+                        &right.handle_in,
+                        &left.point,
+                        &right.point,
+                        t,
+                    ),
+                    handle_out: mix_handle(
+                        &left.handle_out,
+                        &right.handle_out,
+                        &left.point,
+                        &right.point,
+                        t,
+                    ),
+                })
+                .collect(),
+            closed: *closed,
+            fill: mix_color(fill, bf, t),
+            stroke: mix_color(stroke, bs, t),
+            width: mix(*width, *bwidth, t),
+        },
+        (
+            Shape::Text {
+                x,
+                y,
+                text,
+                size,
+                family,
+                color,
+                matrix,
+            },
+            Shape::Text {
+                x: bx,
+                y: by,
+                text: _,
+                size: bsize,
+                family: _,
+                color: bcolor,
+                matrix: bmatrix,
+            },
+        ) => Shape::Text {
+            x: mix(*x, *bx, t),
+            y: mix(*y, *by, t),
+            text: text.clone(),
+            size: mix(*size, *bsize, t),
+            family: family.clone(),
+            color: mix_color(color, bcolor, t),
+            matrix: match (matrix, bmatrix) {
+                (Some(left), Some(right)) => Some(mix_affine(left, right, t)),
+                (Some(left), None) | (None, Some(left)) => Some(left.clone()),
+                (None, None) => None,
+            },
+        },
+        _ => a.clone(),
+    }
+}
+
 pub fn evaluate_layer(layer: &Layer, frame: u32) -> Option<EvalLayer> {
     if !layer.visible || frame >= layer.length {
         return None;
@@ -809,12 +1110,21 @@ pub fn evaluate_layer(layer: &Layer, frame: u32) -> Option<EvalLayer> {
     let index = layer.held_index(frame)?;
     let key = &layer.keys[index];
     let mut transform = key.transform;
+    let mut shapes = key.shapes.clone();
     if key.tween {
         if let Some(next) = layer.keys.get(index + 1) {
             let span = next.frame.saturating_sub(key.frame);
             if span > 0 {
                 let t = ((frame - key.frame) as f64 / span as f64).clamp(0.0, 1.0);
                 transform = transform.lerp(next.transform, t);
+                shapes = shapes
+                    .iter()
+                    .enumerate()
+                    .map(|(position, shape)| match next.shapes.get(position) {
+                        Some(other) => mix_shape(shape, other, t),
+                        None => shape.clone(),
+                    })
+                    .collect();
             }
         }
     }
@@ -822,7 +1132,7 @@ pub fn evaluate_layer(layer: &Layer, frame: u32) -> Option<EvalLayer> {
         id: layer.id.clone(),
         opacity: (layer.opacity * transform.opacity).clamp(0.0, 1.0),
         transform,
-        shapes: key.shapes.clone(),
+        shapes,
     })
 }
 
@@ -842,10 +1152,42 @@ struct RecoveryFile {
     updated_at: u64,
 }
 
+#[derive(Clone)]
+struct HistoryEntry {
+    doc: Document,
+    name: String,
+    at: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HistoryStep {
+    pub index: usize,
+    pub name: String,
+    pub at: u64,
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CheckpointInfo {
+    pub id: String,
+    pub name: String,
+    pub created_at: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CheckpointFile {
+    id: String,
+    name: String,
+    created_at: u64,
+    document: Document,
+}
+
 struct DocState {
     doc: Document,
-    undo: Vec<Document>,
-    redo: Vec<Document>,
+    undo: Vec<HistoryEntry>,
+    redo: Vec<HistoryEntry>,
+    current_name: String,
+    current_at: u64,
     updated_at: u64,
 }
 
@@ -887,6 +1229,8 @@ impl DocStore {
                             doc: file.document,
                             undo: Vec::new(),
                             redo: Vec::new(),
+                            current_name: "recovered_document".to_string(),
+                            current_at: file.updated_at,
                             updated_at: file.updated_at,
                         },
                     );
@@ -927,20 +1271,43 @@ impl DocStore {
     where
         F: FnOnce(&mut Document) -> Result<(), String>,
     {
+        self.edit_named(id, "apply_template", change)
+    }
+
+    pub(crate) fn edit_named<F>(&self, id: &str, name: &str, change: F) -> Result<Document, String>
+    where
+        F: FnOnce(&mut Document) -> Result<(), String>,
+    {
         let mut docs = self.docs.lock().map_err(locked)?;
         let state = docs.get_mut(id).ok_or_else(|| "unknown document".to_string())?;
         let before = state.doc.clone();
-        change(&mut state.doc)?;
-        if state.doc == before {
+        let mut next = before.clone();
+        change(&mut next)?;
+        if next == before {
             return Ok(before);
         }
-        state.undo.push(before);
+        let at = now();
+        self.write(&DocState {
+            doc: next.clone(),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            current_name: name.to_string(),
+            current_at: at,
+            updated_at: at,
+        })?;
+        state.doc = next;
+        state.undo.push(HistoryEntry {
+            doc: before,
+            name: state.current_name.clone(),
+            at: state.current_at,
+        });
         if state.undo.len() > HISTORY_LIMIT {
             state.undo.remove(0);
         }
         state.redo.clear();
-        state.updated_at = now();
-        self.write(state)?;
+        state.current_name = name.to_string();
+        state.current_at = at;
+        state.updated_at = at;
         Ok(state.doc.clone())
     }
 
@@ -971,6 +1338,8 @@ impl DocStore {
             doc: doc.clone(),
             undo: Vec::new(),
             redo: Vec::new(),
+            current_name: "new_document".to_string(),
+            current_at: now(),
             updated_at: now(),
         };
         self.write(&state)?;
@@ -1021,19 +1390,24 @@ impl DocStore {
         if path.exists() {
             fs::remove_file(&path).map_err(|error| error.to_string())?;
         }
+        if let Ok(dir) = self.checkpoint_dir(id) {
+            if dir.exists() {
+                let _ = fs::remove_dir_all(&dir);
+            }
+        }
         Ok(())
     }
 
     pub fn rename(&self, id: &str, name: String) -> Result<Document, String> {
         let name = clean_name(&name).ok_or_else(|| "name is empty".to_string())?;
-        self.edit(id, |doc| {
+        self.edit_named(id, "rename_project", |doc| {
             doc.name = name.clone();
             Ok(())
         })
     }
 
     pub fn add_scene(&self, id: &str, name: String) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "add_scene", |doc| {
             let fallback = format!("Scene {}", doc.scenes.len() + 1);
             let name = clean_name(&name).unwrap_or(fallback);
             doc.scenes.push(Scene::new(name));
@@ -1048,7 +1422,7 @@ impl DocStore {
         name: String,
     ) -> Result<Document, String> {
         let name = clean_name(&name).ok_or_else(|| "name is empty".to_string())?;
-        self.edit(id, |doc| {
+        self.edit_named(id, "rename_scene", |doc| {
             let index = doc.scene_index(scene_id)?;
             doc.scenes[index].name = name.clone();
             Ok(())
@@ -1056,7 +1430,7 @@ impl DocStore {
     }
 
     pub fn remove_scene(&self, id: &str, scene_id: &str) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "remove_scene", |doc| {
             if doc.scenes.len() < 2 {
                 return Err("a document needs at least one scene".to_string());
             }
@@ -1067,7 +1441,7 @@ impl DocStore {
     }
 
     pub fn duplicate_scene(&self, id: &str, scene_id: &str) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "duplicate_scene", |doc| {
             let index = doc.scene_index(scene_id)?;
             let mut copy = doc.scenes[index].clone();
             copy.id = new_id("s");
@@ -1086,7 +1460,7 @@ impl DocStore {
         scene_id: &str,
         index: usize,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "move_scene", |doc| {
             let from = doc.scene_index(scene_id)?;
             let scene = doc.scenes.remove(from);
             let to = index.min(doc.scenes.len());
@@ -1101,7 +1475,7 @@ impl DocStore {
         scene_id: &str,
         name: String,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "add_layer", |doc| {
             let index = doc.scene_index(scene_id)?;
             let scene = &mut doc.scenes[index];
             let fallback = format!("Layer {}", scene.layers.len() + 1);
@@ -1126,7 +1500,16 @@ impl DocStore {
             Some(value) => Some(clean_name(&value).ok_or_else(|| "name is empty".to_string())?),
             None => None,
         };
-        self.edit(id, |doc| {
+        let step = if name.is_some() {
+            "rename_layer"
+        } else if visible.is_some() {
+            "layer_visibility"
+        } else if locked.is_some() {
+            "layer_lock"
+        } else {
+            "layer_opacity"
+        };
+        self.edit_named(id, step, |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             if let Some(name) = &name {
                 layer.name = name.clone();
@@ -1150,7 +1533,7 @@ impl DocStore {
         scene_id: &str,
         layer_id: &str,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "remove_layer", |doc| {
             let index = doc.scene_index(scene_id)?;
             let scene = &mut doc.scenes[index];
             if scene.layers.len() < 2 {
@@ -1169,7 +1552,7 @@ impl DocStore {
         layer_id: &str,
         index: usize,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "move_layer", |doc| {
             let scene_index = doc.scene_index(scene_id)?;
             let scene = &mut doc.scenes[scene_index];
             let from = scene.layer_index(layer_id)?;
@@ -1187,7 +1570,7 @@ impl DocStore {
         layer_id: &str,
         frame: u32,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "insert_frame", |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let at = frame.min(layer.length);
@@ -1209,7 +1592,8 @@ impl DocStore {
         frame: u32,
         blank: bool,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        let step = if blank { "blank_keyframe" } else { "add_keyframe" };
+        self.edit_named(id, step, |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let index = layer.key_at(frame);
@@ -1230,7 +1614,7 @@ impl DocStore {
         layer_id: &str,
         frame: u32,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "remove_frame", |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             if let Some(index) = layer.key_index(frame) {
@@ -1257,7 +1641,8 @@ impl DocStore {
         frame: u32,
         tween: bool,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        let step = if tween { "add_tween" } else { "remove_tween" };
+        self.edit_named(id, step, |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let index = layer.key_at(frame);
@@ -1275,7 +1660,8 @@ impl DocStore {
         label: Option<String>,
     ) -> Result<Document, String> {
         let label = label.and_then(|value| clean_name(&value));
-        self.edit(id, |doc| {
+        let step = if label.is_some() { "set_label" } else { "clear_label" };
+        self.edit_named(id, step, |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let index = layer.key_at(frame);
@@ -1293,7 +1679,15 @@ impl DocStore {
         shape: Shape,
     ) -> Result<Document, String> {
         validate(&shape)?;
-        self.edit(id, |doc| {
+        let step = match &shape {
+            Shape::Stroke { .. } => "draw_stroke",
+            Shape::Rect { .. } => "draw_rect",
+            Shape::Ellipse { .. } => "draw_ellipse",
+            Shape::Polygon { .. } => "draw_polygon",
+            Shape::Text { .. } => "draw_text",
+            Shape::Path { .. } => "draw_path",
+        };
+        self.edit_named(id, step, |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let index = layer.key_at(frame);
@@ -1321,7 +1715,7 @@ impl DocStore {
             return Err("eraser size is too small".to_string());
         }
         let samples = densify(&path, radius / 2.0);
-        self.edit(id, |doc| {
+        self.edit_named(id, "erase", |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let index = layer.key_at(frame);
@@ -1379,7 +1773,7 @@ impl DocStore {
         index: usize,
         color: String,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "paint_shape", |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let key_index = layer.key_at(frame);
@@ -1411,7 +1805,7 @@ impl DocStore {
         frame: u32,
         index: usize,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "delete_shape", |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let key_index = layer.key_at(frame);
@@ -1453,7 +1847,14 @@ impl DocStore {
             return Err("transform values must be finite".to_string());
         }
         let matrix = affine_from(&pivot, dx, dy, sx, sy, rotation);
-        self.edit(id, |doc| {
+        let step = if rotation != 0.0 {
+            "rotate_shapes"
+        } else if sx != 1.0 || sy != 1.0 {
+            "scale_shapes"
+        } else {
+            "move_shapes"
+        };
+        self.edit_named(id, step, |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let source = layer
@@ -1493,7 +1894,8 @@ impl DocStore {
         let mut sorted = indices;
         sorted.sort_unstable();
         sorted.dedup();
-        self.edit(id, |doc| {
+        let step = if to_front { "bring_to_front" } else { "send_to_back" };
+        self.edit_named(id, step, |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let len = layer
@@ -1535,7 +1937,7 @@ impl DocStore {
         let mut sorted = indices;
         sorted.sort_unstable();
         sorted.dedup();
-        self.edit(id, |doc| {
+        self.edit_named(id, "delete_shapes", |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let len = layer
@@ -1564,7 +1966,7 @@ impl DocStore {
         frame: u32,
         transform: Transform,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "set_transform", |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let index = layer.key_at(frame);
@@ -1583,7 +1985,7 @@ impl DocStore {
         shape: Shape,
     ) -> Result<Document, String> {
         validate(&shape)?;
-        self.edit(id, |doc| {
+        self.edit_named(id, "replace_shape", |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let key_index = layer.key_at(frame);
@@ -1600,8 +2002,14 @@ impl DocStore {
         let mut docs = self.docs.lock().map_err(locked)?;
         let state = docs.get_mut(id).ok_or_else(|| "unknown document".to_string())?;
         let previous = state.undo.pop().ok_or_else(|| "nothing to undo".to_string())?;
-        state.redo.push(state.doc.clone());
-        state.doc = previous;
+        state.redo.push(HistoryEntry {
+            doc: state.doc.clone(),
+            name: state.current_name.clone(),
+            at: state.current_at,
+        });
+        state.doc = previous.doc;
+        state.current_name = previous.name;
+        state.current_at = previous.at;
         state.updated_at = now();
         self.write(state)?;
         Ok(state.doc.clone())
@@ -1611,11 +2019,177 @@ impl DocStore {
         let mut docs = self.docs.lock().map_err(locked)?;
         let state = docs.get_mut(id).ok_or_else(|| "unknown document".to_string())?;
         let next = state.redo.pop().ok_or_else(|| "nothing to redo".to_string())?;
-        state.undo.push(state.doc.clone());
-        state.doc = next;
+        state.undo.push(HistoryEntry {
+            doc: state.doc.clone(),
+            name: state.current_name.clone(),
+            at: state.current_at,
+        });
+        state.doc = next.doc;
+        state.current_name = next.name;
+        state.current_at = next.at;
         state.updated_at = now();
         self.write(state)?;
         Ok(state.doc.clone())
+    }
+
+    pub fn history(&self, id: &str) -> Result<Vec<HistoryStep>, String> {
+        let docs = self.docs.lock().map_err(locked)?;
+        let state = docs.get(id).ok_or_else(|| "unknown document".to_string())?;
+        let mut steps = Vec::new();
+        for entry in &state.undo {
+            steps.push(HistoryStep {
+                index: steps.len(),
+                name: entry.name.clone(),
+                at: entry.at,
+                kind: "undo".to_string(),
+            });
+        }
+        steps.push(HistoryStep {
+            index: steps.len(),
+            name: state.current_name.clone(),
+            at: state.current_at,
+            kind: "current".to_string(),
+        });
+        for entry in state.redo.iter().rev() {
+            steps.push(HistoryStep {
+                index: steps.len(),
+                name: entry.name.clone(),
+                at: entry.at,
+                kind: "redo".to_string(),
+            });
+        }
+        Ok(steps)
+    }
+
+    pub fn jump(&self, id: &str, index: usize) -> Result<Document, String> {
+        let mut docs = self.docs.lock().map_err(locked)?;
+        let state = docs.get_mut(id).ok_or_else(|| "unknown document".to_string())?;
+        let total = state.undo.len() + 1 + state.redo.len();
+        if index >= total {
+            return Err("history step is out of range".to_string());
+        }
+        while state.undo.len() > index {
+            let previous = state.undo.pop().expect("history entry");
+            state.redo.push(HistoryEntry {
+                doc: state.doc.clone(),
+                name: state.current_name.clone(),
+                at: state.current_at,
+            });
+            state.doc = previous.doc;
+            state.current_name = previous.name;
+            state.current_at = previous.at;
+        }
+        while state.undo.len() < index {
+            let next = state.redo.pop().expect("history entry");
+            state.undo.push(HistoryEntry {
+                doc: state.doc.clone(),
+                name: state.current_name.clone(),
+                at: state.current_at,
+            });
+            state.doc = next.doc;
+            state.current_name = next.name;
+            state.current_at = next.at;
+        }
+        state.updated_at = now();
+        self.write(state)?;
+        Ok(state.doc.clone())
+    }
+
+    fn checkpoint_dir(&self, id: &str) -> Result<PathBuf, String> {
+        safe_component(id)?;
+        Ok(self.dir.join("checkpoints").join(id))
+    }
+
+    pub fn checkpoint_save(&self, id: &str, name: String) -> Result<CheckpointInfo, String> {
+        let name = clean_checkpoint_name(&name)?;
+        let dir = self.checkpoint_dir(id)?;
+        let docs = self.docs.lock().map_err(locked)?;
+        let state = docs.get(id).ok_or_else(|| "unknown document".to_string())?;
+        let file = CheckpointFile {
+            id: new_id("c"),
+            name,
+            created_at: now(),
+            document: state.doc.clone(),
+        };
+        let bytes = serde_json::to_vec(&file).map_err(|error| error.to_string())?;
+        if bytes.len() > CHECKPOINT_SIZE_LIMIT {
+            return Err("checkpoint is too large".to_string());
+        }
+        let existing = match fs::read_dir(&dir) {
+            Ok(entries) => entries
+                .flatten()
+                .filter(|entry| {
+                    entry.path().extension().and_then(|ext| ext.to_str()) == Some("json")
+                })
+                .count(),
+            Err(_) => 0,
+        };
+        if existing >= CHECKPOINT_COUNT_LIMIT {
+            return Err("too many checkpoints".to_string());
+        }
+        fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+        write_atomic(&dir.join(format!("{}.json", file.id)), &bytes)?;
+        Ok(CheckpointInfo {
+            id: file.id,
+            name: file.name,
+            created_at: file.created_at,
+        })
+    }
+
+    pub fn checkpoint_list(&self, id: &str) -> Result<Vec<CheckpointInfo>, String> {
+        let dir = self.checkpoint_dir(id)?;
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let mut list = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            let file: CheckpointFile = match serde_json::from_slice(&bytes) {
+                Ok(file) => file,
+                Err(_) => continue,
+            };
+            list.push(CheckpointInfo {
+                id: file.id,
+                name: file.name,
+                created_at: file.created_at,
+            });
+        }
+        list.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
+        Ok(list)
+    }
+
+    fn read_checkpoint(&self, id: &str, checkpoint_id: &str) -> Result<CheckpointFile, String> {
+        safe_component(checkpoint_id)?;
+        let path = self.checkpoint_dir(id)?.join(format!("{checkpoint_id}.json"));
+        let bytes = fs::read(&path).map_err(|_| "unknown checkpoint".to_string())?;
+        serde_json::from_slice(&bytes).map_err(|_| "unknown checkpoint".to_string())
+    }
+
+    pub fn checkpoint_restore(&self, id: &str, checkpoint_id: &str) -> Result<Document, String> {
+        let file = self.read_checkpoint(id, checkpoint_id)?;
+        let mut document = file.document;
+        document.id = id.to_string();
+        self.edit_named(id, "restore_checkpoint", move |doc| {
+            *doc = document;
+            Ok(())
+        })
+    }
+
+    pub fn checkpoint_delete(&self, id: &str, checkpoint_id: &str) -> Result<(), String> {
+        safe_component(checkpoint_id)?;
+        let path = self.checkpoint_dir(id)?.join(format!("{checkpoint_id}.json"));
+        if !path.exists() {
+            return Err("unknown checkpoint".to_string());
+        }
+        fs::remove_file(&path).map_err(|error| error.to_string())
     }
 
     pub fn evaluate_range(
@@ -1643,6 +2217,36 @@ pub(crate) fn clean_name(value: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn safe_component(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains("..")
+        || value.chars().any(|character| character.is_control())
+    {
+        return Err("invalid identifier".to_string());
+    }
+    Ok(())
+}
+
+fn clean_checkpoint_name(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("checkpoint name is empty".to_string());
+    }
+    if trimmed.chars().count() > CHECKPOINT_NAME_LIMIT {
+        return Err("checkpoint name is too long".to_string());
+    }
+    if trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+        || trimmed.chars().any(|character| character.is_control())
+    {
+        return Err("checkpoint name is invalid".to_string());
+    }
+    Ok(trimmed.to_string())
 }
 
 fn read_recovery(path: &Path) -> Result<RecoveryFile, String> {
@@ -1996,6 +2600,55 @@ pub fn doc_evaluate(
     store.evaluate_range(&id, &scene_id, start_frame, end_frame)
 }
 
+#[tauri::command]
+pub fn doc_history(store: State<'_, DocStore>, id: String) -> Result<Vec<HistoryStep>, String> {
+    store.history(&id)
+}
+
+#[tauri::command]
+pub fn doc_history_jump(
+    store: State<'_, DocStore>,
+    id: String,
+    index: usize,
+) -> Result<Document, String> {
+    store.jump(&id, index)
+}
+
+#[tauri::command]
+pub fn doc_checkpoint_save(
+    store: State<'_, DocStore>,
+    id: String,
+    name: String,
+) -> Result<CheckpointInfo, String> {
+    store.checkpoint_save(&id, name)
+}
+
+#[tauri::command]
+pub fn doc_checkpoint_list(
+    store: State<'_, DocStore>,
+    id: String,
+) -> Result<Vec<CheckpointInfo>, String> {
+    store.checkpoint_list(&id)
+}
+
+#[tauri::command]
+pub fn doc_checkpoint_restore(
+    store: State<'_, DocStore>,
+    id: String,
+    checkpoint_id: String,
+) -> Result<Document, String> {
+    store.checkpoint_restore(&id, &checkpoint_id)
+}
+
+#[tauri::command]
+pub fn doc_checkpoint_delete(
+    store: State<'_, DocStore>,
+    id: String,
+    checkpoint_id: String,
+) -> Result<(), String> {
+    store.checkpoint_delete(&id, &checkpoint_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2341,6 +2994,264 @@ mod tests {
             .evaluate_range(id, &fixture.scene, 3, 3)
             .expect("evaluate");
         assert_eq!(frames[0].layers[0].transform.x, 20.0);
+    }
+
+    fn tween_span(fixture: &Fixture, start: Vec<Shape>, end: Vec<Shape>) -> Vec<EvalFrame> {
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        for shape in start {
+            store
+                .draw(id, &fixture.scene, &fixture.layer, 0, shape)
+                .expect("draw start");
+        }
+        store
+            .keyframe(id, &fixture.scene, &fixture.layer, 2, true)
+            .expect("blank key");
+        for shape in end {
+            store
+                .draw(id, &fixture.scene, &fixture.layer, 2, shape)
+                .expect("draw end");
+        }
+        store
+            .set_tween(id, &fixture.scene, &fixture.layer, 0, true)
+            .expect("tween");
+        store
+            .evaluate_range(id, &fixture.scene, 0, 2)
+            .expect("evaluate")
+    }
+
+    #[test]
+    fn tween_moves_the_shapes_themselves() {
+        let fixture = Fixture::new("tween-shapes");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(100.0, 100.0))
+            .expect("draw start");
+        store
+            .keyframe(id, &fixture.scene, &fixture.layer, 10, true)
+            .expect("blank key");
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 10, box_shape(300.0, 100.0))
+            .expect("draw end");
+        store
+            .set_tween(id, &fixture.scene, &fixture.layer, 0, true)
+            .expect("tween");
+        let frames = store
+            .evaluate_range(id, &fixture.scene, 0, 10)
+            .expect("evaluate");
+        assert_eq!(frames[0].layers[0].shapes, vec![box_shape(100.0, 100.0)]);
+        assert_eq!(frames[2].layers[0].shapes, vec![box_shape(140.0, 100.0)]);
+        assert_eq!(frames[5].layers[0].shapes, vec![box_shape(200.0, 100.0)]);
+        assert_eq!(frames[10].layers[0].shapes, vec![box_shape(300.0, 100.0)]);
+        store
+            .set_tween(id, &fixture.scene, &fixture.layer, 0, false)
+            .expect("tween off");
+        let held = store
+            .evaluate_range(id, &fixture.scene, 5, 5)
+            .expect("evaluate");
+        assert_eq!(held[0].layers[0].shapes, vec![box_shape(100.0, 100.0)]);
+    }
+
+    #[test]
+    fn tween_blends_colors_and_holds_the_ones_it_cannot_read() {
+        let fixture = Fixture::new("tween-colors");
+        let start = Shape::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+            fill: "#f00".to_string(),
+            stroke: "#000000".to_string(),
+            width: 2.0,
+        };
+        let end = Shape::Rect {
+            x: 20.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+            fill: "#0000ff".to_string(),
+            stroke: "none".to_string(),
+            width: 4.0,
+        };
+        let middle = tween_span(&fixture, vec![start], vec![end.clone()])[1]
+            .layers[0]
+            .shapes[0]
+            .clone();
+        let Shape::Rect {
+            x,
+            fill,
+            stroke,
+            width,
+            ..
+        } = middle
+        else {
+            panic!("expected a rectangle");
+        };
+        assert_eq!(x, 10.0);
+        assert_eq!(fill, "#800080");
+        assert_eq!(stroke, "#000000");
+        assert_eq!(width, 3.0);
+    }
+
+    #[test]
+    fn tween_holds_shapes_it_cannot_pair() {
+        let ball = Shape::Ellipse {
+            x: 40.0,
+            y: 40.0,
+            w: 20.0,
+            h: 20.0,
+            fill: "#22c55e".to_string(),
+            stroke: "#000000".to_string(),
+            width: 1.0,
+        };
+        let fixture = Fixture::new("tween-kinds");
+        let frames = tween_span(&fixture, vec![box_shape(0.0, 0.0)], vec![ball.clone()]);
+        assert_eq!(frames[1].layers[0].shapes, vec![box_shape(0.0, 0.0)]);
+        assert_eq!(frames[2].layers[0].shapes, vec![ball.clone()]);
+        let second = Fixture::new("tween-count");
+        let extra = tween_span(
+            &second,
+            vec![box_shape(0.0, 0.0), box_shape(60.0, 0.0)],
+            vec![ball.clone(), box_shape(0.0, 40.0), ball],
+        );
+        assert_eq!(
+            extra[1].layers[0].shapes,
+            vec![box_shape(0.0, 0.0), box_shape(30.0, 20.0)]
+        );
+    }
+
+    #[test]
+    fn tween_interpolates_path_points_and_handles() {
+        let fixture = Fixture::new("tween-path");
+        let start = Shape::Path {
+            nodes: vec![
+                PathNode {
+                    point: Point { x: 0.0, y: 0.0 },
+                    handle_in: None,
+                    handle_out: Some(Point { x: 10.0, y: 0.0 }),
+                },
+                PathNode {
+                    point: Point { x: 0.0, y: 20.0 },
+                    handle_in: Some(Point { x: 0.0, y: 10.0 }),
+                    handle_out: None,
+                },
+            ],
+            closed: false,
+            fill: "#3b82f6".to_string(),
+            stroke: "#000000".to_string(),
+            width: 2.0,
+        };
+        let end = Shape::Path {
+            nodes: vec![
+                PathNode {
+                    point: Point { x: 20.0, y: 0.0 },
+                    handle_in: Some(Point { x: 15.0, y: 5.0 }),
+                    handle_out: Some(Point { x: 30.0, y: 0.0 }),
+                },
+                PathNode {
+                    point: Point { x: 20.0, y: 40.0 },
+                    handle_in: None,
+                    handle_out: None,
+                },
+            ],
+            closed: false,
+            fill: "#3b82f6".to_string(),
+            stroke: "#000000".to_string(),
+            width: 2.0,
+        };
+        let frames = tween_span(&fixture, vec![start], vec![end.clone()]);
+        let middle = frames[1].layers[0].shapes[0].clone();
+        assert_eq!(
+            middle,
+            Shape::Path {
+                nodes: vec![
+                    PathNode {
+                        point: Point { x: 10.0, y: 0.0 },
+                        handle_in: Some(Point { x: 7.5, y: 2.5 }),
+                        handle_out: Some(Point { x: 20.0, y: 0.0 }),
+                    },
+                    PathNode {
+                        point: Point { x: 10.0, y: 30.0 },
+                        handle_in: Some(Point { x: 10.0, y: 25.0 }),
+                        handle_out: None,
+                    },
+                ],
+                closed: false,
+                fill: "#3b82f6".to_string(),
+                stroke: "#000000".to_string(),
+                width: 2.0,
+            }
+        );
+        assert_eq!(frames[2].layers[0].shapes, vec![end]);
+    }
+
+    #[test]
+    fn tween_interpolates_text_but_holds_its_words() {
+        let fixture = Fixture::new("tween-text");
+        let start = Shape::Text {
+            x: 10.0,
+            y: 20.0,
+            text: "In".to_string(),
+            size: 20.0,
+            family: "sans-serif".to_string(),
+            color: "#000000".to_string(),
+            matrix: Some(Affine {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                e: 0.0,
+                f: 0.0,
+            }),
+        };
+        let end = Shape::Text {
+            x: 30.0,
+            y: 60.0,
+            text: "Out".to_string(),
+            size: 40.0,
+            family: "monospace".to_string(),
+            color: "#ffffff".to_string(),
+            matrix: Some(Affine {
+                a: 2.0,
+                b: 0.0,
+                c: 0.0,
+                d: 2.0,
+                e: 10.0,
+                f: 20.0,
+            }),
+        };
+        let middle = tween_span(&fixture, vec![start], vec![end.clone()])[1]
+            .layers[0]
+            .shapes[0]
+            .clone();
+        let Shape::Text {
+            x,
+            y,
+            text,
+            size,
+            family,
+            color,
+            matrix,
+        } = middle
+        else {
+            panic!("expected text");
+        };
+        assert_eq!((x, y, size), (20.0, 40.0, 30.0));
+        assert_eq!(text, "In");
+        assert_eq!(family, "sans-serif");
+        assert_eq!(color, "#808080");
+        assert_eq!(
+            matrix,
+            Some(Affine {
+                a: 1.5,
+                b: 0.0,
+                c: 0.0,
+                d: 1.5,
+                e: 5.0,
+                f: 10.0,
+            })
+        );
     }
 
     #[test]
@@ -2732,6 +3643,7 @@ mod tests {
             size,
             family: "Segoe UI".to_string(),
             color: "#000000".to_string(),
+            matrix: None,
         }
     }
 
@@ -3565,20 +4477,6 @@ mod tests {
         assert_eq!(
             fixture
                 .store
-                .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], pivot.clone(), 0.0, 0.0, 1.0, 1.0, 30.0)
-                .expect_err("text rotation"),
-            "text cannot be rotated"
-        );
-        assert_eq!(
-            fixture
-                .store
-                .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], pivot.clone(), 0.0, 0.0, 2.0, 3.0, 0.0)
-                .expect_err("text stretch"),
-            "text supports uniform scale only"
-        );
-        assert_eq!(
-            fixture
-                .store
                 .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![1], pivot.clone(), 0.0, 0.0, 1.0, 1.0, 30.0)
                 .expect_err("ellipse rotation"),
             "ellipse cannot be rotated"
@@ -3588,7 +4486,7 @@ mod tests {
                 .store
                 .transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 1], pivot.clone(), 5.0, 5.0, 1.0, 1.0, 30.0)
                 .expect_err("mixed batch"),
-            "text cannot be rotated"
+            "ellipse cannot be rotated"
         );
         assert_eq!(
             fixture
@@ -3614,6 +4512,93 @@ mod tests {
         assert_eq!(fixture.store.get(id).expect("get"), before);
         let undone = fixture.store.undo(id).expect("undo");
         assert_eq!(fixture.target(&undone).keys[0].shapes.len(), 1);
+    }
+
+    #[test]
+    fn text_affines_compose_preserve_content_and_undo() {
+        let fixture = Fixture::new("text-affines");
+        let id = &fixture.doc.id;
+        let original = fixture.store.draw(id, &fixture.scene, &fixture.layer, 0, text("A𐐀", 12.0)).unwrap();
+        let pivot = Point { x: 15.0, y: -4.0 };
+        let first = affine_from(&pivot, 7.0, -9.0, 2.0, 3.0, 35.0);
+        let second = affine_from(&pivot, -2.0, 8.0, 4.0, 0.5, -70.0);
+        let rotated = fixture.store.transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], pivot.clone(), 7.0, -9.0, 2.0, 3.0, 35.0).unwrap();
+        let stretched = fixture.store.transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], pivot.clone(), -2.0, 8.0, 4.0, 0.5, -70.0).unwrap();
+        let moved = fixture.store.transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], pivot.clone(), 5.0, 6.0, 2.0, 2.0, 0.0).unwrap();
+        let third = affine_from(&pivot, 5.0, 6.0, 2.0, 2.0, 0.0);
+        let shape = &fixture.target(&moved).keys[0].shapes[0];
+        let Shape::Text { x, y, text, size, family, matrix: Some(matrix), .. } = shape else {
+            panic!("expected editable transformed text");
+        };
+        assert_eq!((*x, *y, *size), (300.0, 10.0, 12.0));
+        assert_eq!(text, "A𐐀");
+        assert_eq!(family, "Segoe UI");
+        for point in text_corners(*x, *y, text, *size, &None) {
+            let expected = apply_affine(&third, &apply_affine(&second, &apply_affine(&first, &point)));
+            let actual = apply_affine(matrix, &point);
+            close(actual.x, expected.x);
+            close(actual.y, expected.y);
+        }
+        let json = serde_json::to_string(shape).unwrap();
+        let mut restored = serde_json::from_str::<Shape>(&json).unwrap();
+        if let Shape::Text { matrix: Some(m), .. } = &mut restored {
+            for (actual, expected) in [m.a, m.b, m.c, m.d, m.e, m.f].into_iter()
+                .zip([matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f]) {
+                close(actual, expected);
+            }
+            *m = *matrix;
+        }
+        assert_eq!(restored, *shape);
+        assert_eq!(fixture.store.undo(id).unwrap(), stretched);
+        assert_eq!(fixture.store.undo(id).unwrap(), rotated);
+        assert_eq!(fixture.store.undo(id).unwrap(), original);
+        assert_eq!(fixture.store.redo(id).unwrap(), rotated);
+    }
+
+    #[test]
+    fn text_bounds_and_hits_follow_the_transformed_rectangle() {
+        let mut shape = text("AB", 10.0);
+        if let Shape::Text { x, y, matrix, .. } = &mut shape {
+            *x = 0.0;
+            *y = 0.0;
+            *matrix = Some(Affine { a: 2.0, b: 2.0, c: -1.0, d: 1.0, e: 10.0, f: 20.0 });
+        }
+        assert_eq!(shape_bounds(&shape), Bounds { x: 0.0, y: 20.0, w: 34.0, h: 34.0 });
+        assert!(shape_hit(&shape, &Point { x: 17.0, y: 37.0 }, 0.0));
+        assert!(!shape_hit(&shape, &Point { x: 1.0, y: 21.0 }, 1.0));
+        assert!(!shape_hit(&shape, &Point { x: 23.0, y: 31.0 }, 1.0));
+        assert!(shape_hit(&shape, &Point { x: 23.0, y: 31.0 }, 1.5));
+        assert!(!shape_hit(&shape, &Point { x: 10.0, y: 18.0 }, 1.5));
+        assert!(shape_hit(&shape, &Point { x: 10.0, y: 18.0 }, 2.0));
+        if let Shape::Text { matrix: Some(m), .. } = &mut shape {
+            m.c = 0.0;
+            m.d = 0.0;
+        }
+        assert!(shape_hit(&shape, &Point { x: 22.0, y: 32.0 }, 0.0));
+        assert!(!shape_hit(&shape, &Point { x: 23.0, y: 31.0 }, 1.0));
+    }
+
+    #[test]
+    fn text_matrix_is_optional_and_validated() {
+        let original = text("Hi", 12.0);
+        let json = serde_json::to_value(&original).unwrap();
+        assert!(json.get("matrix").is_none());
+        assert_eq!(serde_json::from_value::<Shape>(json).unwrap(), original);
+        for size in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(validate(&text("Hi", size)).is_err());
+        }
+        for index in 0..6 {
+            for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                let mut values = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+                values[index] = invalid;
+                let mut shape = original.clone();
+                if let Shape::Text { matrix, .. } = &mut shape {
+                    let [a, b, c, d, e, f] = values;
+                    *matrix = Some(Affine { a, b, c, d, e, f });
+                }
+                assert_eq!(validate(&shape).unwrap_err(), "text matrix must be finite");
+            }
+        }
     }
 
     #[test]
@@ -3676,7 +4661,7 @@ mod tests {
         let id = &fixture.doc.id;
         fixture
             .store
-            .draw(id, &fixture.scene, &fixture.layer, 0, text("Hi", 12.0))
+            .draw(id, &fixture.scene, &fixture.layer, 0, ellipse_shape(0.0, 0.0, 20.0, 10.0))
             .expect("draw");
         for _ in 0..5 {
             fixture
@@ -3690,8 +4675,8 @@ mod tests {
             fixture
                 .store
                 .transform_shapes(id, &fixture.scene, &fixture.layer, 5, vec![0], pivot, 0.0, 0.0, 1.0, 1.0, 45.0)
-                .expect_err("text rotation"),
-            "text cannot be rotated"
+                .expect_err("ellipse rotation"),
+            "ellipse cannot be rotated"
         );
         assert_eq!(fixture.store.get(id).expect("get"), before);
         assert_eq!(fixture.target(&before).keys.len(), 1);
@@ -3957,6 +4942,502 @@ mod tests {
             "nothing to undo"
         );
     }
+
+    #[test]
+    fn history_names_each_edit() {
+        let fixture = Fixture::new("hist-names");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(1.0))
+            .expect("draw");
+        fixture
+            .store
+            .insert_frame(id, &fixture.scene, &fixture.layer, 0)
+            .expect("insert");
+        fixture
+            .store
+            .set_layer(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                Some("Ink".to_string()),
+                None,
+                None,
+                None,
+            )
+            .expect("rename");
+        let steps = fixture.store.history(id).expect("history");
+        let names: Vec<&str> = steps.iter().map(|step| step.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["new_document", "draw_stroke", "insert_frame", "rename_layer"]
+        );
+        assert!(steps[..3].iter().all(|step| step.kind == "undo"));
+        assert_eq!(steps[3].kind, "current");
+        assert_eq!(steps[3].index, 3);
+        assert!(steps.iter().all(|step| step.at > 0));
+    }
+
+    #[test]
+    fn draw_names_follow_shape_kind() {
+        let fixture = Fixture::new("hist-shapes");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                Shape::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 10.0,
+                    h: 10.0,
+                    fill: "#ffffff".to_string(),
+                    stroke: "#000000".to_string(),
+                    width: 1.0,
+                },
+            )
+            .expect("rect");
+        fixture
+            .store
+            .draw(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                Shape::Text {
+                    x: 0.0,
+                    y: 0.0,
+                    text: "hi".to_string(),
+                    size: 12.0,
+                    family: "Segoe UI".to_string(),
+                    color: "#000000".to_string(),
+                    matrix: None,
+                },
+            )
+            .expect("text");
+        let steps = fixture.store.history(id).expect("history");
+        assert_eq!(steps[1].name, "draw_rect");
+        assert_eq!(steps[2].name, "draw_text");
+    }
+
+    #[test]
+    fn undo_and_redo_keep_names_and_kinds() {
+        let fixture = Fixture::new("hist-undo");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(1.0))
+            .expect("first");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(2.0))
+            .expect("second");
+        fixture.store.undo(id).expect("undo");
+        let steps = fixture.store.history(id).expect("history");
+        let kinds: Vec<&str> = steps.iter().map(|step| step.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["undo", "current", "redo"]);
+        assert!(steps.iter().all(|step| step.at > 0));
+        assert_eq!(steps[2].name, "draw_stroke");
+        fixture.store.redo(id).expect("redo");
+        let steps = fixture.store.history(id).expect("history");
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[2].kind, "current");
+    }
+
+    #[test]
+    fn jump_backward_then_forward_keeps_history() {
+        let fixture = Fixture::new("hist-jump");
+        let id = &fixture.doc.id;
+        let first = fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(1.0))
+            .expect("first");
+        fixture
+            .store
+            .insert_frame(id, &fixture.scene, &fixture.layer, 0)
+            .expect("insert");
+        let latest = fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(2.0))
+            .expect("second");
+        let jumped = fixture.store.jump(id, 1).expect("jump back");
+        assert_eq!(jumped, first);
+        let steps = fixture.store.history(id).expect("history");
+        let kinds: Vec<&str> = steps.iter().map(|step| step.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["undo", "current", "redo", "redo"]);
+        let undone = fixture.store.undo(id).expect("undo after jump");
+        assert_eq!(undone, fixture.doc);
+        fixture.store.redo(id).expect("redo one");
+        fixture.store.redo(id).expect("redo two");
+        let redone = fixture.store.redo(id).expect("redo three");
+        assert_eq!(redone, latest);
+        assert_eq!(
+            fixture.store.redo(id).expect_err("redo empty"),
+            "nothing to redo"
+        );
+        let undone = fixture.store.undo(id).expect("undo again");
+        assert_ne!(undone, latest);
+        assert_eq!(fixture.store.history(id).expect("history")[2].kind, "current");
+    }
+
+    #[test]
+    fn jump_to_current_is_a_noop() {
+        let fixture = Fixture::new("hist-jump-self");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(1.0))
+            .expect("draw");
+        let jumped = fixture.store.jump(id, 1).expect("jump");
+        assert_eq!(jumped, fixture.store.get(id).expect("get"));
+        assert_eq!(fixture.store.history(id).expect("history").len(), 2);
+    }
+
+    #[test]
+    fn jump_rejects_out_of_range_and_unknown_document() {
+        let fixture = Fixture::new("hist-jump-bad");
+        let id = &fixture.doc.id;
+        assert_eq!(
+            fixture.store.jump(id, 1).expect_err("range"),
+            "history step is out of range"
+        );
+        assert_eq!(
+            fixture.store.jump("missing", 0).expect_err("document"),
+            "unknown document"
+        );
+        assert_eq!(
+            fixture.store.history("missing").expect_err("document"),
+            "unknown document"
+        );
+    }
+
+    #[test]
+    fn jump_is_per_document() {
+        let fixture = Fixture::new("hist-jump-iso");
+        let id = &fixture.doc.id;
+        let other = fixture
+            .store
+            .create("Other".to_string(), 800, 600, 24, "#ffffff".to_string())
+            .expect("other");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(1.0))
+            .expect("draw a");
+        fixture
+            .store
+            .draw(
+                &other.id,
+                &other.scenes[0].id,
+                &other.scenes[0].layers[0].id,
+                0,
+                stroke(2.0),
+            )
+            .expect("draw b");
+        fixture.store.jump(id, 0).expect("jump a");
+        let steps = fixture.store.history(&other.id).expect("history b");
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[1].kind, "current");
+        assert_eq!(
+            fixture.store.get(&other.id).expect("get b"),
+            fixture.store.get(&other.id).expect("get b again")
+        );
+        assert_eq!(
+            fixture.target(&fixture.store.get(&other.id).expect("get b")).keys[0]
+                .shapes
+                .len(),
+            1
+        );
+        assert!(fixture
+            .target(&fixture.store.get(id).expect("get a"))
+            .keys[0]
+            .shapes
+            .is_empty());
+    }
+
+    #[test]
+    fn jump_rewrites_recovery_file() {
+        let fixture = Fixture::new("hist-jump-disk");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(1.0))
+            .expect("draw");
+        fixture.store.jump(id, 0).expect("jump");
+        let path = fixture.store.dir.join(format!("{id}.json"));
+        let file = read_recovery(&path).expect("recovery");
+        assert_eq!(file.document, fixture.doc);
+        let fresh = DocStore::load(fixture.store.dir.clone());
+        assert_eq!(fresh.get(id).expect("get"), fixture.doc);
+    }
+
+    #[test]
+    fn history_limit_keeps_named_steps_bounded() {
+        let fixture = Fixture::new("hist-limit");
+        let id = &fixture.doc.id;
+        for _ in 0..105 {
+            fixture
+                .store
+                .insert_frame(id, &fixture.scene, &fixture.layer, 0)
+                .expect("insert");
+        }
+        let steps = fixture.store.history(id).expect("history");
+        assert_eq!(steps.len(), HISTORY_LIMIT + 1);
+        assert_eq!(steps[0].name, "insert_frame");
+        assert_eq!(steps[0].kind, "undo");
+        fixture.store.jump(id, 0).expect("jump");
+        assert_eq!(
+            fixture.target(&fixture.store.get(id).expect("get")).length,
+            6
+        );
+    }
+
+    #[test]
+    fn checkpoint_save_list_restore_and_delete() {
+        let fixture = Fixture::new("cp-flow");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(1.0))
+            .expect("draw");
+        let saved = fixture
+            .store
+            .checkpoint_save(id, "Before".to_string())
+            .expect("save");
+        assert_eq!(saved.name, "Before");
+        assert!(saved.created_at > 0);
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(2.0))
+            .expect("draw more");
+        let list = fixture.store.checkpoint_list(id).expect("list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, saved.id);
+        let restored = fixture
+            .store
+            .checkpoint_restore(id, &saved.id)
+            .expect("restore");
+        assert_eq!(fixture.target(&restored).keys[0].shapes.len(), 1);
+        let steps = fixture.store.history(id).expect("history");
+        assert_eq!(steps.last().expect("step").name, "restore_checkpoint");
+        let undone = fixture.store.undo(id).expect("undo restore");
+        assert_eq!(fixture.target(&undone).keys[0].shapes.len(), 2);
+        fixture
+            .store
+            .checkpoint_delete(id, &saved.id)
+            .expect("delete");
+        assert!(fixture.store.checkpoint_list(id).expect("list").is_empty());
+        assert_eq!(
+            fixture.store.checkpoint_delete(id, &saved.id).expect_err("gone"),
+            "unknown checkpoint"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .checkpoint_restore(id, &saved.id)
+                .expect_err("gone"),
+            "unknown checkpoint"
+        );
+    }
+
+    #[test]
+    fn checkpoints_survive_a_fresh_load() {
+        let fixture = Fixture::new("cp-persist");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(1.0))
+            .expect("draw");
+        let saved = fixture
+            .store
+            .checkpoint_save(id, "Keep".to_string())
+            .expect("save");
+        let untitled = fixture
+            .store
+            .create("   ".to_string(), 800, 600, 24, "#ffffff".to_string())
+            .expect("untitled");
+        assert_eq!(untitled.name, "Untitled");
+        let untitled_save = fixture
+            .store
+            .checkpoint_save(&untitled.id, "Untitled point".to_string())
+            .expect("save untitled");
+        let fresh = DocStore::load(fixture.store.dir.clone());
+        let list = fresh.checkpoint_list(id).expect("list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "Keep");
+        let untitled_list = fresh.checkpoint_list(&untitled.id).expect("list untitled");
+        assert_eq!(untitled_list.len(), 1);
+        assert_eq!(untitled_list[0].id, untitled_save.id);
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(2.0))
+            .expect("draw more");
+        let restored = fresh.checkpoint_restore(id, &saved.id).expect("restore");
+        assert_eq!(fixture.target(&restored).keys[0].shapes.len(), 1);
+    }
+
+    #[test]
+    fn checkpoint_names_are_validated() {
+        let fixture = Fixture::new("cp-names");
+        let id = &fixture.doc.id;
+        assert_eq!(
+            fixture
+                .store
+                .checkpoint_save(id, "   ".to_string())
+                .expect_err("empty"),
+            "checkpoint name is empty"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .checkpoint_save(id, "x".repeat(CHECKPOINT_NAME_LIMIT + 1))
+                .expect_err("long"),
+            "checkpoint name is too long"
+        );
+        for bad in ["a/b", "a\\b", "..", "a..b", "a\u{0}b", "a\nb"] {
+            assert_eq!(
+                fixture
+                    .store
+                    .checkpoint_save(id, bad.to_string())
+                    .expect_err("invalid"),
+                "checkpoint name is invalid"
+            );
+        }
+        let saved = fixture
+            .store
+            .checkpoint_save(id, "  Trimmed  ".to_string())
+            .expect("save");
+        assert_eq!(saved.name, "Trimmed");
+        assert_eq!(fixture.store.history(id).expect("history").len(), 1);
+    }
+
+    #[test]
+    fn checkpoint_paths_reject_traversal() {
+        let fixture = Fixture::new("cp-traversal");
+        let id = &fixture.doc.id;
+        let saved = fixture
+            .store
+            .checkpoint_save(id, "Safe".to_string())
+            .expect("save");
+        assert_eq!(
+            fixture
+                .store
+                .checkpoint_restore(id, "../../evil")
+                .expect_err("restore"),
+            "invalid identifier"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .checkpoint_delete(id, "..\\evil")
+                .expect_err("delete"),
+            "invalid identifier"
+        );
+        assert_eq!(
+            fixture.store.checkpoint_list("../escape").expect_err("list"),
+            "invalid identifier"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .checkpoint_save("missing", "Nope".to_string())
+                .expect_err("document"),
+            "unknown document"
+        );
+        assert!(fixture.store.checkpoint_list(id).expect("list").len() == 1);
+        assert_eq!(
+            fixture.store.checkpoint_list(id).expect("list")[0].id,
+            saved.id
+        );
+    }
+
+    #[test]
+    fn checkpoint_count_is_capped() {
+        let fixture = Fixture::new("cp-count");
+        let id = &fixture.doc.id;
+        for index in 0..CHECKPOINT_COUNT_LIMIT {
+            fixture
+                .store
+                .checkpoint_save(id, format!("Point {index}"))
+                .expect("save");
+        }
+        assert_eq!(
+            fixture
+                .store
+                .checkpoint_save(id, "One too many".to_string())
+                .expect_err("cap"),
+            "too many checkpoints"
+        );
+        let list = fixture.store.checkpoint_list(id).expect("list");
+        assert_eq!(list.len(), CHECKPOINT_COUNT_LIMIT);
+        fixture
+            .store
+            .checkpoint_delete(id, &list[0].id)
+            .expect("delete");
+        fixture
+            .store
+            .checkpoint_save(id, "Fits again".to_string())
+            .expect("save");
+    }
+
+    #[test]
+    fn checkpoint_size_is_capped() {
+        let fixture = Fixture::new("cp-size");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .edit_named(id, "bulk", |doc| {
+                doc.scenes[0].layers[0].keys[0].shapes.push(Shape::Text {
+                    x: 0.0,
+                    y: 0.0,
+                    text: "x".repeat(CHECKPOINT_SIZE_LIMIT + 1024),
+                    size: 12.0,
+                    family: "Segoe UI".to_string(),
+                    color: "#000000".to_string(),
+                    matrix: None,
+                });
+                Ok(())
+            })
+            .expect("bulk");
+        assert_eq!(
+            fixture
+                .store
+                .checkpoint_save(id, "Huge".to_string())
+                .expect_err("size"),
+            "checkpoint is too large"
+        );
+        assert!(fixture.store.checkpoint_list(id).expect("list").is_empty());
+    }
+
+    #[test]
+    fn deleting_a_project_removes_its_checkpoints() {
+        let fixture = Fixture::new("cp-delete-doc");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .checkpoint_save(id, "Doomed".to_string())
+            .expect("save");
+        fixture.store.delete(id).expect("delete");
+        assert!(fixture.store.checkpoint_list(id).expect("list").is_empty());
+    }
+
+    #[test]
+    fn command_signatures_match_frontend() {
+        let _: fn(State<'_, DocStore>, String) -> Result<Vec<HistoryStep>, String> = doc_history;
+        let _: fn(State<'_, DocStore>, String, usize) -> Result<Document, String> =
+            doc_history_jump;
+        let _: fn(State<'_, DocStore>, String, String) -> Result<CheckpointInfo, String> =
+            doc_checkpoint_save;
+        let _: fn(State<'_, DocStore>, String) -> Result<Vec<CheckpointInfo>, String> =
+            doc_checkpoint_list;
+        let _: fn(State<'_, DocStore>, String, String) -> Result<Document, String> =
+            doc_checkpoint_restore;
+        let _: fn(State<'_, DocStore>, String, String) -> Result<(), String> =
+            doc_checkpoint_delete;
+    }
 }
 
 impl DocStore {
@@ -3966,7 +5447,7 @@ impl DocStore {
         scene_id: &str,
         layer_id: &str,
     ) -> Result<Document, String> {
-        self.edit(id, |doc| {
+        self.edit_named(id, "duplicate_layer", |doc| {
             let index = doc.scene_index(scene_id)?;
             let scene = &mut doc.scenes[index];
             let at = scene.layer_index(layer_id)?;

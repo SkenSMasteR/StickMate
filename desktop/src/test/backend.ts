@@ -1,5 +1,5 @@
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import { affineFrom, applyAffine, flattenPath, polygonVertices, textWidth } from "@/lib/document";
+import { affineFrom, applyAffine, composeAffine, flattenPath, polygonVertices, textCorners } from "@/lib/document";
 import type {
   Affine,
   Document,
@@ -134,12 +134,12 @@ function shapeHit(shape: Shape, p: Point, radius: number): boolean {
       (shape.closed && insidePolygon(p, outline))
     );
   }
-  const w = textWidth(shape.text, shape.size);
+  const vertices = textCorners(shape);
   return (
-    p.x >= shape.x - radius &&
-    p.x <= shape.x + w + radius &&
-    p.y >= shape.y - radius &&
-    p.y <= shape.y + shape.size + radius
+    insidePolygon(p, vertices) ||
+    vertices.some((a, index) =>
+      nearSegment(p, a, vertices[(index + 1) % vertices.length], radius)
+    )
   );
 }
 
@@ -176,8 +176,17 @@ function validateShape(shape: Shape): void {
     if (shape.text.trim() === "") {
       throw new Error("text is empty");
     }
-    if (shape.size <= 0) {
+    if (!Number.isFinite(shape.size) || shape.size <= 0) {
       throw new Error("text size must be positive");
+    }
+    if (!Number.isFinite(shape.x) || !Number.isFinite(shape.y)) {
+      throw new Error("text coordinates must be finite");
+    }
+    if (shape.matrix) {
+      const m = shape.matrix;
+      if (![m.a, m.b, m.c, m.d, m.e, m.f].every(Number.isFinite)) {
+        throw new Error("text matrix must be finite");
+      }
     }
   }
   if (shape.kind === "Path") {
@@ -215,7 +224,7 @@ function cornersPath(
   return { kind: "Path", nodes, closed: true, fill, stroke, width };
 }
 
-function transformShape(
+export function transformShape(
   shape: Shape,
   matrix: Affine,
   sx: number,
@@ -239,14 +248,11 @@ function transformShape(
     };
   }
   if (shape.kind === "Text") {
-    if (rotation !== 0) {
-      throw new Error("text cannot be rotated");
+    if (!shape.matrix && rotation === 0 && sx === sy) {
+      const q = applyAffine(matrix, { x: shape.x, y: shape.y });
+      return { ...shape, x: q.x, y: q.y, size: shape.size * sx };
     }
-    if (sx !== sy) {
-      throw new Error("text supports uniform scale only");
-    }
-    const q = applyAffine(matrix, { x: shape.x, y: shape.y });
-    return { ...shape, x: q.x, y: q.y, size: shape.size * sx };
+    return { ...shape, matrix: shape.matrix ? composeAffine(matrix, shape.matrix) : matrix };
   }
   if (shape.kind === "Ellipse" && rotation !== 0) {
     if (rotation % 90 !== 0) {
@@ -354,6 +360,179 @@ function writable(layer: Layer): void {
   }
 }
 
+function mix(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function mixPoint(a: Point, b: Point, t: number): Point {
+  return { x: mix(a.x, b.x, t), y: mix(a.y, b.y, t) };
+}
+
+function mixBytes(value: string): number[] | null {
+  if (value.charAt(0) !== "#") {
+    return null;
+  }
+  const hex = value.slice(1);
+  if (/^[0-9a-fA-F]{3}$/.test(hex)) {
+    return [
+      parseInt(hex.charAt(0), 16) * 17,
+      parseInt(hex.charAt(1), 16) * 17,
+      parseInt(hex.charAt(2), 16) * 17
+    ];
+  }
+  if (/^[0-9a-fA-F]{6}$/.test(hex)) {
+    return [
+      parseInt(hex.slice(0, 2), 16),
+      parseInt(hex.slice(2, 4), 16),
+      parseInt(hex.slice(4, 6), 16)
+    ];
+  }
+  return null;
+}
+
+function mixColor(a: string, b: string, t: number): string {
+  const from = mixBytes(a);
+  const to = mixBytes(b);
+  if (!from || !to) {
+    return a;
+  }
+  let out = "#";
+  for (let index = 0; index < 3; index += 1) {
+    out += Math.floor(mix(from[index], to[index], t) + 0.5)
+      .toString(16)
+      .padStart(2, "0");
+  }
+  return out;
+}
+
+function mixHandle(
+  a: Point | null | undefined,
+  b: Point | null | undefined,
+  aPoint: Point,
+  bPoint: Point,
+  t: number
+): Point | null {
+  if (!a && !b) {
+    return null;
+  }
+  return mixPoint(a ?? aPoint, b ?? bPoint, t);
+}
+
+function mixAffine(a: Affine, b: Affine, t: number): Affine {
+  return {
+    a: mix(a.a, b.a, t),
+    b: mix(a.b, b.b, t),
+    c: mix(a.c, b.c, t),
+    d: mix(a.d, b.d, t),
+    e: mix(a.e, b.e, t),
+    f: mix(a.f, b.f, t)
+  };
+}
+
+function mixShape(a: Shape, b: Shape, t: number): Shape {
+  if (t <= 0) {
+    return structuredClone(a);
+  }
+  if (t >= 1) {
+    return structuredClone(b);
+  }
+  if (a.kind === "Rect" && b.kind === "Rect") {
+    return {
+      kind: "Rect",
+      x: mix(a.x, b.x, t),
+      y: mix(a.y, b.y, t),
+      w: mix(a.w, b.w, t),
+      h: mix(a.h, b.h, t),
+      fill: mixColor(a.fill, b.fill, t),
+      stroke: mixColor(a.stroke, b.stroke, t),
+      width: mix(a.width, b.width, t)
+    };
+  }
+  if (a.kind === "Ellipse" && b.kind === "Ellipse") {
+    return {
+      kind: "Ellipse",
+      x: mix(a.x, b.x, t),
+      y: mix(a.y, b.y, t),
+      w: mix(a.w, b.w, t),
+      h: mix(a.h, b.h, t),
+      fill: mixColor(a.fill, b.fill, t),
+      stroke: mixColor(a.stroke, b.stroke, t),
+      width: mix(a.width, b.width, t)
+    };
+  }
+  if (a.kind === "Polygon" && b.kind === "Polygon" && a.sides === b.sides) {
+    return {
+      kind: "Polygon",
+      sides: a.sides,
+      x: mix(a.x, b.x, t),
+      y: mix(a.y, b.y, t),
+      w: mix(a.w, b.w, t),
+      h: mix(a.h, b.h, t),
+      fill: mixColor(a.fill, b.fill, t),
+      stroke: mixColor(a.stroke, b.stroke, t),
+      width: mix(a.width, b.width, t)
+    };
+  }
+  if (
+    a.kind === "Stroke" &&
+    b.kind === "Stroke" &&
+    a.points.length === b.points.length &&
+    a.points.length > 1
+  ) {
+    return {
+      kind: "Stroke",
+      points: a.points.map((point, index) => mixPoint(point, b.points[index], t)),
+      color: mixColor(a.color, b.color, t),
+      width: mix(a.width, b.width, t)
+    };
+  }
+  if (
+    a.kind === "Path" &&
+    b.kind === "Path" &&
+    a.closed === b.closed &&
+    a.nodes.length === b.nodes.length &&
+    a.nodes.length > 1
+  ) {
+    return {
+      kind: "Path",
+      nodes: a.nodes.map((node, index): PathNode => {
+        const other = b.nodes[index];
+        return {
+          point: mixPoint(node.point, other.point, t),
+          handle_in: mixHandle(node.handle_in, other.handle_in, node.point, other.point, t),
+          handle_out: mixHandle(
+            node.handle_out,
+            other.handle_out,
+            node.point,
+            other.point,
+            t
+          )
+        };
+      }),
+      closed: a.closed,
+      fill: mixColor(a.fill, b.fill, t),
+      stroke: mixColor(a.stroke, b.stroke, t),
+      width: mix(a.width, b.width, t)
+    };
+  }
+  if (a.kind === "Text" && b.kind === "Text") {
+    return {
+      kind: "Text",
+      x: mix(a.x, b.x, t),
+      y: mix(a.y, b.y, t),
+      text: a.text,
+      size: mix(a.size, b.size, t),
+      family: a.family,
+      color: mixColor(a.color, b.color, t),
+      matrix:
+        a.matrix && b.matrix
+          ? mixAffine(a.matrix, b.matrix, t)
+          : a.matrix ?? b.matrix ?? null
+    };
+  }
+  return structuredClone(a);
+}
+
 function evaluateLayer(layer: Layer, frame: number): EvalLayer | null {
   if (!layer.visible || frame >= layer.length) {
     return null;
@@ -364,6 +543,7 @@ function evaluateLayer(layer: Layer, frame: number): EvalLayer | null {
   }
   const key = layer.keys[index];
   let transform = { ...key.transform };
+  let shapes = structuredClone(key.shapes);
   if (key.tween) {
     const next = layer.keys[index + 1];
     if (next) {
@@ -371,6 +551,10 @@ function evaluateLayer(layer: Layer, frame: number): EvalLayer | null {
       if (span > 0) {
         const t = Math.min(1, Math.max(0, (frame - key.frame) / span));
         transform = lerp(transform, next.transform, t);
+        shapes = key.shapes.map((shape, position) => {
+          const other = next.shapes[position];
+          return other ? mixShape(shape, other, t) : structuredClone(shape);
+        });
       }
     }
   }
@@ -378,7 +562,7 @@ function evaluateLayer(layer: Layer, frame: number): EvalLayer | null {
     id: layer.id,
     opacity: Math.min(1, Math.max(0, layer.opacity * transform.opacity)),
     transform,
-    shapes: structuredClone(key.shapes)
+    shapes
   };
 }
 
@@ -452,7 +636,10 @@ export const tokens = new Map<string, string>([
   ["offline", "mock-offline"]
 ]);
 
-const windowState = { maximized: false, visible: true };
+const windowState = {
+  maximized: false,
+  visible: {} as Record<string, boolean>
+};
 
 export interface MockContext {
   store: Map<string, State>;
@@ -513,7 +700,7 @@ export function resetBackend(): void {
   tokens.set("access", "mock-access");
   tokens.set("offline", "mock-offline");
   windowState.maximized = false;
-  windowState.visible = true;
+  windowState.visible = {};
   for (const module of Object.values(modules)) {
     module.reset?.();
   }
@@ -623,7 +810,7 @@ mockIPC(
       case "doc_add_layer":
         return edit(a.id as string, (doc) => {
           const target = scene(doc, a.sceneId as string);
-          target.layers.push(
+          target.layers.unshift(
             newLayer(
               cleanName(a.name as string) ?? `Layer ${target.layers.length + 1}`
             )
@@ -1009,15 +1196,15 @@ mockIPC(
       case "plugin:window|close":
         return null;
       case "plugin:window|show":
-        windowState.visible = true;
+        windowState.visible[a.label as string] = true;
         return null;
       case "plugin:window|hide":
-        windowState.visible = false;
+        windowState.visible[a.label as string] = false;
         return null;
       case "plugin:window|set_focus":
         return null;
       case "plugin:window|is_visible":
-        return windowState.visible;
+        return windowState.visible[a.label as string] ?? true;
       case "plugin:window|inner_size":
         return { width: 1280, height: 800 };
       case "plugin:window|scale_factor":

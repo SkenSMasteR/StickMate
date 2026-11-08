@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { act, render, waitFor } from "@testing-library/react";
 import { emit } from "@tauri-apps/api/event";
 import App from "@/App";
-import { docEvaluate, docNew, polygonVertices } from "@/lib/document";
+import { affineFrom, composeAffine, docEvaluate, docNew, polygonVertices } from "@/lib/document";
 import type { EvalLayer, Keyframe, Layer, Shape, Transform } from "@/lib/document";
 import source from "@/export/runtime.js?raw";
 import { installBackend, store } from "./backend";
@@ -28,7 +28,7 @@ interface Paint {
 
 type NormalShape =
   | { kind: "Stroke"; points: number[]; color: string; width: number }
-  | { kind: "Text"; at: number[]; text: string; size: number; family: string; color: string }
+  | { kind: "Text"; at: number[]; text: string; size: number; family: string; color: string; matrix: number[] }
   | { kind: "Rect"; box: number[]; paint: Paint }
   | { kind: "Ellipse"; box: number[]; paint: Paint }
   | { kind: "Polygon"; points: number[]; paint: Paint }
@@ -61,7 +61,13 @@ function fixtureShapes(): Shape[] {
     { kind: "Rect", x: 40, y: 10, w: 30, h: 20, fill: "#3b82f6", stroke: "#111827", width: 2 },
     { kind: "Ellipse", x: 80, y: 12, w: 24, h: 16, fill: "#22c55e", stroke: "#111827", width: 1.5 },
     { kind: "Polygon", x: 110, y: 8, w: 28, h: 28, sides: 5, fill: "#f59e0b", stroke: "#111827", width: 2 },
-    { kind: "Text", x: 12, y: 60, text: "StickMate", size: 14, family: "sans-serif", color: "#111827" },
+    {
+      kind: "Text", x: 12, y: 60, text: "StickMate", size: 14, family: "sans-serif", color: "#111827",
+      matrix: composeAffine(
+        affineFrom({ x: 10, y: 20 }, 4, -8, 2, 0.5, -30),
+        affineFrom({ x: 5, y: 6 }, 2, 3, 1, 1, 60)
+      )
+    },
     {
       kind: "Path",
       closed: true,
@@ -86,6 +92,64 @@ function fixtureShapes(): Shape[] {
       ]
     },
     { kind: "Stroke", points: [{ x: 90, y: 90 }], color: "#ef4444", width: 3 }
+  ];
+}
+
+function tweenStart(): Shape[] {
+  return [
+    { kind: "Rect", x: 10, y: 10, w: 20, h: 20, fill: "#000000", stroke: "#ffffff", width: 2 },
+    { kind: "Ellipse", x: 40, y: 10, w: 20, h: 20, fill: "#22c55e", stroke: "#111827", width: 1 },
+    { kind: "Polygon", x: 70, y: 10, w: 24, h: 24, sides: 5, fill: "#f59e0b", stroke: "#111827", width: 2 },
+    {
+      kind: "Path",
+      closed: false,
+      fill: "#a855f7",
+      stroke: "#111827",
+      width: 3,
+      nodes: [
+        { point: { x: 10, y: 60 }, handle_in: null, handle_out: { x: 20, y: 50 } },
+        { point: { x: 40, y: 70 }, handle_in: { x: 30, y: 60 }, handle_out: null }
+      ]
+    },
+    {
+      kind: "Stroke",
+      points: [
+        { x: 60, y: 60 },
+        { x: 70, y: 66 },
+        { x: 80, y: 60 }
+      ],
+      color: "#ef4444",
+      width: 3
+    }
+  ];
+}
+
+function tweenEnd(): Shape[] {
+  return [
+    { kind: "Rect", x: 30, y: 18, w: 40, h: 30, fill: "#ffffff", stroke: "none", width: 6 },
+    { kind: "Rect", x: 90, y: 20, w: 20, h: 20, fill: "#10b981", stroke: "#111827", width: 1 },
+    { kind: "Polygon", x: 70, y: 10, w: 24, h: 24, sides: 3, fill: "#0ea5e9", stroke: "#111827", width: 2 },
+    {
+      kind: "Path",
+      closed: false,
+      fill: "#a855f7",
+      stroke: "#111827",
+      width: 5,
+      nodes: [
+        { point: { x: 30, y: 60 }, handle_in: { x: 20, y: 70 }, handle_out: { x: 40, y: 50 } },
+        { point: { x: 60, y: 70 }, handle_in: null, handle_out: null }
+      ]
+    },
+    {
+      kind: "Stroke",
+      points: [
+        { x: 100, y: 60 },
+        { x: 120, y: 70 }
+      ],
+      color: "#0ea5e9",
+      width: 5
+    },
+    { kind: "Text", x: 10, y: 92, text: "End", size: 16, family: "sans-serif", color: "#111827", matrix: null }
   ];
 }
 
@@ -120,7 +184,16 @@ function fixtureScenes() {
     length: 4,
     keys: [key(0, [fixtureShapes()[2]])]
   };
-  return [{ id: "s0", name: "Scene 1", layers: [top, mid, hidden] }];
+  const tweened: Layer = {
+    id: "l-tween",
+    name: "Tween",
+    visible: true,
+    locked: false,
+    opacity: 1,
+    length: 3,
+    keys: [key(0, tweenStart(), { tween: true }), key(2, tweenEnd())]
+  };
+  return [{ id: "s0", name: "Scene 1", layers: [top, mid, hidden, tweened] }];
 }
 
 function flat(points: Array<{ x: number; y: number }>): number[] {
@@ -158,7 +231,8 @@ function normalShape(shape: Shape): NormalShape | null {
       text: shape.text,
       size: shape.size,
       family: shape.family,
-      color: shape.color
+      color: shape.color,
+      matrix: shape.matrix ? [shape.matrix.a, shape.matrix.b, shape.matrix.c, shape.matrix.d, shape.matrix.e, shape.matrix.f] : [1, 0, 0, 1, 0, 0]
     };
   }
   if (shape.kind === "Path") {
@@ -241,7 +315,8 @@ function fromSvg(svg: SVGSVGElement): NormalLayer[] {
           text: painted.textContent ?? "",
           size: Number(painted.getAttribute("font-size")),
           family: painted.getAttribute("font-family") ?? "",
-          color: painted.getAttribute("fill") ?? ""
+          color: painted.getAttribute("fill") ?? "",
+          matrix: painted.hasAttribute("transform") ? numbers(painted.getAttribute("transform")) : [1, 0, 0, 1, 0, 0]
         });
         continue;
       }
@@ -298,6 +373,8 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
   let ops: Array<{ name: string; args: number[] }> = [];
   let current: NormalLayer | null = null;
   let cleared = false;
+  let textMatrix = [1, 0, 0, 1, 0, 0];
+  const matrixStack: number[][] = [];
 
   const finish = () => {
     if (!current || ops.length === 0) {
@@ -409,6 +486,18 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
       font = String(entry[2]);
       continue;
     }
+    if (name === "save") {
+      matrixStack.push(textMatrix);
+      continue;
+    }
+    if (name === "transform") {
+      textMatrix = args;
+      continue;
+    }
+    if (name === "restore") {
+      textMatrix = matrixStack.pop()!;
+      continue;
+    }
     if (name === "fillText") {
       if (current) {
         const size = Number(font.split("px")[0]);
@@ -418,7 +507,8 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
           text: String(entry[2]),
           size,
           family: font.slice(font.indexOf("px ") + 3),
-          color: fill
+          color: fill,
+          matrix: textMatrix
         });
       }
       continue;
@@ -463,7 +553,10 @@ function recorder(index: number): CanvasRenderingContext2D {
     "ellipse",
     "fill",
     "stroke",
-    "fillText"
+    "fillText",
+    "save",
+    "transform",
+    "restore"
   ]) {
     target[name] = (...args: unknown[]) => {
       log.push([index, name, ...args]);
@@ -567,6 +660,19 @@ describe("editor and export renderer conformance", () => {
     expect(fromSvg(svg)).toEqual(traceAt(0));
   });
 
+  test("composed text rotation and stretch are isolated from subsequent artwork", async () => {
+    const { svg } = await mountEditor();
+    const exported = traceAt(0);
+    expect(fromSvg(svg)).toEqual(exported);
+    const text = exported[0].shapes.find((shape) => shape.kind === "Text")!;
+    expect(text).toMatchObject({ kind: "Text", text: "StickMate", size: 14 });
+    const transformIndex = log.findIndex((entry) => entry[0] === 1 && entry[1] === "transform");
+    expect(log[transformIndex - 1]).toEqual([1, "save"]);
+    const fillIndex = log.findIndex((entry) => entry[0] === 1 && entry[1] === "fillText");
+    expect(log[fillIndex + 1]).toEqual([1, "restore"]);
+    expect(transformIndex).toBeLessThan(fillIndex);
+  });
+
   test("both renderers match the authoritative evaluation", async () => {
     const { id, svg } = await mountEditor();
     const evaluated = await docEvaluate(id, "s0", 0, 0);
@@ -589,6 +695,40 @@ describe("editor and export renderer conformance", () => {
     }
   });
 
+  test("tweened shapes interpolate and hold what cannot be paired", async () => {
+    const { id } = await mountEditor();
+    const evaluated = await docEvaluate(id, "s0", 0, 2);
+    expect(evaluated[0].layers[2].shapes).toEqual(tweenStart());
+    expect(evaluated[2].layers[1].shapes).toEqual(tweenEnd());
+    const middle = evaluated[1].layers[2].shapes;
+    expect(middle).toHaveLength(5);
+    expect(middle[0]).toMatchObject({
+      kind: "Rect",
+      x: 20,
+      y: 14,
+      w: 30,
+      h: 25,
+      fill: "#808080",
+      stroke: "#ffffff",
+      width: 4
+    });
+    expect(middle[1]).toMatchObject({ kind: "Ellipse", x: 40, y: 10 });
+    expect(middle[2]).toMatchObject({ kind: "Polygon", sides: 5 });
+    expect(middle[3]).toMatchObject({
+      kind: "Path",
+      width: 4,
+      nodes: [
+        {
+          point: { x: 20, y: 60 },
+          handle_in: { x: 15, y: 65 },
+          handle_out: { x: 30, y: 50 }
+        },
+        { point: { x: 50, y: 70 }, handle_in: { x: 45, y: 65 }, handle_out: null }
+      ]
+    });
+    expect(middle[4]).toMatchObject({ kind: "Stroke", color: "#ef4444", width: 3 });
+  });
+
   test("held frames repeat the previous keyframe content", async () => {
     const { id } = await mountEditor();
     const evaluated = await docEvaluate(id, "s0", 0, 3);
@@ -598,7 +738,7 @@ describe("editor and export renderer conformance", () => {
 
   test("hidden layers and layers past their length disappear in both", async () => {
     const { id, svg } = await mountEditor();
-    expect(fromSvg(svg)).toHaveLength(2);
+    expect(fromSvg(svg)).toHaveLength(3);
     const evaluated = await docEvaluate(id, "s0", 3, 3);
     expect(evaluated[0].layers.map((layer) => layer.id)).toEqual(["l-top"]);
     expect(traceAt(3)).toHaveLength(1);

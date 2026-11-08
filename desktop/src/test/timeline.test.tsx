@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { store } from "./backend";
-import { flush, press, renderEditor } from "./utils";
+import { flush, getCanvas, press, renderEditor } from "./utils";
 import {
   docDraw,
   docInsertFrame,
@@ -602,3 +602,36 @@ describe("timeline shortcuts", () => {
     expect(store.get(doc.id)?.undo.length).toBe(depth + 1);
   });
 }, 20000);
+
+describe("tweening", () => {
+  function painted(): string {
+    const line = getCanvas().querySelector("polyline");
+    return line ? String(line.getAttribute("points")) : "";
+  }
+
+  async function seek(frame: number, points: string): Promise<void> {
+    await setNumber("Frame", String(frame));
+    await waitFor(() => expect(painted()).toBe(points));
+  }
+
+  it("moves the drawn shape between the two keys", async () => {
+    const { doc } = await renderEditor();
+    const scene = doc.scenes[0].id;
+    const layerId = doc.scenes[0].layers[0].id;
+    await build(doc, 11);
+    await drawAt(doc, 0, 100);
+    await docKeyframe(doc.id, scene, layerId, 10, true);
+    await drawAt(doc, 10, 200);
+    await seek(1, "100,0 100,10");
+    await clickCell(0);
+    await press("t", { altKey: true });
+    expect(layerOf(doc.id).keys[0].tween).toBe(true);
+    await seek(5, "140,0 140,10");
+    await seek(11, "200,0 200,10");
+    await seek(3, "120,0 120,10");
+    await press("t", { altKey: true });
+    expect(layerOf(doc.id).keys[0].tween).toBe(false);
+    await seek(5, "100,0 100,10");
+    await seek(11, "200,0 200,10");
+  }, 30000);
+});
