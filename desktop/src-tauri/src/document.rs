@@ -822,12 +822,126 @@ impl Transform {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Easing {
+    #[serde(default = "Easing::linear_x1")]
+    pub x1: f64,
+    #[serde(default = "Easing::linear_y1")]
+    pub y1: f64,
+    #[serde(default = "Easing::linear_x2")]
+    pub x2: f64,
+    #[serde(default = "Easing::linear_y2")]
+    pub y2: f64,
+}
+
+impl Easing {
+    pub fn linear() -> Self {
+        Self {
+            x1: 0.0,
+            y1: 0.0,
+            x2: 1.0,
+            y2: 1.0,
+        }
+    }
+
+    fn linear_x1() -> f64 {
+        0.0
+    }
+
+    fn linear_y1() -> f64 {
+        0.0
+    }
+
+    fn linear_x2() -> f64 {
+        1.0
+    }
+
+    fn linear_y2() -> f64 {
+        1.0
+    }
+
+    fn is_linear(self) -> bool {
+        self.x1 == self.y1 && self.x2 == self.y2
+    }
+
+    fn sanitized(self) -> Self {
+        let value = [self.x1, self.y1, self.x2, self.y2];
+        if value.iter().any(|number| !number.is_finite()) {
+            return Self::linear();
+        }
+        Self {
+            x1: self.x1.clamp(0.0, 1.0),
+            y1: self.y1.clamp(-1.0, 2.0),
+            x2: self.x2.clamp(0.0, 1.0),
+            y2: self.y2.clamp(-1.0, 2.0),
+        }
+    }
+}
+
+fn cubic_value(p1: f64, p2: f64, u: f64) -> f64 {
+    let inv = 1.0 - u;
+    3.0 * inv * inv * u * p1 + 3.0 * inv * u * u * p2 + u * u * u
+}
+
+fn cubic_slope(p1: f64, p2: f64, u: f64) -> f64 {
+    let inv = 1.0 - u;
+    3.0 * inv * inv * p1 + 6.0 * inv * u * (p2 - p1) + 3.0 * u * u * (1.0 - p2)
+}
+
+fn solve_curve_unit(x1: f64, x2: f64, target: f64) -> f64 {
+    let mut u = target;
+    let mut steps = 0;
+    while steps < 8 {
+        let error = cubic_value(x1, x2, u) - target;
+        if error.abs() <= 1e-7 {
+            return u;
+        }
+        let slope = cubic_slope(x1, x2, u);
+        if slope.abs() <= 1e-7 {
+            break;
+        }
+        let next = u - error / slope;
+        if !(0.0..=1.0).contains(&next) {
+            break;
+        }
+        u = next;
+        steps += 1;
+    }
+    let mut low = 0.0;
+    let mut high = 1.0;
+    for _ in 0..32 {
+        let middle = (low + high) / 2.0;
+        if cubic_value(x1, x2, middle) < target {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    (low + high) / 2.0
+}
+
+pub fn ease_progress(t: f64, easing: Easing) -> f64 {
+    if t <= 0.0 {
+        return 0.0;
+    }
+    if t >= 1.0 {
+        return 1.0;
+    }
+    if easing.is_linear() {
+        return t;
+    }
+    let u = solve_curve_unit(easing.x1, easing.x2, t);
+    cubic_value(easing.y1, easing.y2, u)
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Keyframe {
     pub frame: u32,
     pub shapes: Vec<Shape>,
     pub transform: Transform,
     pub tween: bool,
+    #[serde(default = "Easing::linear")]
+    pub easing: Easing,
     pub label: Option<String>,
 }
 
@@ -838,6 +952,7 @@ impl Keyframe {
             shapes: Vec::new(),
             transform: Transform::default(),
             tween: false,
+            easing: Easing::linear(),
             label: None,
         }
     }
@@ -885,6 +1000,7 @@ impl Layer {
                 shapes: self.keys[index].shapes.clone(),
                 transform: self.keys[index].transform,
                 tween: false,
+                easing: Easing::linear(),
                 label: None,
             },
             None => Keyframe::empty(frame),
@@ -1271,7 +1387,8 @@ pub fn evaluate_layer(layer: &Layer, frame: u32) -> Option<EvalLayer> {
         if let Some(next) = layer.keys.get(index + 1) {
             let span = next.frame.saturating_sub(key.frame);
             if span > 0 {
-                let t = ((frame - key.frame) as f64 / span as f64).clamp(0.0, 1.0);
+                let raw = ((frame - key.frame) as f64 / span as f64).clamp(0.0, 1.0);
+                let t = ease_progress(raw, key.easing);
                 transform = transform.lerp(next.transform, t);
                 shapes = shapes
                     .iter()
@@ -1758,6 +1875,7 @@ impl DocStore {
                 key.shapes.clear();
                 key.transform = Transform::default();
                 key.tween = false;
+                key.easing = Easing::linear();
             }
             Ok(())
         })
@@ -1796,13 +1914,18 @@ impl DocStore {
         layer_id: &str,
         frame: u32,
         tween: bool,
+        easing: Option<Easing>,
     ) -> Result<Document, String> {
         let step = if tween { "add_tween" } else { "remove_tween" };
         self.edit_named(id, step, |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
             layer.writable()?;
             let index = layer.key_at(frame);
-            layer.keys[index].tween = tween;
+            let key = &mut layer.keys[index];
+            key.tween = tween;
+            if let Some(curve) = easing {
+                key.easing = curve.sanitized();
+            }
             Ok(())
         })
     }
@@ -2654,8 +2777,9 @@ pub fn doc_set_tween(
     layer_id: String,
     frame: u32,
     tween: bool,
+    easing: Option<Easing>,
 ) -> Result<Document, String> {
-    store.set_tween(&id, &scene_id, &layer_id, frame, tween)
+    store.set_tween(&id, &scene_id, &layer_id, frame, tween, easing)
 }
 
 #[tauri::command]
@@ -3161,7 +3285,7 @@ mod tests {
         let id = &fixture.doc.id;
         fixture
             .store
-            .set_tween(id, &fixture.scene, &fixture.layer, 0, true)
+            .set_tween(id, &fixture.scene, &fixture.layer, 0, true, None)
             .expect("tween");
         fixture
             .store
@@ -3209,7 +3333,7 @@ mod tests {
         }
         fixture
             .store
-            .set_tween(id, &fixture.scene, &fixture.layer, 0, true)
+            .set_tween(id, &fixture.scene, &fixture.layer, 0, true, None)
             .expect("tween");
         fixture
             .store
@@ -3248,7 +3372,7 @@ mod tests {
                 .expect("draw end");
         }
         store
-            .set_tween(id, &fixture.scene, &fixture.layer, 0, true)
+            .set_tween(id, &fixture.scene, &fixture.layer, 0, true, None)
             .expect("tween");
         store
             .evaluate_range(id, &fixture.scene, 0, 2)
@@ -3270,7 +3394,7 @@ mod tests {
             .draw(id, &fixture.scene, &fixture.layer, 10, box_shape(300.0, 100.0))
             .expect("draw end");
         store
-            .set_tween(id, &fixture.scene, &fixture.layer, 0, true)
+            .set_tween(id, &fixture.scene, &fixture.layer, 0, true, None)
             .expect("tween");
         let frames = store
             .evaluate_range(id, &fixture.scene, 0, 10)
@@ -3280,7 +3404,7 @@ mod tests {
         assert_eq!(frames[5].layers[0].shapes, vec![box_shape(200.0, 100.0)]);
         assert_eq!(frames[10].layers[0].shapes, vec![box_shape(300.0, 100.0)]);
         store
-            .set_tween(id, &fixture.scene, &fixture.layer, 0, false)
+            .set_tween(id, &fixture.scene, &fixture.layer, 0, false, None)
             .expect("tween off");
         let held = store
             .evaluate_range(id, &fixture.scene, 5, 5)
@@ -3489,6 +3613,363 @@ mod tests {
         );
     }
 
+    fn ease_in() -> Easing {
+        Easing {
+            x1: 0.42,
+            y1: 0.0,
+            x2: 1.0,
+            y2: 1.0,
+        }
+    }
+
+    #[test]
+    fn ease_progress_holds_the_endpoints_and_the_linear_curve() {
+        assert_eq!(ease_progress(0.0, ease_in()), 0.0);
+        assert_eq!(ease_progress(1.0, ease_in()), 1.0);
+        assert_eq!(ease_progress(-0.4, ease_in()), 0.0);
+        assert_eq!(ease_progress(1.6, ease_in()), 1.0);
+        let linear = Easing::linear();
+        assert!(linear.is_linear());
+        for step in 0..=10 {
+            let t = step as f64 / 10.0;
+            assert_eq!(ease_progress(t, linear), t);
+        }
+        let mirrored = Easing {
+            x1: 0.5,
+            y1: 0.5,
+            x2: 0.8,
+            y2: 0.8,
+        };
+        assert_eq!(ease_progress(0.25, mirrored), 0.25);
+    }
+
+    #[test]
+    fn ease_in_progress_is_monotonic_and_starts_slow() {
+        let mut previous = 0.0;
+        for step in 0..=10 {
+            let t = step as f64 / 10.0;
+            let eased = ease_progress(t, ease_in());
+            assert!(eased >= previous, "easing must not run backwards");
+            previous = eased;
+            if t > 0.0 && t < 1.0 {
+                assert!(eased < t, "ease in lags the linear ramp at {t}");
+            }
+        }
+        assert!((previous - 1.0).abs() < 1e-12);
+        assert!((ease_progress(0.5, ease_in()) - 0.315_356_812_505_893).abs() < 1e-12);
+    }
+
+    #[test]
+    fn overshoot_curve_passes_the_transform_and_holds_the_shapes() {
+        let back = Easing {
+            x1: 0.34,
+            y1: 1.56,
+            x2: 0.64,
+            y2: 1.0,
+        };
+        assert_eq!(ease_progress(0.0, back), 0.0);
+        assert_eq!(ease_progress(1.0, back), 1.0);
+        assert!(ease_progress(0.5, back) > 1.0);
+        let fixture = Fixture::new("easing-overshoot");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(100.0, 100.0))
+            .expect("draw start");
+        fixture
+            .store
+            .keyframe(id, &fixture.scene, &fixture.layer, 10, true)
+            .expect("blank key");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 10, box_shape(300.0, 100.0))
+            .expect("draw end");
+        fixture
+            .store
+            .set_transform(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                10,
+                Transform {
+                    x: 200.0,
+                    ..Transform::default()
+                },
+            )
+            .expect("transform");
+        fixture
+            .store
+            .set_tween(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                true,
+                Some(back),
+            )
+            .expect("tween");
+        let frames = fixture
+            .store
+            .evaluate_range(id, &fixture.scene, 0, 10)
+            .expect("evaluate");
+        assert_eq!(frames[0].layers[0].transform.x, 0.0);
+        assert!(
+            frames[5].layers[0].transform.x > 200.0,
+            "expected an overshoot, got {}",
+            frames[5].layers[0].transform.x
+        );
+        assert_eq!(frames[10].layers[0].transform.x, 200.0);
+        assert_eq!(frames[0].layers[0].shapes, vec![box_shape(100.0, 100.0)]);
+        assert_eq!(frames[10].layers[0].shapes, vec![box_shape(300.0, 100.0)]);
+    }
+
+    #[test]
+    fn easing_control_points_are_clamped() {
+        let clamped = Easing {
+            x1: -2.0,
+            y1: 5.0,
+            x2: 3.0,
+            y2: -3.0,
+        }
+        .sanitized();
+        assert_eq!(
+            clamped,
+            Easing {
+                x1: 0.0,
+                y1: 2.0,
+                x2: 1.0,
+                y2: -1.0,
+            }
+        );
+        assert_eq!(
+            Easing {
+                x1: f64::NAN,
+                y1: 0.4,
+                x2: 0.6,
+                y2: 1.0,
+            }
+            .sanitized(),
+            Easing::linear()
+        );
+        let fixture = Fixture::new("easing-clamp");
+        let id = &fixture.doc.id;
+        let edited = fixture
+            .store
+            .set_tween(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                true,
+                Some(Easing {
+                    x1: -1.0,
+                    y1: 4.0,
+                    x2: 2.0,
+                    y2: -2.0,
+                }),
+            )
+            .expect("tween");
+        assert_eq!(
+            fixture.target(&edited).keys[0].easing,
+            Easing {
+                x1: 0.0,
+                y1: 2.0,
+                x2: 1.0,
+                y2: -1.0,
+            }
+        );
+    }
+
+    #[test]
+    fn tween_toggle_keeps_the_curve_and_a_new_tween_starts_linear() {
+        let fixture = Fixture::new("easing-keep");
+        let id = &fixture.doc.id;
+        let curved = fixture
+            .store
+            .set_tween(id, &fixture.scene, &fixture.layer, 0, true, Some(ease_in()))
+            .expect("curve");
+        assert_eq!(fixture.target(&curved).keys[0].easing, ease_in());
+        let toggled = fixture
+            .store
+            .set_tween(id, &fixture.scene, &fixture.layer, 0, false, None)
+            .expect("toggle");
+        assert!(!fixture.target(&toggled).keys[0].tween);
+        assert_eq!(fixture.target(&toggled).keys[0].easing, ease_in());
+        let edited = fixture
+            .store
+            .keyframe(id, &fixture.scene, &fixture.layer, 4, false)
+            .expect("key");
+        let target = fixture.target(&edited);
+        assert_eq!(target.keys.len(), 2);
+        assert_eq!(target.keys[1].easing, Easing::linear());
+    }
+
+    #[test]
+    fn eased_tween_drives_the_transform_and_the_shapes() {
+        let fixture = Fixture::new("easing-span");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(100.0, 100.0))
+            .expect("draw start");
+        fixture
+            .store
+            .keyframe(id, &fixture.scene, &fixture.layer, 10, true)
+            .expect("blank key");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 10, box_shape(300.0, 100.0))
+            .expect("draw end");
+        fixture
+            .store
+            .set_transform(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                10,
+                Transform {
+                    x: 200.0,
+                    ..Transform::default()
+                },
+            )
+            .expect("transform");
+        fixture
+            .store
+            .set_tween(id, &fixture.scene, &fixture.layer, 0, true, Some(ease_in()))
+            .expect("tween");
+        let frames = fixture
+            .store
+            .evaluate_range(id, &fixture.scene, 0, 10)
+            .expect("evaluate");
+        assert_eq!(frames[0].layers[0].shapes, vec![box_shape(100.0, 100.0)]);
+        assert_eq!(frames[0].layers[0].transform.x, 0.0);
+        assert_eq!(frames[10].layers[0].shapes, vec![box_shape(300.0, 100.0)]);
+        assert_eq!(frames[10].layers[0].transform.x, 200.0);
+        let Shape::Rect { x, .. } = frames[5].layers[0].shapes[0] else {
+            panic!("expected a rectangle");
+        };
+        assert!((x - 163.071_362_501_178_6).abs() < 1e-9, "got {x}");
+        assert!(
+            (frames[5].layers[0].transform.x - 63.071_362_501_178_6).abs() < 1e-9,
+            "got {}",
+            frames[5].layers[0].transform.x
+        );
+        assert!(
+            (frames[2].layers[0].transform.x - 12.456_400_265_113_877).abs() < 1e-9,
+            "got {}",
+            frames[2].layers[0].transform.x
+        );
+    }
+
+    #[test]
+    fn old_documents_without_easing_load_as_linear() {
+        let legacy = serde_json::json!({
+            "frame": 3,
+            "shapes": [],
+            "transform": { "x": 1.0, "y": 2.0, "rotation": 0.0, "scale": 1.0, "opacity": 1.0 },
+            "tween": true,
+            "label": "walk"
+        });
+        let key: Keyframe = serde_json::from_value(legacy).expect("legacy keyframe");
+        assert_eq!(key.frame, 3);
+        assert!(key.tween);
+        assert_eq!(key.easing, Easing::linear());
+        let partial: Keyframe = serde_json::from_value(serde_json::json!({
+            "frame": 0,
+            "shapes": [],
+            "transform": { "x": 0.0, "y": 0.0, "rotation": 0.0, "scale": 1.0, "opacity": 1.0 },
+            "tween": true,
+            "label": null,
+            "easing": { "x1": 0.42 }
+        }))
+        .expect("partial easing");
+        assert_eq!(
+            partial.easing,
+            Easing {
+                x1: 0.42,
+                y1: 0.0,
+                x2: 1.0,
+                y2: 1.0,
+            }
+        );
+        let json = serde_json::to_value(&key).expect("serialize");
+        assert_eq!(json["easing"]["x2"], 1.0);
+        assert_eq!(json["easing"]["y1"], 0.0);
+    }
+
+    #[test]
+    fn easing_survives_save_and_reopen() {
+        let dir = std::env::temp_dir().join(format!("stickmate-easing-{}", new_id("t")));
+        let (id, expected) = {
+            let store = DocStore::load(dir.clone());
+            let doc = store
+                .create("Saved".to_string(), 1920, 1080, 30, "#101010".to_string())
+                .expect("create");
+            let scene = doc.scenes[0].id.clone();
+            let layer = doc.scenes[0].layers[0].id.clone();
+            store
+                .set_tween(&doc.id, &scene, &layer, 0, true, Some(ease_in()))
+                .expect("tween");
+            let expected = store.get(&doc.id).expect("get");
+            (doc.id, expected)
+        };
+        let reloaded = DocStore::load(dir.clone());
+        let restored = reloaded.get(&id).expect("loaded");
+        assert_eq!(restored, expected);
+        assert_eq!(restored.scenes[0].layers[0].keys[0].easing, ease_in());
+        assert!(restored.scenes[0].layers[0].keys[0].tween);
+        let legacy = serde_json::json!({
+            "document": {
+                "id": "legacy",
+                "name": "Legacy",
+                "width": 800,
+                "height": 600,
+                "fps": 24,
+                "background": "#ffffff",
+                "scenes": [{
+                    "id": "s0",
+                    "name": "Scene 1",
+                    "layers": [{
+                        "id": "l0",
+                        "name": "Layer 1",
+                        "visible": true,
+                        "locked": false,
+                        "opacity": 1.0,
+                        "length": 11,
+                        "keys": [{
+                            "frame": 0,
+                            "shapes": [],
+                            "transform": { "x": 0.0, "y": 0.0, "rotation": 0.0, "scale": 1.0, "opacity": 1.0 },
+                            "tween": true,
+                            "label": null
+                        }, {
+                            "frame": 10,
+                            "shapes": [],
+                            "transform": { "x": 100.0, "y": 0.0, "rotation": 0.0, "scale": 1.0, "opacity": 1.0 },
+                            "tween": false,
+                            "label": null
+                        }]
+                    }]
+                }]
+            },
+            "updated_at": 0
+        });
+        fs::write(
+            dir.join("legacy.json"),
+            serde_json::to_vec(&legacy).expect("json"),
+        )
+        .expect("write");
+        let with_legacy = DocStore::load(dir.clone());
+        let loaded = with_legacy.get("legacy").expect("legacy loaded");
+        let key = &loaded.scenes[0].layers[0].keys[0];
+        assert_eq!(key.easing, Easing::linear());
+        let frames = with_legacy
+            .evaluate_range("legacy", "s0", 5, 5)
+            .expect("evaluate");
+        assert_eq!(frames[0].layers[0].transform.x, 50.0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn hidden_layer_and_out_of_range_frame_evaluate_empty() {
         let fixture = Fixture::new("visible");
@@ -3626,7 +4107,7 @@ mod tests {
                 .draw(&doc.id, &scene, &layer, 6, stroke(4.0))
                 .expect("draw");
             store
-                .set_tween(&doc.id, &scene, &layer, 6, true)
+                .set_tween(&doc.id, &scene, &layer, 6, true, None)
                 .expect("tween");
             store
                 .set_label(&doc.id, &scene, &layer, 6, Some("walk".to_string()))

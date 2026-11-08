@@ -3,7 +3,14 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { act, render, waitFor } from "@testing-library/react";
 import { emit } from "@tauri-apps/api/event";
 import App from "@/App";
-import { affineFrom, composeAffine, docEvaluate, docNew, polygonVertices } from "@/lib/document";
+import {
+  affineFrom,
+  composeAffine,
+  docEvaluate,
+  docNew,
+  linearEasing,
+  polygonVertices
+} from "@/lib/document";
 import type { EvalLayer, Keyframe, Layer, Shape, Transform } from "@/lib/document";
 import source from "@/export/runtime.js?raw";
 import { installBackend, store } from "./backend";
@@ -43,7 +50,15 @@ interface NormalLayer {
 const identity: Transform = { x: 0, y: 0, rotation: 0, scale: 1, opacity: 1 };
 
 function key(frame: number, shapes: Shape[], patch: Partial<Keyframe> = {}): Keyframe {
-  return { frame, shapes, transform: { ...identity }, tween: false, label: null, ...patch };
+  return {
+    frame,
+    shapes,
+    transform: { ...identity },
+    tween: false,
+    easing: { ...linearEasing },
+    label: null,
+    ...patch
+  };
 }
 
 function fixtureShapes(): Shape[] {
@@ -162,7 +177,11 @@ function fixtureScenes() {
     opacity: 0.5,
     length: 4,
     keys: [
-      key(0, fixtureShapes(), { transform: { x: 5, y: 6, rotation: 30, scale: 1.25, opacity: 1 }, tween: true }),
+      key(0, fixtureShapes(), {
+        transform: { x: 5, y: 6, rotation: 30, scale: 1.25, opacity: 1 },
+        tween: true,
+        easing: { x1: 0.42, y1: 0, x2: 1, y2: 1 }
+      }),
       key(2, fixtureShapes(), { transform: { x: 25, y: 6, rotation: 30, scale: 2, opacity: 0.5 } })
     ]
   };
@@ -727,6 +746,18 @@ describe("editor and export renderer conformance", () => {
       ]
     });
     expect(middle[4]).toMatchObject({ kind: "Stroke", color: "#ef4444", width: 3 });
+  });
+
+  test("a non linear curve moves both renderers the same amount", async () => {
+    const { id } = await mountEditor();
+    const evaluated = await docEvaluate(id, "s0", 1, 1);
+    const eased = evaluated[0].layers[0].transform;
+    expect(eased.x).toBeCloseTo(5 + 20 * 0.3153568125058931, 12);
+    expect(Math.abs(eased.x - 15)).toBeGreaterThan(1);
+    expect(eased.scale).toBeCloseTo(1.25 + 0.75 * 0.3153568125058931, 12);
+    const exported = traceAt(1)[0].transform;
+    expect(exported[0]).toBe(eased.x);
+    expect(exported[3]).toBe(eased.scale);
   });
 
   test("held frames repeat the previous keyframe content", async () => {

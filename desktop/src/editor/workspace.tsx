@@ -52,6 +52,7 @@ import type {
   AlignMode,
   AlignReference,
   Document,
+  Easing,
   EvalFrame,
   Layer,
   Point,
@@ -229,6 +230,7 @@ export interface Actions {
   setSelectedFrames: (frames: number[]) => void;
   setLoopRange: (start: number | null, end: number | null) => void;
   toggleTween: () => void;
+  setEasing: (easing: Easing) => void;
   setLabel: (label: string) => void;
   addLayer: () => void;
   renameLayer: (layerId: string, name: string) => void;
@@ -733,6 +735,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       edit((d, s, l) => {
         const key = heldKey(l, frame);
         return docSetTween(d.id, s.id, l.id, key?.frame ?? frame, !key?.tween);
+      }),
+    setEasing: (easing) =>
+      edit((d, s, l) => {
+        const key = heldKey(l, frame);
+        return docSetTween(
+          d.id,
+          s.id,
+          l.id,
+          key?.frame ?? frame,
+          key?.tween ?? false,
+          easing
+        );
       }),
     setLabel: (label) =>
       edit((d, s, l) => {

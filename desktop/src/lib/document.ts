@@ -242,11 +242,109 @@ export interface Transform {
   opacity: number;
 }
 
+export interface Easing {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+export type EasingPresetId = "linear" | "easeIn" | "easeOut" | "easeInOut";
+
+export const linearEasing: Easing = { x1: 0, y1: 0, x2: 1, y2: 1 };
+
+export const easingPresets: Array<{ id: EasingPresetId; easing: Easing }> = [
+  { id: "linear", easing: linearEasing },
+  { id: "easeIn", easing: { x1: 0.42, y1: 0, x2: 1, y2: 1 } },
+  { id: "easeOut", easing: { x1: 0, y1: 0, x2: 0.58, y2: 1 } },
+  { id: "easeInOut", easing: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 } }
+];
+
+export function isLinearEasing(easing: Easing): boolean {
+  return easing.x1 === easing.y1 && easing.x2 === easing.y2;
+}
+
+export function clampEasing(easing: Easing): Easing {
+  const values = [easing.x1, easing.y1, easing.x2, easing.y2];
+  if (values.some((value) => !Number.isFinite(value))) {
+    return { ...linearEasing };
+  }
+  return {
+    x1: Math.min(1, Math.max(0, easing.x1)),
+    y1: Math.min(2, Math.max(-1, easing.y1)),
+    x2: Math.min(1, Math.max(0, easing.x2)),
+    y2: Math.min(2, Math.max(-1, easing.y2))
+  };
+}
+
+export function sameEasing(left: Easing, right: Easing): boolean {
+  return (
+    left.x1 === right.x1 &&
+    left.y1 === right.y1 &&
+    left.x2 === right.x2 &&
+    left.y2 === right.y2
+  );
+}
+
+function cubicValue(p1: number, p2: number, u: number): number {
+  const inv = 1 - u;
+  return 3 * inv * inv * u * p1 + 3 * inv * u * u * p2 + u * u * u;
+}
+
+function cubicSlope(p1: number, p2: number, u: number): number {
+  const inv = 1 - u;
+  return 3 * inv * inv * p1 + 6 * inv * u * (p2 - p1) + 3 * u * u * (1 - p2);
+}
+
+function curveUnit(x1: number, x2: number, target: number): number {
+  let u = target;
+  for (let steps = 0; steps < 8; steps += 1) {
+    const error = cubicValue(x1, x2, u) - target;
+    if (Math.abs(error) <= 1e-7) {
+      return u;
+    }
+    const slope = cubicSlope(x1, x2, u);
+    if (Math.abs(slope) <= 1e-7) {
+      break;
+    }
+    const next = u - error / slope;
+    if (next <= 0 || next >= 1) {
+      break;
+    }
+    u = next;
+  }
+  let low = 0;
+  let high = 1;
+  for (let index = 0; index < 32; index += 1) {
+    const middle = (low + high) / 2;
+    if (cubicValue(x1, x2, middle) < target) {
+      low = middle;
+    } else {
+      high = middle;
+    }
+  }
+  return (low + high) / 2;
+}
+
+export function easeProgress(t: number, easing: Easing | null | undefined): number {
+  if (t <= 0) {
+    return 0;
+  }
+  if (t >= 1) {
+    return 1;
+  }
+  if (!easing || isLinearEasing(easing)) {
+    return t;
+  }
+  return cubicValue(easing.y1, easing.y2, curveUnit(easing.x1, easing.x2, t));
+}
+
 export interface Keyframe {
   frame: number;
   shapes: Shape[];
   transform: Transform;
   tween: boolean;
+  easing?: Easing;
   label: string | null;
 }
 
@@ -461,9 +559,17 @@ export function docSetTween(
   sceneId: string,
   layerId: string,
   frame: number,
-  tween: boolean
+  tween: boolean,
+  easing?: Easing | null
 ): Promise<Document> {
-  return invoke<Document>("doc_set_tween", { id, sceneId, layerId, frame, tween });
+  return invoke<Document>("doc_set_tween", {
+    id,
+    sceneId,
+    layerId,
+    frame,
+    tween,
+    easing: easing ?? null
+  });
 }
 
 export function docSetLabel(

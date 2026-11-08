@@ -17,8 +17,22 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/i18n";
-import { heldKey, unionBounds } from "@/lib/document";
-import type { AlignMode, AlignReference, Point, Shape } from "@/lib/document";
+import {
+  clampEasing,
+  easingPresets,
+  heldKey,
+  linearEasing,
+  sameEasing,
+  unionBounds
+} from "@/lib/document";
+import type {
+  AlignMode,
+  AlignReference,
+  Easing,
+  EasingPresetId,
+  Point,
+  Shape
+} from "@/lib/document";
 import { cn } from "@/lib/utils";
 import Picker from "@/components/color-field";
 import NumberField from "./NumberField";
@@ -41,6 +55,19 @@ const alignModes: Array<{
 ];
 
 const alignReferences: AlignReference[] = ["selection", "stage"];
+
+const easingChoices: Array<{
+  id: EasingPresetId | "custom";
+  label: string;
+  easing: Easing | null;
+}> = [
+  ...easingPresets.map((preset) => ({
+    id: preset.id,
+    label: `easing.${preset.id}`,
+    easing: preset.easing
+  })),
+  { id: "custom", label: "easing.custom", easing: null }
+];
 
 export function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
@@ -107,6 +134,72 @@ function LabelField({
           }
         }}
         className="h-7 w-full min-w-0 border border-border bg-transparent px-1 text-xs outline-none focus:border-ring"
+      />
+    </label>
+  );
+}
+
+function HandleField({
+  label,
+  hook,
+  value,
+  min,
+  max,
+  disabled,
+  onCommit
+}: {
+  label: string;
+  hook: string;
+  value: number;
+  min: number;
+  max: number;
+  disabled: boolean;
+  onCommit: (value: number) => void;
+}) {
+  const [text, setText] = useState(String(value));
+
+  useEffect(() => {
+    setText(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const parsed = Number(text);
+    if (text.trim() === "" || !Number.isFinite(parsed)) {
+      setText(String(value));
+      return;
+    }
+    const bounded = Math.min(max, Math.max(min, parsed));
+    setText(String(bounded));
+    if (bounded !== value) {
+      onCommit(bounded);
+    }
+  };
+
+  return (
+    <label className="flex min-w-0 flex-1 items-center gap-1 text-xs">
+      <span className="w-16 shrink-0 text-muted-foreground">{label}</span>
+      <input
+        type="number"
+        aria-label={label}
+        data-easing-handle={hook}
+        value={text}
+        min={min}
+        max={max}
+        step={0.05}
+        disabled={disabled}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            commit();
+            event.currentTarget.blur();
+          }
+          if (event.key === "Escape") {
+            setText(String(value));
+            event.currentTarget.blur();
+          }
+        }}
+        className="h-7 w-full min-w-0 border border-border bg-transparent px-1 text-xs outline-none focus:border-ring disabled:pointer-events-none disabled:opacity-40"
       />
     </label>
   );
@@ -294,6 +387,15 @@ export default function SidePanel() {
       ? { x: selBounds.x + selBounds.w / 2, y: selBounds.y + selBounds.h / 2 }
       : { x: 0, y: 0 });
   const nodeIndex = tab.selectedNode;
+  const tweened = key?.tween ?? false;
+  const easing = key?.easing ?? linearEasing;
+  const easingChoice =
+    easingChoices.find(
+      (choice) => choice.easing !== null && sameEasing(choice.easing, easing)
+    )?.id ?? "custom";
+  const setEasingAxis = (axis: keyof Easing, value: number) => {
+    actions.setEasing(clampEasing({ ...easing, [axis]: value }));
+  };
   const pathNode =
     selectedShape?.kind === "Path" && nodeIndex !== null
       ? selectedShape.nodes[nodeIndex] ?? null
@@ -462,6 +564,75 @@ export default function SidePanel() {
             <Trash2 className="h-3.5 w-3.5" />
             {t("editor.deleteShape")}
           </button>
+        </div>
+        <div className="flex flex-col gap-2 border-t border-border pt-2">
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            {t("editor.easing")}
+          </span>
+          <div className="flex flex-wrap gap-1">
+            {easingChoices.map((choice) => (
+              <button
+                key={choice.id}
+                type="button"
+                disabled={!tweened}
+                data-easing-preset={choice.id}
+                aria-pressed={tweened && easingChoice === choice.id}
+                onClick={() => {
+                  if (choice.easing) {
+                    actions.setEasing(choice.easing);
+                  }
+                }}
+                className={cn(
+                  "h-7 border px-2 text-xs disabled:pointer-events-none disabled:opacity-40",
+                  easingChoice === choice.id
+                    ? "border-border bg-accent text-accent-foreground"
+                    : "border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                )}
+              >
+                {t(choice.label)}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <HandleField
+              label={`${t("easing.handle1")} x`}
+              hook="1x"
+              value={easing.x1}
+              min={0}
+              max={1}
+              disabled={!tweened}
+              onCommit={(value) => setEasingAxis("x1", value)}
+            />
+            <HandleField
+              label={`${t("easing.handle1")} y`}
+              hook="1y"
+              value={easing.y1}
+              min={-1}
+              max={2}
+              disabled={!tweened}
+              onCommit={(value) => setEasingAxis("y1", value)}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <HandleField
+              label={`${t("easing.handle2")} x`}
+              hook="2x"
+              value={easing.x2}
+              min={0}
+              max={1}
+              disabled={!tweened}
+              onCommit={(value) => setEasingAxis("x2", value)}
+            />
+            <HandleField
+              label={`${t("easing.handle2")} y`}
+              hook="2y"
+              value={easing.y2}
+              min={-1}
+              max={2}
+              disabled={!tweened}
+              onCommit={(value) => setEasingAxis("y2", value)}
+            />
+          </div>
         </div>
       </Section>
 

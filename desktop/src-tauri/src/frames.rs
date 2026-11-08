@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::document::{DocStore, Document, Keyframe, Layer, Transform};
+use crate::document::{DocStore, Document, Easing, Keyframe, Layer, Transform};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FrameClip {
@@ -29,6 +29,7 @@ fn empty_key(frame: u32) -> Keyframe {
         shapes: Vec::new(),
         transform: Transform::default(),
         tween: false,
+        easing: Easing::linear(),
         label: None,
     }
 }
@@ -56,6 +57,7 @@ fn clip_of(layer: &Layer, frame: u32, count: u32) -> FrameClip {
                 shapes: held.shapes.clone(),
                 transform: held.transform,
                 tween: false,
+                easing: Easing::linear(),
                 label: None,
             });
         }
@@ -421,6 +423,7 @@ mod tests {
             }],
             transform: Transform::default(),
             tween: false,
+            easing: Easing::linear(),
             label: None,
         }
     }

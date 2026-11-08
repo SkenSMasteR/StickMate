@@ -25,6 +25,62 @@
     return found;
   }
 
+  const LINEAR_EASING = { x1: 0, y1: 0, x2: 1, y2: 1 };
+
+  function cubicValue(p1, p2, u) {
+    const inv = 1 - u;
+    return 3 * inv * inv * u * p1 + 3 * inv * u * u * p2 + u * u * u;
+  }
+
+  function cubicSlope(p1, p2, u) {
+    const inv = 1 - u;
+    return 3 * inv * inv * p1 + 6 * inv * u * (p2 - p1) + 3 * u * u * (1 - p2);
+  }
+
+  function curveUnit(x1, x2, target) {
+    let u = target;
+    for (let steps = 0; steps < 8; steps += 1) {
+      const error = cubicValue(x1, x2, u) - target;
+      if (Math.abs(error) <= 1e-7) {
+        return u;
+      }
+      const slope = cubicSlope(x1, x2, u);
+      if (Math.abs(slope) <= 1e-7) {
+        break;
+      }
+      const next = u - error / slope;
+      if (next <= 0 || next >= 1) {
+        break;
+      }
+      u = next;
+    }
+    let low = 0;
+    let high = 1;
+    for (let index = 0; index < 32; index += 1) {
+      const middle = (low + high) / 2;
+      if (cubicValue(x1, x2, middle) < target) {
+        low = middle;
+      } else {
+        high = middle;
+      }
+    }
+    return (low + high) / 2;
+  }
+
+  function easeProgress(t, easing) {
+    if (t <= 0) {
+      return 0;
+    }
+    if (t >= 1) {
+      return 1;
+    }
+    const curve = easing || LINEAR_EASING;
+    if (curve.x1 === curve.y1 && curve.x2 === curve.y2) {
+      return t;
+    }
+    return cubicValue(curve.y1, curve.y2, curveUnit(curve.x1, curve.x2, t));
+  }
+
   function mix(a, b, t) {
     return a + (b - a) * t;
   }
@@ -188,7 +244,7 @@
       if (next) {
         const span = next.frame - key.frame;
         if (span > 0) {
-          const t = clamp((frame - key.frame) / span, 0, 1);
+          const t = easeProgress(clamp((frame - key.frame) / span, 0, 1), key.easing);
           transform = {
             x: transform.x + (next.transform.x - transform.x) * t,
             y: transform.y + (next.transform.y - transform.y) * t,

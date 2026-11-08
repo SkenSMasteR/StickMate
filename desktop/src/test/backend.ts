@@ -2,8 +2,11 @@ import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import {
   affineFrom,
   applyAffine,
+  clampEasing,
   composeAffine,
+  easeProgress,
   flattenPath,
+  linearEasing,
   polygonVertices,
   shapeBounds,
   textCorners,
@@ -15,6 +18,7 @@ import type {
   AlignReference,
   Bounds,
   Document,
+  Easing,
   EvalFrame,
   EvalLayer,
   Keyframe,
@@ -398,6 +402,7 @@ const emptyKey = (frame: number): Keyframe => ({
   shapes: [],
   transform: identity(),
   tween: false,
+  easing: { ...linearEasing },
   label: null
 });
 
@@ -444,6 +449,7 @@ function keyAt(layer: Layer, frame: number): number {
           shapes: structuredClone(layer.keys[held].shapes),
           transform: { ...layer.keys[held].transform },
           tween: false,
+          easing: { ...linearEasing },
           label: null
         }
       : emptyKey(frame);
@@ -648,7 +654,7 @@ function evaluateLayer(layer: Layer, frame: number): EvalLayer | null {
     if (next) {
       const span = next.frame - key.frame;
       if (span > 0) {
-        const t = Math.min(1, Math.max(0, (frame - key.frame) / span));
+        const t = easeProgress(Math.min(1, Math.max(0, (frame - key.frame) / span)), key.easing);
         transform = lerp(transform, next.transform, t);
         shapes = key.shapes.map((shape, position) => {
           const other = next.shapes[position];
@@ -1006,7 +1012,11 @@ mockIPC(
         return edit(a.id as string, (doc) => {
           const target = layer(doc, a.sceneId as string, a.layerId as string);
           writable(target);
-          target.keys[keyAt(target, a.frame as number)].tween = a.tween as boolean;
+          const key = target.keys[keyAt(target, a.frame as number)];
+          key.tween = a.tween as boolean;
+          if (a.easing !== null && a.easing !== undefined) {
+            key.easing = clampEasing(a.easing as Easing);
+          }
         });
       case "doc_set_label":
         return edit(a.id as string, (doc) => {
