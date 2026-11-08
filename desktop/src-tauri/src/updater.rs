@@ -1,3 +1,4 @@
+use semver::Version;
 use std::path::PathBuf;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -35,11 +36,41 @@ fn current_channel(app: &AppHandle) -> String {
     }
 }
 
+fn nightly_date(version: &Version) -> Option<u64> {
+    version
+        .pre
+        .as_str()
+        .strip_prefix("nightly.")
+        .and_then(|rest| rest.parse().ok())
+}
+
+fn base(version: &Version) -> (u64, u64, u64) {
+    (version.major, version.minor, version.patch)
+}
+
+pub fn is_upgrade(channel: &str, current: &Version, remote: &Version) -> bool {
+    if channel != "nightly" {
+        return remote > current;
+    }
+    if base(remote) != base(current) {
+        return base(remote) > base(current);
+    }
+    match (nightly_date(current), nightly_date(remote)) {
+        (Some(old), Some(new)) => new > old,
+        (None, Some(_)) | (Some(_), None) => true,
+        (None, None) => false,
+    }
+}
+
 async fn channel_updater(app: &AppHandle) -> Result<Updater, String> {
-    let url = tauri::Url::parse(endpoint(&current_channel(app))?).map_err(|e| e.to_string())?;
+    let channel = current_channel(app);
+    let url = tauri::Url::parse(endpoint(&channel)?).map_err(|e| e.to_string())?;
     app.updater_builder()
         .endpoints(vec![url])
         .map_err(|e| e.to_string())?
+        .version_comparator(move |current, remote| {
+            is_upgrade(&channel, &current, &remote.version)
+        })
         .build()
         .map_err(|e| e.to_string())
 }
@@ -97,7 +128,12 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::endpoint;
+    use super::{endpoint, is_upgrade};
+    use semver::Version;
+
+    fn version(value: &str) -> Version {
+        Version::parse(value).unwrap()
+    }
 
     #[test]
     fn stable_uses_the_latest_release_feed() {
@@ -119,5 +155,63 @@ mod tests {
     fn an_unknown_channel_is_rejected() {
         assert!(endpoint("beta").is_err());
         assert!(endpoint("").is_err());
+    }
+
+    #[test]
+    fn stable_channel_keeps_semver_ordering() {
+        assert!(is_upgrade("stable", &version("0.1.8"), &version("0.1.9")));
+        assert!(!is_upgrade("stable", &version("0.1.8"), &version("0.1.8")));
+        assert!(!is_upgrade(
+            "stable",
+            &version("0.1.8"),
+            &version("0.1.8-nightly.20261108")
+        ));
+    }
+
+    #[test]
+    fn nightly_replaces_a_stable_build_of_the_same_base() {
+        assert!(is_upgrade(
+            "nightly",
+            &version("0.1.8"),
+            &version("0.1.8-nightly.20261108")
+        ));
+    }
+
+    #[test]
+    fn nightlies_order_by_their_build_date() {
+        assert!(is_upgrade(
+            "nightly",
+            &version("0.1.8-nightly.20261107"),
+            &version("0.1.8-nightly.20261108")
+        ));
+        assert!(!is_upgrade(
+            "nightly",
+            &version("0.1.8-nightly.20261108"),
+            &version("0.1.8-nightly.20261108")
+        ));
+        assert!(!is_upgrade(
+            "nightly",
+            &version("0.1.8-nightly.20261108"),
+            &version("0.1.8-nightly.20261107")
+        ));
+    }
+
+    #[test]
+    fn a_stable_release_supersedes_its_own_nightly() {
+        assert!(is_upgrade(
+            "nightly",
+            &version("0.1.8-nightly.20261108"),
+            &version("0.1.8")
+        ));
+    }
+
+    #[test]
+    fn nightly_channel_still_follows_the_base_version() {
+        assert!(!is_upgrade(
+            "nightly",
+            &version("0.1.9"),
+            &version("0.1.8-nightly.20261108")
+        ));
+        assert!(is_upgrade("nightly", &version("0.1.8"), &version("0.2.0")));
     }
 }

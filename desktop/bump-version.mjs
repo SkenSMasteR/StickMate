@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 const root = dirname(fileURLToPath(import.meta.url));
 const version = process.argv[2];
 
-if (!/^\d+\.\d+\.\d+$/.test(version ?? "")) {
-  console.error("Usage: node bump-version.mjs X.Y.Z");
+if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-nightly\.[1-9]\d{7})?$/.test(version ?? "")) {
+  console.error("Usage: node bump-version.mjs X.Y.Z[-nightly.YYYYMMDD]");
   process.exit(1);
 }
 

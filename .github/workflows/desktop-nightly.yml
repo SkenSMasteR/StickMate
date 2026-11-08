@@ -27,14 +27,13 @@ jobs:
         run: |
           set -euo pipefail
           gh release delete desktop-nightly --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
-      - name: Compute the next version
+      - name: Compute the nightly version
         id: next
         shell: bash
         run: |
           set -euo pipefail
           base=$(node -p "require('./desktop/package.json').version")
-          IFS=. read -r major minor patch <<< "$base"
-          version="$major.$minor.$((patch + 1))"
+          version="${base}-nightly.$(date -u +%Y%m%d)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   build:
