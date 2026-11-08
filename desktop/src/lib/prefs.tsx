@@ -12,6 +12,8 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import { prefsGet, prefsPut, setUpdateChannel } from "@/lib/tauri";
 import type { ShortcutOverrides } from "@/lib/shortcuts";
+import type { ExportPreset } from "@/lib/export-presets";
+import { mergePresets, sanitizePresets } from "@/lib/export-presets";
 import type { WorkspacePreset } from "@/lib/workspace-presets";
 import { defaultView, mergeView, sanitizeView } from "@/lib/view";
 import type { ViewPrefs } from "@/lib/view";
@@ -30,6 +32,7 @@ export interface PrefsData {
   shortcuts: ShortcutOverrides;
   workspaces?: Record<string, WorkspacePreset>;
   view: ViewPrefs;
+  exportPresets: ExportPreset[];
 }
 
 const defaultPrefs: PrefsData = {
@@ -39,7 +42,8 @@ const defaultPrefs: PrefsData = {
   login: null,
   shortcuts: {},
   workspaces: {},
-  view: defaultView
+  view: defaultView,
+  exportPresets: []
 };
 
 const fallbackKey = "stickmate.prefs";
@@ -198,6 +202,16 @@ function mergePrefs(
       contested = contested || part.contested;
       continue;
     }
+    if (key === "exportPresets") {
+      const part = mergePresets(
+        ours.exportPresets ?? [],
+        theirs.exportPresets ?? [],
+        base.exportPresets ?? []
+      );
+      merged.exportPresets = part.data;
+      contested = contested || part.contested;
+      continue;
+    }
     const a = JSON.stringify(mine[key]);
     const b = JSON.stringify(other[key]);
     const start = JSON.stringify(origin[key]);
@@ -253,7 +267,8 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
       const merged: PrefsData = {
         ...defaultPrefs,
         ...data,
-        view: sanitizeView(data.view)
+        view: sanitizeView(data.view),
+        exportPresets: sanitizePresets(data.exportPresets)
       };
       baseRef.current = { revision, data: merged };
       setPrefs(merged);
@@ -365,10 +380,12 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
         saveFallback(base.revision, next);
         return;
       }
+      const remoteData = (remote.data ?? {}) as Partial<PrefsData>;
       const theirs: PrefsData = {
         ...defaultPrefs,
-        ...(remote.data as Partial<PrefsData>),
-        view: sanitizeView((remote.data as Partial<PrefsData>)?.view)
+        ...remoteData,
+        view: sanitizeView(remoteData.view),
+        exportPresets: sanitizePresets(remoteData.exportPresets)
       };
       const merged = mergePrefs(next, theirs, base.data);
       if (!merged.contested) {

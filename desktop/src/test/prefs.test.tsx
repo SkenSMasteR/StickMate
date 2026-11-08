@@ -3,6 +3,8 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { Toaster } from "@/components/ui/sonner";
 import { PrefsProvider, usePrefs } from "@/lib/prefs";
 import type { PrefsData } from "@/lib/prefs";
+import { defaultSettings } from "@/lib/export-presets";
+import type { ExportPreset } from "@/lib/export-presets";
 import { defaultView } from "@/lib/view";
 import { server } from "./backend/prefs";
 import { channelState } from "./backend/updater";
@@ -13,8 +15,13 @@ const defaults: PrefsData = {
   channel: "stable",
   login: null,
   shortcuts: {},
-  view: defaultView
+  view: defaultView,
+  exportPresets: []
 };
+
+function preset(id: string, name = id, updatedAt = 1000): ExportPreset {
+  return { id, name, updatedAt, settings: { ...defaultSettings, fps: 30 } };
+}
 
 let api: {
   prefs: PrefsData;
@@ -128,4 +135,60 @@ test("a channel synced from another device is applied on load", async () => {
   seed({ channel: "nightly" });
   await mount();
   await waitFor(() => expect(channelState.channel).toBe("nightly"));
+});
+
+test("stored presets are sanitised on load", async () => {
+  server.revision = 1;
+  server.data = {
+    ...defaults,
+    exportPresets: [
+      preset("a", "Alpha"),
+      { ...preset("b"), name: "  " },
+      { ...preset("c", "alpha"), settings: { ...defaultSettings, fps: 900 } },
+      "not a preset"
+    ]
+  };
+  await mount();
+  await waitFor(() => expect(api.loaded).toBe(true));
+  expect(api.prefs.exportPresets).toEqual([preset("a", "Alpha")]);
+});
+
+test("a preset added on another device is kept beside the local one", async () => {
+  seed({});
+  await mount();
+  server.revision = 2;
+  server.data = { ...defaults, exportPresets: [preset("r", "Remote")] };
+  await change({ exportPresets: [preset("l", "Local")] });
+  expect(server.revision).toBe(3);
+  expect(api.prefs.exportPresets.map((item) => item.name).sort()).toEqual(["Local", "Remote"]);
+});
+
+test("the newer edit of a shared preset wins without a prompt", async () => {
+  seed({ exportPresets: [preset("a", "Old", 100)] });
+  await mount();
+  server.revision = 2;
+  server.data = { ...defaults, exportPresets: [preset("a", "Theirs", 300)] };
+  await change({ exportPresets: [preset("a", "Mine", 200)] });
+  await waitFor(() => expect(server.revision).toBe(3));
+  expect(api.prefs.exportPresets).toEqual([preset("a", "Theirs", 300)]);
+});
+
+test("deleting a preset locally is not undone by an untouched remote copy", async () => {
+  seed({ exportPresets: [preset("a", "Old"), preset("b", "Other")] });
+  await mount();
+  server.revision = 2;
+  server.data = { ...defaults, exportPresets: [preset("a", "Old"), preset("b", "Other")] };
+  await change({ exportPresets: [preset("b", "Other")] });
+  await waitFor(() => expect(server.revision).toBe(3));
+  expect(api.prefs.exportPresets).toEqual([preset("b", "Other")]);
+});
+
+test("editing a preset the remote side deleted brings it back", async () => {
+  seed({ exportPresets: [preset("a", "Old", 100)] });
+  await mount();
+  server.revision = 2;
+  server.data = { ...defaults, exportPresets: [] };
+  await change({ exportPresets: [preset("a", "Mine", 200)] });
+  await waitFor(() => expect(server.revision).toBe(3));
+  expect(api.prefs.exportPresets).toEqual([preset("a", "Mine", 200)]);
 });
