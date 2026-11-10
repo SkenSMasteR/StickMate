@@ -95,6 +95,9 @@ pub enum Shape {
         stroke: String,
         width: f64,
     },
+    Group {
+        children: Vec<Shape>,
+    },
 }
 
 pub const TEXT_ADVANCE: f64 = 0.6;
@@ -227,6 +230,9 @@ pub fn shape_bounds(shape: &Shape) -> Bounds {
             w: *w,
             h: *h,
         },
+        Shape::Group { children } => {
+            union_of(children, &(0..children.len()).collect::<Vec<_>>())
+        }
     }
 }
 
@@ -255,6 +261,12 @@ pub(crate) fn transform_shape(
     rotation: f64,
 ) -> Result<Shape, String> {
     match shape {
+        Shape::Group { children } => Ok(Shape::Group {
+            children: children
+                .iter()
+                .map(|child| transform_shape(child, matrix, sx, sy, rotation))
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
         Shape::Stroke {
             points,
             color,
@@ -513,6 +525,23 @@ fn union_of(source: &[Shape], indices: &[usize]) -> Bounds {
     })
 }
 
+fn paint_fill(shape: &mut Shape, color: &str) {
+    match shape {
+        Shape::Rect { fill, .. }
+        | Shape::Ellipse { fill, .. }
+        | Shape::Polygon { fill, .. }
+        | Shape::Path { fill, .. } => {
+            *fill = color.to_string();
+        }
+        Shape::Group { children } => {
+            for child in children {
+                paint_fill(child, color);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn align_offsets(
     stage: Bounds,
     source: &[Shape],
@@ -638,6 +667,13 @@ fn inside_polygon(p: &Point, vertices: &[Point]) -> bool {
 
 fn shape_hit(shape: &Shape, p: &Point, radius: f64) -> bool {
     match shape {
+        Shape::Group { .. } => {
+            let box_ = shape_bounds(shape);
+            p.x >= box_.x - radius
+                && p.x <= box_.x + box_.w + radius
+                && p.y >= box_.y - radius
+                && p.y <= box_.y + box_.h + radius
+        }
         Shape::Stroke { points, width, .. } => {
             let reach = radius + width / 2.0;
             points
@@ -727,6 +763,15 @@ fn densify(path: &[Point], spacing: f64) -> Vec<Point> {
 
 pub(crate) fn validate(shape: &Shape) -> Result<(), String> {
     match shape {
+        Shape::Group { children } => {
+            if children.is_empty() {
+                return Err("group is empty".to_string());
+            }
+            for child in children {
+                validate(child)?;
+            }
+            Ok(())
+        }
         Shape::Polygon { sides, .. } if *sides < 3 => {
             Err("polygon needs at least 3 sides".to_string())
         }
@@ -1182,6 +1227,32 @@ fn mix_affine(a: &Affine, b: &Affine, t: f64) -> Affine {
     }
 }
 
+fn mixable(a: &Shape, b: &Shape) -> bool {
+    match (a, b) {
+        (Shape::Rect { .. }, Shape::Rect { .. })
+        | (Shape::Ellipse { .. }, Shape::Ellipse { .. })
+        | (Shape::Text { .. }, Shape::Text { .. }) => true,
+        (Shape::Polygon { sides, .. }, Shape::Polygon { sides: other, .. }) => sides == other,
+        (Shape::Stroke { points, .. }, Shape::Stroke { points: other, .. }) => {
+            points.len() == other.len() && points.len() > 1
+        }
+        (
+            Shape::Path { nodes, closed, .. },
+            Shape::Path {
+                nodes: other,
+                closed: other_closed,
+                ..
+            },
+        ) => closed == other_closed && nodes.len() == other.len() && nodes.len() > 1,
+        (Shape::Group { children }, Shape::Group { children: other }) => {
+            !children.is_empty()
+                && children.len() == other.len()
+                && children.iter().zip(other).all(|(left, right)| mixable(left, right))
+        }
+        _ => false,
+    }
+}
+
 fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
     if t <= 0.0 {
         return a.clone();
@@ -1190,6 +1261,15 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
         return b.clone();
     }
     match (a, b) {
+        (Shape::Group { children }, Shape::Group { children: other }) if mixable(a, b) => {
+            Shape::Group {
+                children: children
+                    .iter()
+                    .zip(other)
+                    .map(|(left, right)| mix_shape(left, right, t))
+                    .collect(),
+            }
+        }
         (
             Shape::Rect {
                 x,
@@ -1965,6 +2045,7 @@ impl DocStore {
             Shape::Polygon { .. } => "draw_polygon",
             Shape::Text { .. } => "draw_text",
             Shape::Path { .. } => "draw_path",
+            Shape::Group { .. } => "draw_group",
         };
         self.edit_named(id, step, |doc| {
             let layer = doc.layer_mut(scene_id, layer_id)?;
@@ -2032,7 +2113,9 @@ impl DocStore {
                         }
                     }
                     other => {
-                        if !samples.iter().any(|sample| shape_hit(&other, sample, radius)) {
+                        if matches!(other, Shape::Group { .. })
+                            || !samples.iter().any(|sample| shape_hit(&other, sample, radius))
+                        {
                             kept.push(other);
                         }
                     }
@@ -2070,6 +2153,11 @@ impl DocStore {
                 | Shape::Polygon { fill, .. }
                 | Shape::Path { fill, .. } => {
                     *fill = color;
+                }
+                Shape::Group { children } => {
+                    for child in children {
+                        paint_fill(child, &color);
+                    }
                 }
             }
             Ok(())
@@ -2288,6 +2376,79 @@ impl DocStore {
             for &shape_index in sorted.iter().rev() {
                 key.shapes.remove(shape_index);
             }
+            Ok(())
+        })
+    }
+
+    pub fn group_shapes(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        indices: Vec<usize>,
+    ) -> Result<Document, String> {
+        let mut sorted = indices;
+        sorted.sort_unstable();
+        sorted.dedup();
+        if sorted.len() < 2 {
+            return Err("select at least two shapes".to_string());
+        }
+        self.edit_named(id, "group_shapes", |doc| {
+            let layer = doc.layer_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let source = layer
+                .held_index(frame)
+                .map(|index| layer.keys[index].shapes.clone())
+                .unwrap_or_default();
+            for &shape_index in &sorted {
+                if shape_index >= source.len() {
+                    return Err("unknown shape".to_string());
+                }
+            }
+            let children: Vec<Shape> = sorted
+                .iter()
+                .map(|&shape_index| source[shape_index].clone())
+                .collect();
+            let group = Shape::Group { children };
+            validate(&group)?;
+            let at = sorted[0];
+            let index = layer.key_at(frame);
+            let key = &mut layer.keys[index];
+            for &shape_index in sorted.iter().rev() {
+                key.shapes.remove(shape_index);
+            }
+            key.shapes.insert(at, group);
+            Ok(())
+        })
+    }
+
+    pub fn ungroup_shape(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        index: usize,
+    ) -> Result<Document, String> {
+        self.edit_named(id, "ungroup_shape", |doc| {
+            let layer = doc.layer_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let source = layer
+                .held_index(frame)
+                .map(|held| layer.keys[held].shapes.clone())
+                .unwrap_or_default();
+            let children = match source.get(index) {
+                Some(Shape::Group { children }) => children.clone(),
+                Some(_) => return Err("shape is not a group".to_string()),
+                None => return Err("unknown shape".to_string()),
+            };
+            for child in &children {
+                validate(child)?;
+            }
+            let key_index = layer.key_at(frame);
+            let key = &mut layer.keys[key_index];
+            key.shapes.splice(index..index + 1, children);
             Ok(())
         })
     }
@@ -2924,6 +3085,30 @@ pub fn doc_delete_shapes(
     indices: Vec<usize>,
 ) -> Result<Document, String> {
     store.delete_shapes(&id, &scene_id, &layer_id, frame, indices)
+}
+
+#[tauri::command]
+pub fn doc_group_shapes(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    indices: Vec<usize>,
+) -> Result<Document, String> {
+    store.group_shapes(&id, &scene_id, &layer_id, frame, indices)
+}
+
+#[tauri::command]
+pub fn doc_ungroup_shape(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    index: usize,
+) -> Result<Document, String> {
+    store.ungroup_shape(&id, &scene_id, &layer_id, frame, index)
 }
 
 #[tauri::command]
@@ -6531,6 +6716,479 @@ mod tests {
             doc_checkpoint_restore;
         let _: fn(State<'_, DocStore>, String, String) -> Result<(), String> =
             doc_checkpoint_delete;
+    }
+
+    #[test]
+    fn group_command_signatures_match_frontend() {
+        let _: fn(State<'_, DocStore>, String, String, String, u32, Vec<usize>) -> Result<Document, String> =
+            doc_group_shapes;
+        let _: fn(State<'_, DocStore>, String, String, String, u32, usize) -> Result<Document, String> =
+            doc_ungroup_shape;
+    }
+
+    #[test]
+    fn group_then_ungroup_round_trips_the_shapes() {
+        let fixture = Fixture::new("group-round");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        let first = box_shape(0.0, 0.0);
+        let middle = box_shape(50.0, 0.0);
+        let last = box_shape(100.0, 0.0);
+        for shape in [first.clone(), middle.clone(), last.clone()] {
+            store
+                .draw(id, &fixture.scene, &fixture.layer, 0, shape)
+                .expect("draw");
+        }
+        let before = store.history(id).expect("history").len();
+        let grouped = store
+            .group_shapes(id, &fixture.scene, &fixture.layer, 0, vec![2, 0, 2])
+            .expect("group");
+        let shapes = &fixture.target(&grouped).keys[0].shapes;
+        assert_eq!(shapes.len(), 2);
+        assert_eq!(
+            shapes[0],
+            Shape::Group {
+                children: vec![first.clone(), last.clone()]
+            }
+        );
+        assert_eq!(shapes[1], middle);
+        assert_eq!(store.history(id).expect("history").len(), before + 1);
+        assert_eq!(store.history(id).expect("history")[before].name, "group_shapes");
+        let ungrouped = store
+            .ungroup_shape(id, &fixture.scene, &fixture.layer, 0, 0)
+            .expect("ungroup");
+        assert_eq!(
+            fixture.target(&ungrouped).keys[0].shapes,
+            vec![first.clone(), last.clone(), middle.clone()]
+        );
+        let undone = store.undo(id).expect("undo");
+        assert_eq!(
+            fixture.target(&undone).keys[0].shapes,
+            vec![
+                Shape::Group {
+                    children: vec![first.clone(), last.clone()]
+                },
+                middle.clone()
+            ]
+        );
+        let undone = store.undo(id).expect("undo group");
+        assert_eq!(
+            fixture.target(&undone).keys[0].shapes,
+            vec![first, middle, last]
+        );
+    }
+
+    #[test]
+    fn group_rejects_bad_indices_without_history() {
+        let fixture = Fixture::new("group-bad");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 0.0))
+            .expect("draw");
+        let before = store.history(id).expect("history").len();
+        assert_eq!(
+            store
+                .group_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0])
+                .expect_err("single"),
+            "select at least two shapes"
+        );
+        assert_eq!(
+            store
+                .group_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 0])
+                .expect_err("duplicate"),
+            "select at least two shapes"
+        );
+        assert_eq!(
+            store
+                .group_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 4])
+                .expect_err("range"),
+            "unknown shape"
+        );
+        assert_eq!(store.history(id).expect("history").len(), before);
+    }
+
+    #[test]
+    fn ungroup_rejects_non_groups_without_history() {
+        let fixture = Fixture::new("ungroup-bad");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 0.0))
+            .expect("draw");
+        let before = store.history(id).expect("history").len();
+        assert_eq!(
+            store
+                .ungroup_shape(id, &fixture.scene, &fixture.layer, 0, 0)
+                .expect_err("plain"),
+            "shape is not a group"
+        );
+        assert_eq!(
+            store
+                .ungroup_shape(id, &fixture.scene, &fixture.layer, 0, 5)
+                .expect_err("range"),
+            "unknown shape"
+        );
+        assert_eq!(store.history(id).expect("history").len(), before);
+    }
+
+    #[test]
+    fn nested_groups_ungroup_one_level_at_a_time() {
+        let fixture = Fixture::new("group-nest");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        let shapes: Vec<Shape> = (0..4)
+            .map(|index| box_shape(f64::from(index) * 40.0, 0.0))
+            .collect();
+        for shape in shapes.clone() {
+            store
+                .draw(id, &fixture.scene, &fixture.layer, 0, shape)
+                .expect("draw");
+        }
+        store
+            .group_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 1])
+            .expect("inner");
+        let nested = store
+            .group_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 2])
+            .expect("outer");
+        let outer = &fixture.target(&nested).keys[0].shapes;
+        assert_eq!(outer.len(), 2);
+        let Shape::Group { children } = &outer[0] else {
+            panic!("expected a group");
+        };
+        assert_eq!(children.len(), 2);
+        assert!(matches!(children[0], Shape::Group { .. }));
+        assert_eq!(children[1], shapes[3]);
+        let opened = store
+            .ungroup_shape(id, &fixture.scene, &fixture.layer, 0, 0)
+            .expect("open outer");
+        let flat = &fixture.target(&opened).keys[0].shapes;
+        assert_eq!(flat.len(), 3);
+        assert!(matches!(flat[0], Shape::Group { .. }));
+        let opened = store
+            .ungroup_shape(id, &fixture.scene, &fixture.layer, 0, 0)
+            .expect("open inner");
+        assert_eq!(
+            fixture.target(&opened).keys[0].shapes,
+            vec![shapes[0].clone(), shapes[1].clone(), shapes[3].clone(), shapes[2].clone()]
+        );
+    }
+
+    #[test]
+    fn group_transform_moves_and_scales_every_child() {
+        let fixture = Fixture::new("group-transform");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        for shape in [box_shape(0.0, 0.0), box_shape(40.0, 20.0)] {
+            store
+                .draw(id, &fixture.scene, &fixture.layer, 0, shape)
+                .expect("draw");
+        }
+        let grouped = store
+            .group_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 1])
+            .expect("group");
+        let group = fixture.target(&grouped).keys[0].shapes[0].clone();
+        let bounds = shape_bounds(&group);
+        assert_eq!(
+            bounds,
+            Bounds {
+                x: 0.0,
+                y: 0.0,
+                w: 60.0,
+                h: 40.0
+            }
+        );
+        let moved = store
+            .transform_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![0],
+                Point { x: 0.0, y: 0.0 },
+                10.0,
+                5.0,
+                2.0,
+                2.0,
+                0.0,
+            )
+            .expect("transform");
+        assert_eq!(
+            fixture.target(&moved).keys[0].shapes[0],
+            Shape::Group {
+                children: vec![box_shape(10.0, 5.0), box_shape(90.0, 45.0)]
+                    .into_iter()
+                    .map(|shape| match shape {
+                        Shape::Rect {
+                            x,
+                            y,
+                            fill,
+                            stroke,
+                            width,
+                            ..
+                        } => Shape::Rect {
+                            x,
+                            y,
+                            w: 40.0,
+                            h: 40.0,
+                            fill,
+                            stroke,
+                            width,
+                        },
+                        other => other,
+                    })
+                    .collect()
+            }
+        );
+    }
+
+    #[test]
+    fn group_rotation_recurses_and_keeps_the_ellipse_guard() {
+        let fixture = Fixture::new("group-rotate");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 0.0))
+            .expect("draw rect");
+        store
+            .draw(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                Shape::Ellipse {
+                    x: 40.0,
+                    y: 0.0,
+                    w: 20.0,
+                    h: 10.0,
+                    fill: "#ff0000".to_string(),
+                    stroke: "#000000".to_string(),
+                    width: 1.0,
+                },
+            )
+            .expect("draw ellipse");
+        store
+            .group_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 1])
+            .expect("group");
+        assert_eq!(
+            store
+                .transform_shapes(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    vec![0],
+                    Point { x: 0.0, y: 0.0 },
+                    0.0,
+                    0.0,
+                    1.0,
+                    1.0,
+                    45.0,
+                )
+                .expect_err("ellipse"),
+            "ellipse cannot be rotated"
+        );
+        store.delete_shape(id, &fixture.scene, &fixture.layer, 0, 0).expect("drop group");
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 0.0))
+            .expect("rect a");
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(40.0, 0.0))
+            .expect("rect b");
+        store
+            .group_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 1])
+            .expect("group rects");
+        let rotated = store
+            .transform_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![0],
+                Point { x: 0.0, y: 0.0 },
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+                90.0,
+            )
+            .expect("rotate");
+        let Shape::Group { children } = &fixture.target(&rotated).keys[0].shapes[0] else {
+            panic!("expected a group");
+        };
+        assert!(children.iter().all(|child| matches!(child, Shape::Path { .. })));
+    }
+
+    #[test]
+    fn tween_mixes_matching_groups_and_holds_the_rest() {
+        let fixture = Fixture::new("tween-group");
+        let start = Shape::Group {
+            children: vec![box_shape(0.0, 0.0), box_shape(40.0, 0.0)],
+        };
+        let end = Shape::Group {
+            children: vec![box_shape(20.0, 0.0), box_shape(60.0, 0.0)],
+        };
+        let frames = tween_span(&fixture, vec![start.clone()], vec![end.clone()]);
+        assert_eq!(
+            frames[1].layers[0].shapes,
+            vec![Shape::Group {
+                children: vec![box_shape(10.0, 0.0), box_shape(50.0, 0.0)]
+            }]
+        );
+        let mismatch = Fixture::new("tween-group-count");
+        let wider = Shape::Group {
+            children: vec![box_shape(20.0, 0.0), box_shape(60.0, 0.0), box_shape(90.0, 0.0)],
+        };
+        let frames = tween_span(&mismatch, vec![start.clone()], vec![wider.clone()]);
+        assert_eq!(frames[1].layers[0].shapes, vec![start.clone()]);
+        assert_eq!(frames[2].layers[0].shapes, vec![wider]);
+        let kinds = Fixture::new("tween-group-kinds");
+        let mixed = Shape::Group {
+            children: vec![box_shape(20.0, 0.0), stroke(60.0)],
+        };
+        let frames = tween_span(&kinds, vec![start.clone()], vec![mixed.clone()]);
+        assert_eq!(frames[1].layers[0].shapes, vec![start]);
+        assert_eq!(frames[2].layers[0].shapes, vec![mixed]);
+    }
+
+    #[test]
+    fn group_and_ungroup_refuse_locked_layers() {
+        let fixture = Fixture::new("group-locked");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        for shape in [box_shape(0.0, 0.0), box_shape(40.0, 0.0)] {
+            store
+                .draw(id, &fixture.scene, &fixture.layer, 0, shape)
+                .expect("draw");
+        }
+        store
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .expect("lock");
+        assert_eq!(
+            store
+                .group_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 1])
+                .expect_err("locked"),
+            "layer is locked"
+        );
+        assert_eq!(
+            store
+                .ungroup_shape(id, &fixture.scene, &fixture.layer, 0, 0)
+                .expect_err("locked"),
+            "layer is locked"
+        );
+    }
+
+    #[test]
+    fn grouping_on_a_held_frame_copies_the_key() {
+        let fixture = Fixture::new("group-held");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        for shape in [box_shape(0.0, 0.0), box_shape(40.0, 0.0)] {
+            store
+                .draw(id, &fixture.scene, &fixture.layer, 0, shape)
+                .expect("draw");
+        }
+        let grouped = store
+            .group_shapes(id, &fixture.scene, &fixture.layer, 5, vec![0, 1])
+            .expect("group");
+        let target = fixture.target(&grouped);
+        assert_eq!(target.keys.len(), 2);
+        assert_eq!(target.keys[1].frame, 5);
+        assert_eq!(target.keys[0].shapes.len(), 2);
+        assert_eq!(target.keys[1].shapes.len(), 1);
+        assert!(matches!(target.keys[1].shapes[0], Shape::Group { .. }));
+    }
+
+    #[test]
+    fn paint_bucket_fills_group_children_that_have_a_fill() {
+        let fixture = Fixture::new("group-paint");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 0.0))
+            .expect("rect");
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(40.0))
+            .expect("stroke");
+        store
+            .group_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 1])
+            .expect("group");
+        let painted = store
+            .paint_shape(id, &fixture.scene, &fixture.layer, 0, 0, "#123456".to_string())
+            .expect("paint");
+        let Shape::Group { children } = &fixture.target(&painted).keys[0].shapes[0] else {
+            panic!("expected a group");
+        };
+        let Shape::Rect { fill, .. } = &children[0] else {
+            panic!("expected a rectangle");
+        };
+        assert_eq!(fill, "#123456");
+        let Shape::Stroke { color, .. } = &children[1] else {
+            panic!("expected a stroke");
+        };
+        assert_eq!(color, "#000000");
+    }
+
+    #[test]
+    fn eraser_leaves_groups_alone() {
+        let fixture = Fixture::new("group-erase");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 0.0))
+            .expect("rect a");
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(40.0, 0.0))
+            .expect("rect b");
+        store
+            .group_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 1])
+            .expect("group");
+        let before = store.get(id).expect("doc");
+        let after = store
+            .erase(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![Point { x: 10.0, y: 10.0 }, Point { x: 50.0, y: 10.0 }],
+                8.0,
+            )
+            .expect("erase");
+        assert_eq!(
+            fixture.target(&before).keys[0].shapes,
+            fixture.target(&after).keys[0].shapes
+        );
+    }
+
+    #[test]
+    fn group_validation_rejects_empty_and_invalid_children() {
+        assert_eq!(
+            validate(&Shape::Group { children: Vec::new() }).expect_err("empty"),
+            "group is empty"
+        );
+        assert_eq!(
+            validate(&Shape::Group {
+                children: vec![Shape::Group { children: Vec::new() }]
+            })
+            .expect_err("nested"),
+            "group is empty"
+        );
+        assert!(validate(&Shape::Group {
+            children: vec![box_shape(0.0, 0.0), box_shape(20.0, 0.0)]
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn group_serializes_with_kind_and_children() {
+        let group = Shape::Group {
+            children: vec![box_shape(0.0, 0.0)],
+        };
+        let json = serde_json::to_string(&group).expect("serialize");
+        assert!(json.contains("\"kind\":\"Group\""));
+        assert!(json.contains("\"children\":["));
+        let back: Shape = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, group);
     }
 }
 

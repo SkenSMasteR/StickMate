@@ -125,6 +125,9 @@ fn check_shape(shape: &Shape) -> Result<(), String> {
                 && paint(fill)
                 && paint(stroke)
         }
+        Shape::Group { children } => {
+            !children.is_empty() && children.iter().try_for_each(check_shape).is_ok()
+        }
     };
     if valid {
         Ok(())
@@ -243,7 +246,7 @@ fn converted(shape: &Shape, matrix: &Affine, scale: f64, rotation: f64) -> Resul
         | Shape::Ellipse { width, .. }
         | Shape::Polygon { width, .. }
         | Shape::Path { width, .. } => *width *= scale,
-        Shape::Text { .. } => {}
+        Shape::Text { .. } | Shape::Group { .. } => {}
     }
     check_shape(&result)?;
     Ok(result)
@@ -439,6 +442,7 @@ mod tests {
             | Shape::Text { x, y, .. } => Point { x: *x, y: *y },
             Shape::Stroke { points, .. } => points[0].clone(),
             Shape::Path { nodes, .. } => nodes[0].point.clone(),
+            Shape::Group { children } => anchor(&children[0]),
         }
     }
 
