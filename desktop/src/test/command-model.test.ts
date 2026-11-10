@@ -128,7 +128,7 @@ function tick(): Promise<void> {
 describe("command model", () => {
   test("the five argument call keeps only zero argument commands", () => {
     const commands = buildCommands(stubActions(), t, {}, vi.fn(), vi.fn());
-    expect(commands.length).toBe(62);
+    expect(commands.length).toBe(66);
     expect(commands.every((item) => item.args === undefined)).toBe(true);
     expect(commands.find((item) => item.id === "view.palette")?.disabled).toBe(true);
     expect(commands.some((item) => item.id === "layer.rename")).toBe(false);
@@ -137,6 +137,8 @@ describe("command model", () => {
     expect(commands.find((item) => item.id === "edit.ungroup")?.defaultKeys).toBe(
       "ctrl+shift+g"
     );
+    expect(commands.find((item) => item.id === "edit.combine")?.defaultKeys).toBe("ctrl+alt+u");
+    expect(commands.find((item) => item.id === "edit.cut")?.defaultKeys).toBe("ctrl+alt+x");
   });
 
   test("the context call registers every parameterized action", () => {
@@ -196,7 +198,7 @@ describe("command model", () => {
     ]) {
       expect(ids, id).toContain(id);
     }
-    expect(commands.length).toBe(96);
+    expect(commands.length).toBe(100);
     for (const command of commands) {
       if (command.args) {
         expect(typeof command.runArgs, command.id).toBe("function");
@@ -358,6 +360,14 @@ describe("command model", () => {
     expect(actions.groupSelected).toHaveBeenCalledWith();
     byId("edit.ungroup")?.run();
     expect(actions.ungroupSelected).toHaveBeenCalledWith();
+    byId("edit.combine")?.run();
+    expect(actions.shapeBool).toHaveBeenCalledWith("union");
+    byId("edit.subtract")?.run();
+    expect(actions.shapeBool).toHaveBeenCalledWith("subtract");
+    byId("edit.intersect")?.run();
+    expect(actions.shapeBool).toHaveBeenCalledWith("intersect");
+    byId("edit.cut")?.run();
+    expect(actions.shapeBool).toHaveBeenCalledWith("exclude");
   });
 
   test("group and ungroup availability follows the selection", () => {
@@ -374,6 +384,7 @@ describe("command model", () => {
     }
     tab.selected = [0, 1];
     expect(state("edit.group")).toBe(false);
+    expect(state("edit.combine")).toBe(false);
     expect(state("edit.ungroup")).toBe(true);
     tab.selected = [0];
     context.state.layer?.keys[0].shapes.push({
@@ -387,6 +398,7 @@ describe("command model", () => {
     tab.selected = [];
     expect(state("edit.group")).toBe(true);
     expect(state("edit.ungroup")).toBe(true);
+    expect(state("edit.combine")).toBe(true);
   });
 
   test("removing frames by count asks for confirmation first", async () => {

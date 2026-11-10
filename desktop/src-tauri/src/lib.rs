@@ -1,4 +1,5 @@
 mod auth;
+mod boolean;
 mod document;
 mod entitlement;
 mod export;
@@ -96,6 +97,7 @@ pub fn run() {
             document::doc_reorder_shapes,
             document::doc_delete_shapes,
             document::doc_group_shapes,
+            document::doc_shape_bool,
             document::doc_ungroup_shape,
             document::doc_set_transform,
             document::doc_undo,

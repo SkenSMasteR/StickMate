@@ -1,4 +1,6 @@
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import { combineShapes } from "@/lib/boolean";
+import type { BoolOp } from "@/lib/boolean";
 import {
   affineFrom,
   applyAffine,
@@ -1800,6 +1802,38 @@ mockIPC(
             key.shapes.splice(shapeIndex, 1);
           }
           key.shapes.splice(sorted[0], 0, group);
+        });
+      }
+      case "doc_shape_bool": {
+        const op = a.op as BoolOp;
+        const indices = a.indices as number[];
+        const sorted = [...new Set(indices)].sort((x, y) => x - y);
+        if (sorted.length < 2) {
+          throw new Error("select at least two shapes");
+        }
+        return edit(a.id as string, (doc) => {
+          const target = layer(doc, a.sceneId as string, a.layerId as string);
+          writable(target);
+          const frame = a.frame as number;
+          const held = heldIndex(target, frame);
+          const source = held >= 0 ? structuredClone(target.keys[held].shapes) : [];
+          for (const shapeIndex of sorted) {
+            if (shapeIndex >= source.length) {
+              throw new Error("unknown shape");
+            }
+          }
+          const merged = combineShapes(source, sorted, op);
+          for (const shape of merged) {
+            validateShape(shape);
+          }
+          const at = sorted[0];
+          const key = target.keys[keyAt(target, frame)];
+          for (const shapeIndex of [...sorted].reverse()) {
+            key.shapes.splice(shapeIndex, 1);
+          }
+          for (let offset = 0; offset < merged.length; offset += 1) {
+            key.shapes.splice(at + offset, 0, merged[offset]);
+          }
         });
       }
       case "doc_ungroup_shape":

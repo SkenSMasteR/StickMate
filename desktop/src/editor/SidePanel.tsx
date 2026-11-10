@@ -43,6 +43,7 @@ import type {
   AlignMode,
   AlignReference,
   Blend,
+  BoolOp,
   Effect,
   Easing,
   EasingPresetId,
@@ -74,6 +75,13 @@ const alignModes: Array<{
 ];
 
 const alignReferences: AlignReference[] = ["selection", "stage"];
+
+const boolOps: Array<{ op: BoolOp; labelKey: string }> = [
+  { op: "union", labelKey: "command.combine" },
+  { op: "subtract", labelKey: "command.subtract" },
+  { op: "intersect", labelKey: "command.intersect" },
+  { op: "exclude", labelKey: "command.cut" }
+];
 
 const easingChoices: Array<{
   id: EasingPresetId | "custom";
@@ -1220,6 +1228,19 @@ export default function SidePanel() {
             >
               {t("editor.sendToBack")}
             </button>
+          </div>
+          <div className="flex items-center gap-1">
+            {boolOps.map(({ op, labelKey }) => (
+              <button
+                key={op}
+                type="button"
+                disabled={tab.selected.length < 2}
+                onClick={() => actions.shapeBool(op)}
+                className="h-7 flex-1 border border-border px-2 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
+              >
+                {t(labelKey)}
+              </button>
+            ))}
           </div>
         </Section>
       )}

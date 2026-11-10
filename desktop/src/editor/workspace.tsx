@@ -44,6 +44,7 @@ import {
   docSetLayer,
   docSetTransform,
   docSetTween,
+  docShapeBool,
   docTransformShapes,
   docUndo,
   docUngroupShape,
@@ -57,6 +58,7 @@ import type {
   AlignMode,
   AlignReference,
   Blend,
+  BoolOp,
   Document,
   Effect,
   Easing,
@@ -219,6 +221,7 @@ export interface Actions {
   alignSelected: (mode: AlignMode) => void;
   groupSelected: () => void;
   ungroupSelected: () => void;
+  shapeBool: (op: BoolOp) => void;
   copySelected: () => Promise<void>;
   pasteSelected: () => Promise<void>;
   selectLayer: (layerId: string) => void;
@@ -616,6 +619,31 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           setTab({ selected: frameRange(index, count), pivot: null, selectedNode: null });
         }
       });
+    },
+    shapeBool: (op) => {
+      if (!doc || !scene || !layer || !tab || tab.playing || layer.locked) {
+        return;
+      }
+      const sorted = [...new Set(tab.selected)].sort((a, b) => a - b);
+      if (sorted.length < 2) {
+        return;
+      }
+      const before = heldKey(layer, frame)?.shapes.length ?? 0;
+      void docShapeBool(doc.id, scene.id, layer.id, frame, sorted, op)
+        .then((next) => {
+          const nextScene = next.scenes.find((item) => item.id === scene.id);
+          const nextLayer = nextScene ? findLayer(nextScene.layers, layer.id) : undefined;
+          const after = nextLayer ? heldKey(nextLayer, frame)?.shapes.length ?? 0 : before;
+          setDocs((prev) => (prev[doc.id] ? { ...prev, [doc.id]: next } : prev));
+          setTab({
+            selected: frameRange(sorted[0], Math.max(1, after - before + sorted.length)),
+            pivot: null,
+            selectedNode: null
+          });
+        })
+        .catch((error) => {
+          toast.error(String(error));
+        });
     },
     copySelected: async () => {
       if (!doc || !scene || !layer || !tab || tab.playing || !tab.selected.length) {

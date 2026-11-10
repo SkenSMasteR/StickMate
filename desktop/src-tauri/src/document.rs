@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::boolean::{bool_history_name, combine, BoolOp};
 use crate::path::{flatten_path, PathNode};
 
 const HISTORY_LIMIT: usize = 100;
@@ -3243,6 +3244,50 @@ impl DocStore {
         })
     }
 
+    pub fn bool_shapes(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        indices: Vec<usize>,
+        op: BoolOp,
+    ) -> Result<Document, String> {
+        let mut sorted = indices;
+        sorted.sort_unstable();
+        sorted.dedup();
+        if sorted.len() < 2 {
+            return Err("select at least two shapes".to_string());
+        }
+        self.edit_named(id, bool_history_name(op), |doc| {
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let source = layer
+                .held_index(frame)
+                .map(|held| layer.keys[held].shapes.clone())
+                .unwrap_or_default();
+            for &shape_index in &sorted {
+                if shape_index >= source.len() {
+                    return Err("unknown shape".to_string());
+                }
+            }
+            let merged = combine(&source, &sorted, op)?;
+            for shape in &merged {
+                validate(shape)?;
+            }
+            let at = sorted[0];
+            let key_index = layer.key_at(frame);
+            let key = &mut layer.keys[key_index];
+            for &shape_index in sorted.iter().rev() {
+                key.shapes.remove(shape_index);
+            }
+            for (offset, shape) in merged.into_iter().enumerate() {
+                key.shapes.insert(at + offset, shape);
+            }
+            Ok(())
+        })
+    }
+
     pub fn set_transform(
         &self,
         id: &str,
@@ -3927,6 +3972,19 @@ pub fn doc_ungroup_shape(
     index: usize,
 ) -> Result<Document, String> {
     store.ungroup_shape(&id, &scene_id, &layer_id, frame, index)
+}
+
+#[tauri::command]
+pub fn doc_shape_bool(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    indices: Vec<usize>,
+    op: BoolOp,
+) -> Result<Document, String> {
+    store.bool_shapes(&id, &scene_id, &layer_id, frame, indices, op)
 }
 
 #[tauri::command]
@@ -8268,6 +8326,19 @@ mod tests {
             doc_group_shapes;
         let _: fn(State<'_, DocStore>, String, String, String, u32, usize) -> Result<Document, String> =
             doc_ungroup_shape;
+    }
+
+    #[test]
+    fn bool_command_signature_matches_frontend() {
+        let _: fn(
+            State<'_, DocStore>,
+            String,
+            String,
+            String,
+            u32,
+            Vec<usize>,
+            BoolOp,
+        ) -> Result<Document, String> = doc_shape_bool;
     }
 
     #[test]

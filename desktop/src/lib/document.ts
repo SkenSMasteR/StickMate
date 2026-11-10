@@ -1,4 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { BoolOp } from "./boolean";
+
+export type { BoolOp };
 
 export interface Point {
   x: number;
@@ -1029,6 +1032,17 @@ export function docGroupShapes(
   indices: number[]
 ): Promise<Document> {
   return invoke<Document>("doc_group_shapes", { id, sceneId, layerId, frame, indices });
+}
+
+export function docShapeBool(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  indices: number[],
+  op: BoolOp
+): Promise<Document> {
+  return invoke<Document>("doc_shape_bool", { id, sceneId, layerId, frame, indices, op });
 }
 
 export function docUngroupShape(
