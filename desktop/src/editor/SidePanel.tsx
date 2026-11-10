@@ -13,6 +13,7 @@ import {
   ArrowUp,
   Copy,
   Plus,
+  Scissors,
   Trash2
 } from "lucide-react";
 import { toast } from "sonner";
@@ -1284,6 +1285,19 @@ export default function SidePanel() {
               {item.effects.length > 0 && (
                 <span className="shrink-0 text-xs text-muted-foreground">fx</span>
               )}
+              <button
+                type="button"
+                disabled={index === 0}
+                aria-pressed={item.masked}
+                title={t("editor.layerMask")}
+                aria-label={t("editor.layerMask")}
+                onClick={() =>
+                  actions.setLayerFlags(item.id, { masked: !item.masked })
+                }
+                className={cn(iconButton, item.masked && "text-foreground")}
+              >
+                <Scissors className="h-3.5 w-3.5" />
+              </button>
               <button
                 type="button"
                 disabled={index === 0}

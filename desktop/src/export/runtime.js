@@ -396,6 +396,7 @@
       opacity: clamp(layer.opacity * transform.opacity, 0, 1),
       blend: layer.blend,
       effects: layer.effects,
+      mask: null,
       transform,
       shapes
     };
@@ -538,6 +539,8 @@
     let ctx = null;
     let buffer = null;
     let bctx = null;
+    let scratch = null;
+    let sctx = null;
 
     function evaluate(at) {
       let scene = scenes[0];
@@ -553,12 +556,22 @@
         scene = scenes[index];
       }
       const layers = [];
-      for (const layer of scene.layers) {
+      scene.layers.forEach((layer, position) => {
         const evaluated = evaluateLayer(layer, local);
-        if (evaluated) {
-          layers.push(evaluated);
+        if (!evaluated) {
+          return;
         }
-      }
+        if (layer.masked && position > 0) {
+          const provider = evaluateLayer(scene.layers[position - 1], local);
+          if (provider) {
+            evaluated.mask = {
+              transform: provider.transform,
+              shapes: provider.shapes
+            };
+          }
+        }
+        layers.push(evaluated);
+      });
       return layers;
     }
 
@@ -586,11 +599,28 @@
         for (const shape of layer.shapes) {
           drawShape(bctx, shape);
         }
+        let source = buffer;
+        if (layer.mask) {
+          sctx.setTransform(1, 0, 0, 1, 0, 0);
+          sctx.clearRect(0, 0, width, height);
+          sctx.setTransform(scale, 0, 0, scale, 0, 0);
+          sctx.translate(layer.mask.transform.x, layer.mask.transform.y);
+          sctx.rotate((layer.mask.transform.rotation * Math.PI) / 180);
+          sctx.scale(layer.mask.transform.scale, layer.mask.transform.scale);
+          for (const shape of layer.mask.shapes) {
+            drawShape(sctx, shape);
+          }
+          sctx.setTransform(1, 0, 0, 1, 0, 0);
+          sctx.globalCompositeOperation = "source-in";
+          sctx.drawImage(buffer, 0, 0);
+          sctx.globalCompositeOperation = "source-over";
+          source = scratch;
+        }
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.globalAlpha = layer.opacity;
         ctx.globalCompositeOperation = compositeOf(layer.blend);
         ctx.filter = filterOf(layer.effects);
-        ctx.drawImage(buffer, 0, 0);
+        ctx.drawImage(source, 0, 0);
         ctx.filter = "none";
         ctx.globalCompositeOperation = "source-over";
         ctx.globalAlpha = 1;
@@ -620,6 +650,10 @@
         buffer.width = project.width;
         buffer.height = project.height;
         bctx = buffer.getContext("2d");
+        scratch = document.createElement("canvas");
+        scratch.width = project.width;
+        scratch.height = project.height;
+        sctx = scratch.getContext("2d");
         render();
       },
       play() {

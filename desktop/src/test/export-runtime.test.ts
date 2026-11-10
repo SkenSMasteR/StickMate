@@ -58,6 +58,7 @@ function layer(id: string, patch: Partial<Layer> = {}): Layer {
     opacity: 1,
     blend: "normal",
     effects: [],
+    masked: false,
     length: 4,
     keys: [key(0)],
     ...patch

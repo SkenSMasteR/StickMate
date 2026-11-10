@@ -109,6 +109,13 @@ fn clamp_effect(value: f64) -> f64 {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalMask {
+    pub transform: Transform,
+    pub shapes: Vec<Shape>,
+}
+
 impl Gradient {
     pub fn stops(&self) -> &[GradientStop] {
         match self {
@@ -1228,6 +1235,8 @@ pub struct Layer {
     pub blend: Blend,
     #[serde(default)]
     pub effects: Vec<Effect>,
+    #[serde(default)]
+    pub masked: bool,
     pub length: u32,
     pub keys: Vec<Keyframe>,
 }
@@ -1242,6 +1251,7 @@ impl Layer {
             opacity: 1.0,
             blend: Blend::default(),
             effects: Vec::new(),
+            masked: false,
             length: 1,
             keys: vec![Keyframe::empty(0)],
         }
@@ -1290,6 +1300,18 @@ pub struct Scene {
     pub id: String,
     pub name: String,
     pub layers: Vec<Layer>,
+}
+
+fn validate_scene_masks(scene: &mut Scene) -> Result<(), String> {
+    for index in 1..scene.layers.len() {
+        if scene.layers[index].masked && scene.layers[index - 1].masked {
+            scene.layers[index].masked = false;
+        }
+    }
+    if let Some(top) = scene.layers.first_mut() {
+        top.masked = false;
+    }
+    Ok(())
 }
 
 impl Scene {
@@ -1354,13 +1376,21 @@ impl Document {
 
     pub fn evaluate(&self, scene_id: &str, frame: u32) -> Result<EvalFrame, String> {
         let index = self.scene_index(scene_id)?;
+        let layers = &self.scenes[index].layers;
+        let mut evaluated = Vec::new();
+        for (position, layer) in layers.iter().enumerate() {
+            let mut item = match evaluate_layer(layer, frame) {
+                Some(item) => item,
+                None => continue,
+            };
+            if layer.masked && position > 0 {
+                item.mask = mask_from(&layers[position - 1], frame);
+            }
+            evaluated.push(item);
+        }
         Ok(EvalFrame {
             frame,
-            layers: self.scenes[index]
-                .layers
-                .iter()
-                .filter_map(|layer| evaluate_layer(layer, frame))
-                .collect(),
+            layers: evaluated,
         })
     }
 }
@@ -1371,6 +1401,8 @@ pub struct EvalLayer {
     pub opacity: f64,
     pub blend: Blend,
     pub effects: Vec<Effect>,
+    #[serde(default)]
+    pub mask: Option<EvalMask>,
     pub transform: Transform,
     pub shapes: Vec<Shape>,
 }
@@ -1723,8 +1755,20 @@ pub fn evaluate_layer(layer: &Layer, frame: u32) -> Option<EvalLayer> {
         opacity: (layer.opacity * transform.opacity).clamp(0.0, 1.0),
         blend: layer.blend,
         effects: layer.effects.clone(),
+        mask: None,
         transform,
         shapes,
+    })
+}
+
+fn mask_from(layer: &Layer, frame: u32) -> Option<EvalMask> {
+    if !layer.visible || frame >= layer.length {
+        return None;
+    }
+    let evaluated = evaluate_layer(layer, frame)?;
+    Some(EvalMask {
+        transform: evaluated.transform,
+        shapes: evaluated.shapes,
     })
 }
 
@@ -2074,7 +2118,7 @@ impl DocStore {
             scene
                 .layers
                 .insert(0, Layer::new(clean_name(&name).unwrap_or(fallback)));
-            Ok(())
+            validate_scene_masks(scene)
         })
     }
 
@@ -2089,6 +2133,7 @@ impl DocStore {
         opacity: Option<f64>,
         blend: Option<Blend>,
         effects: Option<Vec<Effect>>,
+        mask: Option<bool>,
     ) -> Result<Document, String> {
         let name = match name {
             Some(value) => Some(clean_name(&value).ok_or_else(|| "name is empty".to_string())?),
@@ -2104,30 +2149,46 @@ impl DocStore {
             "layer_blend"
         } else if effects.is_some() {
             "layer_effects"
+        } else if mask.is_some() {
+            "layer_mask"
         } else {
             "layer_opacity"
         };
         self.edit_named(id, step, |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let scene_index = doc.scene_index(scene_id)?;
+            let scene = &mut doc.scenes[scene_index];
+            let index = scene.layer_index(layer_id)?;
             if let Some(name) = &name {
-                layer.name = name.clone();
+                scene.layers[index].name = name.clone();
             }
             if let Some(visible) = visible {
-                layer.visible = visible;
+                scene.layers[index].visible = visible;
             }
             if let Some(locked) = locked {
-                layer.locked = locked;
+                scene.layers[index].locked = locked;
             }
             if let Some(opacity) = opacity {
-                layer.opacity = opacity.clamp(0.0, 1.0);
+                scene.layers[index].opacity = opacity.clamp(0.0, 1.0);
             }
             if let Some(blend) = blend {
-                layer.blend = blend;
+                scene.layers[index].blend = blend;
             }
             if let Some(effects) = effects {
-                layer.effects = effects.iter().map(Effect::sanitized).collect();
+                scene.layers[index].effects =
+                    effects.iter().map(Effect::sanitized).collect();
             }
-            Ok(())
+            if let Some(masked) = mask {
+                if masked {
+                    if index == 0 {
+                        return Err("the top layer cannot be clipped".to_string());
+                    }
+                    if scene.layers[index - 1].masked {
+                        return Err("a mask layer cannot itself be clipped".to_string());
+                    }
+                }
+                scene.layers[index].masked = masked;
+            }
+            validate_scene_masks(scene)
         })
     }
 
@@ -2145,7 +2206,7 @@ impl DocStore {
             }
             let layer = scene.layer_index(layer_id)?;
             scene.layers.remove(layer);
-            Ok(())
+            validate_scene_masks(scene)
         })
     }
 
@@ -2163,7 +2224,7 @@ impl DocStore {
             let layer = scene.layers.remove(from);
             let to = index.min(scene.layers.len());
             scene.layers.insert(to, layer);
-            Ok(())
+            validate_scene_masks(scene)
         })
     }
 
@@ -3124,9 +3185,10 @@ pub fn doc_set_layer(
     opacity: Option<f64>,
     blend: Option<Blend>,
     effects: Option<Vec<Effect>>,
+    mask: Option<bool>,
 ) -> Result<Document, String> {
     store.set_layer(
-        &id, &scene_id, &layer_id, name, visible, locked, opacity, blend, effects,
+        &id, &scene_id, &layer_id, name, visible, locked, opacity, blend, effects, mask,
     )
 }
 
@@ -3560,7 +3622,7 @@ mod tests {
         let id = &fixture.doc.id;
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None, None)
             .expect("lock");
         let error = fixture
             .store
@@ -4422,7 +4484,7 @@ mod tests {
         let id = &fixture.doc.id;
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, Some(false), None, None, None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, Some(false), None, None, None, None, None)
             .expect("hide");
         let frames = fixture
             .store
@@ -4431,7 +4493,7 @@ mod tests {
         assert!(frames[0].layers.is_empty());
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, Some(true), None, None, None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, Some(true), None, None, None, None, None)
             .expect("show");
         let frames = fixture
             .store
@@ -4446,7 +4508,7 @@ mod tests {
         let id = &fixture.doc.id;
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, None, Some(0.5), None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, None, Some(0.5), None, None, None)
             .expect("opacity");
         fixture
             .store
@@ -4483,7 +4545,7 @@ mod tests {
         ];
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, None, None, None, Some(effects))
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, None, None, None, Some(effects), None)
             .expect("effects");
         let stored = fixture
             .store
@@ -4508,6 +4570,122 @@ mod tests {
             .evaluate_range(id, &fixture.scene, 0, 0)
             .expect("evaluate");
         assert!(cleared[0].layers[0].effects.is_empty());
+    }
+
+    fn rect(x: f64) -> Shape {
+        Shape::Rect {
+            x,
+            y: 10.0,
+            w: 40.0,
+            h: 40.0,
+            fill: "#22cc55".to_string(),
+            stroke: "#000000".to_string(),
+            width: 0.0,
+            gradient: None,
+        }
+    }
+
+    #[test]
+    fn layer_masks_clip_to_the_layer_above() {
+        let fixture = Fixture::new("masks");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, rect(0.0))
+            .expect("draw content");
+        let added = fixture
+            .store
+            .add_layer(id, &fixture.scene, "Mask".to_string())
+            .expect("add");
+        let mask_id = added.scenes[0].layers[0].id.clone();
+        fixture
+            .store
+            .draw(id, &fixture.scene, &mask_id, 0, rect(20.0))
+            .expect("draw mask");
+        let mask = fixture.store.get(id).expect("get").scenes[0].layers[0]
+            .keys[0]
+            .shapes[0]
+            .clone();
+        assert_eq!(
+            fixture
+                .store
+                .set_layer(id, &fixture.scene, &mask_id, None, None, None, None, None, None, Some(true))
+                .expect_err("top layer"),
+            "the top layer cannot be clipped"
+        );
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, None, None, None, None, Some(true))
+            .expect("mask");
+        let frames = fixture
+            .store
+            .evaluate_range(id, &fixture.scene, 0, 0)
+            .expect("evaluate");
+        let content = frames[0].layers.iter().find(|l| l.id == fixture.layer).expect("content");
+        assert_eq!(content.mask.as_ref().expect("mask").shapes, vec![mask]);
+        assert_eq!(
+            fixture.store.history(id).unwrap()[4].name,
+            "layer_mask"
+        );
+        fixture.store.undo(id).expect("undo");
+        let cleared = fixture
+            .store
+            .evaluate_range(id, &fixture.scene, 0, 0)
+            .expect("evaluate");
+        let content = cleared[0]
+            .layers
+            .iter()
+            .find(|l| l.id == fixture.layer)
+            .expect("content");
+        assert_eq!(content.mask, None);
+    }
+
+    #[test]
+    fn layer_masks_break_when_layers_move() {
+        let fixture = Fixture::new("mask-move");
+        let id = &fixture.doc.id;
+        let added = fixture
+            .store
+            .add_layer(id, &fixture.scene, "Top".to_string())
+            .expect("add");
+        let top_id = added.scenes[0].layers[0].id.clone();
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, None, None, None, None, Some(true))
+            .expect("mask");
+        fixture
+            .store
+            .move_layer(id, &fixture.scene, &top_id, 1)
+            .expect("move");
+        let scene = &fixture.store.get(id).expect("get").scenes[0];
+        assert!(!scene.layers[0].masked);
+        assert!(!scene.layers[1].masked);
+    }
+
+    #[test]
+    fn masked_layers_cannot_chain() {
+        let fixture = Fixture::new("mask-chain");
+        let id = &fixture.doc.id;
+        let added = fixture
+            .store
+            .add_layer(id, &fixture.scene, "Middle".to_string())
+            .expect("add");
+        let middle_id = added.scenes[0].layers[0].id.clone();
+        fixture
+            .store
+            .add_layer(id, &fixture.scene, "Top".to_string())
+            .expect("add top");
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &middle_id, None, None, None, None, None, None, Some(true))
+            .expect("clip middle");
+        assert_eq!(
+            fixture
+                .store
+                .set_layer(id, &fixture.scene, &fixture.layer, None, None, None, None, None, None, Some(true))
+                .expect_err("chain"),
+            "a mask layer cannot itself be clipped"
+        );
     }
 
     #[test]
@@ -4633,7 +4811,7 @@ mod tests {
         let id = &fixture.doc.id;
         let error = fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, Some("  ".to_string()), None, None, None, None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, Some("  ".to_string()), None, None, None, None, None, None)
             .expect_err("empty name");
         assert_eq!(error, "name is empty");
         assert_eq!(fixture.store.undo(id).expect_err("undo"), "nothing to undo");
@@ -4687,7 +4865,7 @@ mod tests {
         let ink = added.scenes[0].layers[0].id.clone();
         let renamed = fixture
             .store
-            .set_layer(id, &fixture.scene, &ink, Some("Paint".to_string()), None, None, Some(0.4), None, None)
+            .set_layer(id, &fixture.scene, &ink, Some("Paint".to_string()), None, None, Some(0.4), None, None, None)
             .expect("set");
         assert_eq!(renamed.scenes[0].layers[0].name, "Paint");
         assert_eq!(renamed.scenes[0].layers[0].opacity, 0.4);
@@ -5135,7 +5313,7 @@ mod tests {
         );
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None, None)
             .expect("lock");
         assert_eq!(
             fixture
@@ -5194,7 +5372,7 @@ mod tests {
             .expect("draw");
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None, None)
             .expect("lock");
         assert_eq!(
             fixture
@@ -5267,7 +5445,7 @@ mod tests {
             .expect("draw");
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None, None)
             .expect("lock");
         assert_eq!(
             fixture
@@ -5477,7 +5655,7 @@ mod tests {
         let id = &fixture.doc.id;
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None, None)
             .expect("lock");
         assert_eq!(
             fixture
@@ -5907,7 +6085,7 @@ mod tests {
             .expect("draw");
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None, None)
             .expect("lock");
         let pivot = Point { x: 0.0, y: 0.0 };
         assert_eq!(
@@ -6382,7 +6560,7 @@ mod tests {
         );
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None, None)
             .expect("lock");
         assert_eq!(
             fixture
@@ -6415,7 +6593,7 @@ mod tests {
             .expect("second");
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, None, Some(0.5), None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, None, Some(0.5), None, None, None)
             .expect("opacity");
         let before = fixture.store.get(id).expect("get");
         let edited = fixture
@@ -6497,7 +6675,7 @@ mod tests {
             .expect("draw");
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None, None)
             .expect("lock");
         let before = fixture.store.get(id).expect("get");
         let edited = fixture
@@ -6555,6 +6733,7 @@ mod tests {
                 &fixture.scene,
                 &fixture.layer,
                 Some("Ink".to_string()),
+                None,
                 None,
                 None,
                 None,
@@ -7381,7 +7560,7 @@ mod tests {
                 .expect("draw");
         }
         store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None, None)
             .expect("lock");
         assert_eq!(
             store
@@ -7818,7 +7997,7 @@ impl DocStore {
             copy.id = new_id("l");
             copy.name = format!("{} copy", copy.name);
             scene.layers.insert(at + 1, copy);
-            Ok(())
+            validate_scene_masks(scene)
         })
     }
 }

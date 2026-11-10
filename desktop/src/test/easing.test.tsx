@@ -153,6 +153,7 @@ function animated(easing: Easing | undefined): Layer {
     opacity: 1,
     blend: "normal",
     effects: [],
+    masked: false,
     length: 11,
     keys: [
       at(0, { tween: true, easing, shapes: [box(0)] }),

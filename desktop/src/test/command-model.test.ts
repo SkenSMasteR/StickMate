@@ -16,6 +16,7 @@ function makeLayer(id: string, name: string, length: number): Layer {
     opacity: 1,
     blend: "normal",
     effects: [],
+    masked: false,
     length,
     keys: [
       {
@@ -176,6 +177,7 @@ describe("command model", () => {
       "layer.lock",
       "layer.opacity",
       "layer.blend",
+      "layer.mask",
       "scene.select",
       "scene.rename",
       "scene.move",
@@ -187,7 +189,7 @@ describe("command model", () => {
     ]) {
       expect(ids, id).toContain(id);
     }
-    expect(commands.length).toBe(90);
+    expect(commands.length).toBe(91);
     for (const command of commands) {
       if (command.args) {
         expect(typeof command.runArgs, command.id).toBe("function");

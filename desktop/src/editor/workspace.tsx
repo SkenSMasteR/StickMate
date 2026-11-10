@@ -248,6 +248,7 @@ export interface Actions {
       opacity?: number;
       blend?: Blend;
       effects?: Effect[];
+      masked?: boolean;
     }
   ) => void;
   moveLayer: (layerId: string, index: number) => void;

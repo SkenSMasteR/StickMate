@@ -22,6 +22,7 @@ import type {
   Bounds,
   Document,
   Effect,
+  EvalMask,
   Easing,
   EvalFrame,
   EvalLayer,
@@ -63,6 +64,28 @@ function sanitizeEffects(effects: Effect[]): Effect[] {
           color: effect.color
         }
   );
+}
+
+function maskFrom(provider: Layer | undefined, frame: number): EvalMask | null {
+  if (!provider || !provider.visible || frame >= provider.length) {
+    return null;
+  }
+  const evaluated = evaluateLayer(provider, frame);
+  if (!evaluated) {
+    return null;
+  }
+  return { transform: evaluated.transform, shapes: evaluated.shapes };
+}
+
+function validateSceneMasks(target: Scene): void {
+  for (let index = 1; index < target.layers.length; index += 1) {
+    if (target.layers[index].masked && target.layers[index - 1].masked) {
+      target.layers[index].masked = false;
+    }
+  }
+  if (target.layers.length > 0) {
+    target.layers[0].masked = false;
+  }
 }
 
 const identity = (): Transform => ({
@@ -517,6 +540,7 @@ function newLayer(name: string): Layer {
     opacity: 1,
     blend: "normal",
     effects: [],
+    masked: false,
     length: 1,
     keys: [emptyKey(0)]
   };
@@ -839,6 +863,7 @@ function evaluateLayer(layer: Layer, frame: number): EvalLayer | null {
     opacity: Math.min(1, Math.max(0, layer.opacity * transform.opacity)),
     blend: layer.blend,
     effects: layer.effects,
+    mask: null,
     transform,
     shapes
   };
@@ -933,6 +958,7 @@ export interface MockContext {
   keyAt: typeof keyAt;
   writable: typeof writable;
   evaluateLayer: typeof evaluateLayer;
+  validateSceneMasks: typeof validateSceneMasks;
   identity: typeof identity;
 }
 
@@ -957,6 +983,7 @@ const context: MockContext = {
   keyAt,
   writable,
   evaluateLayer,
+  validateSceneMasks,
   identity
 };
 
@@ -1093,25 +1120,28 @@ mockIPC(
               cleanName(a.name as string) ?? `Layer ${target.layers.length + 1}`
             )
           );
+          validateSceneMasks(target);
         });
       case "doc_set_layer":
         return edit(a.id as string, (doc) => {
-          const target = layer(doc, a.sceneId as string, a.layerId as string);
+          const target = scene(doc, a.sceneId as string);
+          const item = layer(doc, a.sceneId as string, a.layerId as string);
+          const index = target.layers.indexOf(item);
           if (a.name !== null && a.name !== undefined) {
             const name = cleanName(a.name as string);
             if (!name) {
               throw new Error("name is empty");
             }
-            target.name = name;
+            item.name = name;
           }
           if (a.visible !== null && a.visible !== undefined) {
-            target.visible = a.visible as boolean;
+            item.visible = a.visible as boolean;
           }
           if (a.locked !== null && a.locked !== undefined) {
-            target.locked = a.locked as boolean;
+            item.locked = a.locked as boolean;
           }
           if (a.opacity !== null && a.opacity !== undefined) {
-            target.opacity = Math.min(
+            item.opacity = Math.min(
               1,
               Math.max(0, a.opacity as number)
             );
@@ -1121,11 +1151,23 @@ mockIPC(
             if (!blends.includes(value)) {
               throw new Error(`unknown blend mode ${value}`);
             }
-            target.blend = value;
+            item.blend = value;
           }
           if (a.effects !== null && a.effects !== undefined) {
-            target.effects = sanitizeEffects(a.effects as Effect[]);
+            item.effects = sanitizeEffects(a.effects as Effect[]);
           }
+          if (a.masked !== null && a.masked !== undefined) {
+            if (a.masked as boolean) {
+              if (index === 0) {
+                throw new Error("the top layer cannot be clipped");
+              }
+              if (target.layers[index - 1].masked) {
+                throw new Error("a mask layer cannot itself be clipped");
+              }
+            }
+            item.masked = a.masked as boolean;
+          }
+          validateSceneMasks(target);
         });
       case "doc_remove_layer":
         return edit(a.id as string, (doc) => {
@@ -1139,6 +1181,7 @@ mockIPC(
             ),
             1
           );
+          validateSceneMasks(target);
         });
       case "doc_move_layer":
         return edit(a.id as string, (doc) => {
@@ -1150,6 +1193,7 @@ mockIPC(
             0,
             item
           );
+          validateSceneMasks(target);
         });
       case "doc_insert_frame":
         return edit(a.id as string, (doc) => {
@@ -1531,12 +1575,18 @@ mockIPC(
         const target = scene(current.doc, a.sceneId as string);
         const frames: EvalFrame[] = [];
         for (let frame = start; frame <= end; frame += 1) {
-          frames.push({
-            frame,
-            layers: target.layers
-              .map((item) => evaluateLayer(item, frame))
-              .filter((item): item is EvalLayer => item !== null)
+          const layers: EvalLayer[] = [];
+          target.layers.forEach((item, position) => {
+            const evaluated = evaluateLayer(item, frame);
+            if (!evaluated) {
+              return;
+            }
+            if (item.masked && position > 0) {
+              evaluated.mask = maskFrom(target.layers[position - 1], frame);
+            }
+            layers.push(evaluated);
           });
+          frames.push({ frame, layers });
         }
         return frames;
       }

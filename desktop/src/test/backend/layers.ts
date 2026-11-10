@@ -11,5 +11,6 @@ export const handlers: MockExtension = (context) => ({
       copy.id = context.id("l");
       copy.name = `${copy.name} copy`;
       target.layers.splice(index + 1, 0, copy);
+      context.validateSceneMasks(target);
     })
 });

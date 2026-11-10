@@ -542,7 +542,8 @@ function LayerContent({
   selected: number[];
   onDown: (index: number, event: ReactPointerEvent) => void;
 }) {
-  return (
+  const clipId = evaluated.mask ? `clip-${evaluated.id}` : undefined;
+  const body = (
     <g
       opacity={evaluated.opacity}
       style={layerStyle(evaluated.blend, evaluated.effects)}
@@ -559,6 +560,33 @@ function LayerContent({
           onDown={(event) => onDown(index, event)}
         />
       ))}
+    </g>
+  );
+  if (!evaluated.mask || !clipId) {
+    return body;
+  }
+  return (
+    <g clipPath={`url(#${clipId})`}>
+      {body}
+      <defs>
+        <clipPath id={clipId} clipPathUnits="userSpaceOnUse">
+          <g
+            transform={`translate(${evaluated.mask.transform.x} ${evaluated.mask.transform.y}) rotate(${evaluated.mask.transform.rotation}) scale(${evaluated.mask.transform.scale})`}
+          >
+            {evaluated.mask.shapes.map((shape, index) => (
+              <ShapeNode
+                key={index}
+                shape={shape}
+                uid={`${clipId}-${index}`}
+                interactive={false}
+                cursor={cursor}
+                selected={false}
+                onDown={() => {}}
+              />
+            ))}
+          </g>
+        </clipPath>
+      </defs>
     </g>
   );
 }

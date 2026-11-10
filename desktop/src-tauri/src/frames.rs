@@ -351,6 +351,7 @@ mod tests {
                 opacity: 1.0,
                 blend: Blend::default(),
                 effects: Vec::new(),
+                masked: false,
                 length,
                 keys,
             };
@@ -740,6 +741,7 @@ mod tests {
             opacity: 1.0,
             blend: Blend::default(),
             effects: Vec::new(),
+            masked: false,
             length: 8,
             keys: vec![key(0, 1.0), key(4, 2.0)],
         };

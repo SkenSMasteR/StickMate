@@ -437,6 +437,29 @@ function parameterCommands(
       !scene
     ),
     prompt(
+      "layer.mask",
+      t("command.layerMask"),
+      null,
+      [
+        layerArg(),
+        {
+          name: "masked",
+          label: t("palette.arg.mask"),
+          kind: "choice",
+          initial: layer?.masked ? "on" : "off",
+          options: [
+            { value: "on", label: t("mask.clip") },
+            { value: "off", label: t("mask.release") }
+          ]
+        }
+      ],
+      (values) =>
+        actions.setLayerFlags(String(values.layer), {
+          masked: String(values.masked) === "on"
+        }),
+      !scene
+    ),
+    prompt(
       "scene.select",
       t("command.selectScene"),
       null,

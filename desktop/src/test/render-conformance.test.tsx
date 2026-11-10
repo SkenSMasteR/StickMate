@@ -114,11 +114,17 @@ type NormalShape =
   | { kind: "Polygon"; points: number[]; paint: Paint }
   | { kind: "Path"; commands: Array<string | number>; closed: boolean; paint: Paint };
 
+interface NormalMask {
+  transform: number[];
+  shapes: NormalShape[];
+}
+
 interface NormalLayer {
   opacity: number;
   blend: Blend;
   filter: string;
   transform: number[];
+  mask: NormalMask | null;
   shapes: NormalShape[];
 }
 
@@ -421,6 +427,7 @@ function fixtureScenes() {
       { kind: "blur", radius: 6 },
       { kind: "shadow", x: 4, y: -3, blur: 8, color: "#000000" }
     ],
+    masked: false,
     length: 4,
     keys: [
       key(0, fixtureShapes(), {
@@ -439,6 +446,7 @@ function fixtureScenes() {
     opacity: 1,
     blend: "normal",
     effects: [{ kind: "shadow", x: 0, y: 0, blur: 12, color: "#22c55e" }],
+    masked: true,
     length: 2,
     keys: [key(0, [fixtureShapes()[1]])]
   };
@@ -450,6 +458,7 @@ function fixtureScenes() {
     opacity: 1,
     blend: "normal",
     effects: [],
+    masked: false,
     length: 4,
     keys: [key(0, [fixtureShapes()[2]])]
   };
@@ -461,6 +470,7 @@ function fixtureScenes() {
     opacity: 1,
     blend: "normal",
     effects: [],
+    masked: false,
     length: 3,
     keys: [key(0, tweenStart(), { tween: true }), key(2, tweenEnd())]
   };
@@ -472,6 +482,7 @@ function fixtureScenes() {
     opacity: 1,
     blend: "normal",
     effects: [],
+    masked: false,
     length: 3,
     keys: [
       key(0, [groupStart(), groupHoldStart()], { tween: true }),
@@ -573,6 +584,9 @@ function fromEvaluation(layers: EvalLayer[]): NormalLayer[] {
     blend: layer.blend,
     filter: cssEffects(layer.effects) || "none",
     transform: radians(layer.transform),
+    mask: layer.mask
+      ? { transform: radians(layer.mask.transform), shapes: layer.mask.shapes.flatMap(normalShapes) }
+      : null,
     shapes: layer.shapes.flatMap(normalShapes)
   }));
 }
@@ -593,7 +607,7 @@ function fromSvg(svg: SVGSVGElement): NormalLayer[] {
       Number(wrapper.getAttribute("opacity") ?? 1) * Number(inner.getAttribute("opacity") ?? 1);
     const blend = cssBlend(inner.getAttribute("style"));
     const filter = cssFilter(inner.getAttribute("style"));
-    const shapes: NormalShape[] = [];
+    let shapes: NormalShape[] = [];
     const readShape = (group: Element): void => {
       if (group.hasAttribute("data-group")) {
         for (const child of Array.from(group.children)) {
@@ -671,12 +685,31 @@ function fromSvg(svg: SVGSVGElement): NormalLayer[] {
     for (const group of Array.from(inner.children)) {
       readShape(group);
     }
+    const painted = shapes;
+    let mask: NormalMask | null = null;
+    const clip = wrapper.querySelector("clipPath");
+    if (clip) {
+      const clipInner = clip.querySelector<SVGGElement>("g[transform]");
+      if (!clipInner) {
+        throw new Error("clip path is missing its transform");
+      }
+      const clipMatrix = numbers(clipInner.getAttribute("transform"));
+      shapes = [];
+      for (const group of Array.from(clipInner.children)) {
+        readShape(group);
+      }
+      mask = {
+        transform: [clipMatrix[0], clipMatrix[1], (clipMatrix[2] * Math.PI) / 180, clipMatrix[3]],
+        shapes
+      };
+    }
     return {
       opacity,
       blend,
       filter,
       transform: [matrix[0], matrix[1], (matrix[2] * Math.PI) / 180, matrix[3]],
-      shapes
+      mask,
+      shapes: painted
     };
   }).reverse();
 }
@@ -701,8 +734,9 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
   let width = 0;
   let font = "";
   let ops: Array<{ name: string; args: number[] }> = [];
-  let current: NormalLayer | null = null;
-  let cleared = false;
+  let current: NormalLayer | NormalMask | null = null;
+  let active: NormalLayer | null = null;
+  let cleared: "layer" | "mask" | null = null;
   let textMatrix = [1, 0, 0, 1, 0, 0];
   const matrixStack: number[][] = [];
 
@@ -760,36 +794,56 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
       continue;
     }
     if (index === 0 && name === "set:globalAlpha") {
-      if (current && args[0] !== 1) {
-        current.opacity = args[0];
+      if (active && args[0] !== 1) {
+        active.opacity = args[0];
       }
       continue;
     }
     if (index === 0 && name === "set:globalCompositeOperation") {
-      if (current && entry[2] !== "source-over") {
-        current.blend = entry[2] as Blend;
+      if (active && entry[2] !== "source-over") {
+        active.blend = entry[2] as Blend;
       }
       continue;
     }
     if (index === 0 && name === "set:filter") {
-      if (current && entry[2] !== "none") {
-        current.filter = String(entry[2]);
+      if (active && entry[2] !== "none") {
+        active.filter = String(entry[2]);
       }
       continue;
     }
-    if (index !== 1) {
+    if (index !== 1 && index !== 2) {
+      continue;
+    }
+    const inScratch = index === 2;
+    if (inScratch && (name === "drawImage" || name === "set:globalCompositeOperation")) {
       continue;
     }
     if (name === "clearRect") {
-      cleared = true;
+      cleared = inScratch ? "mask" : "layer";
       continue;
     }
     if (name === "setTransform") {
-      if (cleared) {
-        cleared = false;
+      if (cleared === "layer") {
+        cleared = null;
         finish();
-        current = { opacity: 1, blend: "normal", filter: "none", transform: [0, 0, 0, 1], shapes: [] };
-        layers.push(current);
+        active = {
+          opacity: 1,
+          blend: "normal",
+          filter: "none",
+          transform: [0, 0, 0, 1],
+          mask: null,
+          shapes: []
+        };
+        current = active;
+        layers.push(active);
+      } else if (cleared === "mask") {
+        cleared = null;
+        finish();
+        if (!active) {
+          throw new Error("mask painted before a layer");
+        }
+        active.mask = { transform: [0, 0, 0, 1], shapes: [] };
+        current = active.mask;
       }
       continue;
     }
@@ -1162,7 +1216,9 @@ describe("editor and export renderer conformance", () => {
       (shape) => "paint" in shape && shape.paint.fill.startsWith("gradient:")
     );
     expect(painted.map((shape) => shape.kind)).toEqual(["Rect", "Polygon", "Path"]);
-    const defs = Array.from(svg.querySelectorAll("[gradientUnits]"));
+    const defs = Array.from(svg.querySelectorAll("[gradientUnits]")).filter(
+      (def) => !def.closest("clipPath")
+    );
     expect(defs.map((def) => def.getAttribute("gradientUnits"))).toEqual(
       expected.flatMap((layer) =>
         layer.shapes.filter((shape) => "paint" in shape && shape.paint.fill.startsWith("gradient:"))

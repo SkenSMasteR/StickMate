@@ -493,6 +493,7 @@ export interface Layer {
   opacity: number;
   blend: Blend;
   effects: Effect[];
+  masked: boolean;
   length: number;
   keys: Keyframe[];
 }
@@ -513,11 +514,17 @@ export interface Document {
   scenes: Scene[];
 }
 
+export interface EvalMask {
+  transform: Transform;
+  shapes: Shape[];
+}
+
 export interface EvalLayer {
   id: string;
   opacity: number;
   blend: Blend;
   effects: Effect[];
+  mask: EvalMask | null;
   transform: Transform;
   shapes: Shape[];
 }
@@ -639,6 +646,7 @@ export function docSetLayer(
     opacity?: number;
     blend?: Blend;
     effects?: Effect[];
+    masked?: boolean;
   }
 ): Promise<Document> {
   return invoke<Document>("doc_set_layer", {
@@ -650,7 +658,8 @@ export function docSetLayer(
     locked: patch.locked ?? null,
     opacity: patch.opacity ?? null,
     blend: patch.blend ?? null,
-    effects: patch.effects ?? null
+    effects: patch.effects ?? null,
+    masked: patch.masked ?? null
   });
 }
 
