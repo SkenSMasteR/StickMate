@@ -395,9 +395,23 @@
     return {
       opacity: clamp(layer.opacity * transform.opacity, 0, 1),
       blend: layer.blend,
+      effects: layer.effects,
       transform,
       shapes
     };
+  }
+
+  function filterOf(effects) {
+    if (!effects || effects.length === 0) {
+      return "none";
+    }
+    return effects
+      .map(function (effect) {
+        return effect.kind === "blur"
+          ? "blur(" + effect.radius + "px)"
+          : "drop-shadow(" + effect.x + "px " + effect.y + "px " + effect.blur + "px " + effect.color + ")";
+      })
+      .join(" ");
   }
 
   function compositeOf(blend) {
@@ -575,7 +589,9 @@
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.globalAlpha = layer.opacity;
         ctx.globalCompositeOperation = compositeOf(layer.blend);
+        ctx.filter = filterOf(layer.effects);
         ctx.drawImage(buffer, 0, 0);
+        ctx.filter = "none";
         ctx.globalCompositeOperation = "source-over";
         ctx.globalAlpha = 1;
       }

@@ -21,6 +21,7 @@ import type {
   Blend,
   Bounds,
   Document,
+  Effect,
   Easing,
   EvalFrame,
   EvalLayer,
@@ -44,6 +45,24 @@ function id(prefix: string): string {
 function cleanName(value: string): string | null {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function clampEffect(value: number): number {
+  return Number.isFinite(value) ? Math.min(500, Math.max(0, value)) : 0;
+}
+
+function sanitizeEffects(effects: Effect[]): Effect[] {
+  return effects.map((effect) =>
+    effect.kind === "blur"
+      ? { kind: "blur", radius: clampEffect(effect.radius) }
+      : {
+          kind: "shadow",
+          x: Math.min(500, Math.max(-500, effect.x)),
+          y: Math.min(500, Math.max(-500, effect.y)),
+          blur: clampEffect(effect.blur),
+          color: effect.color
+        }
+  );
 }
 
 const identity = (): Transform => ({
@@ -497,6 +516,7 @@ function newLayer(name: string): Layer {
     locked: false,
     opacity: 1,
     blend: "normal",
+    effects: [],
     length: 1,
     keys: [emptyKey(0)]
   };
@@ -818,6 +838,7 @@ function evaluateLayer(layer: Layer, frame: number): EvalLayer | null {
     id: layer.id,
     opacity: Math.min(1, Math.max(0, layer.opacity * transform.opacity)),
     blend: layer.blend,
+    effects: layer.effects,
     transform,
     shapes
   };
@@ -1101,6 +1122,9 @@ mockIPC(
               throw new Error(`unknown blend mode ${value}`);
             }
             target.blend = value;
+          }
+          if (a.effects !== null && a.effects !== undefined) {
+            target.effects = sanitizeEffects(a.effects as Effect[]);
           }
         });
       case "doc_remove_layer":

@@ -193,6 +193,9 @@ function diffLayers(prev: Scene, next: Scene): string | null {
     if (before.blend !== after.blend) {
       return "layer_blend";
     }
+    if (JSON.stringify(before.effects) !== JSON.stringify(after.effects)) {
+      return "layer_effects";
+    }
     const keys = diffKeys(before, after);
     if (keys) {
       return keys;

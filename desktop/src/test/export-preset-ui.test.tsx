@@ -31,7 +31,7 @@ function key(frame: number, shapes: Shape[]): Keyframe {
 }
 
 function layer(id: string, length: number): Layer {
-  return { id, name: id, visible: true, locked: false, opacity: 1, blend: "normal", length, keys: [key(0, [box])] };
+  return { id, name: id, visible: true, locked: false, opacity: 1, blend: "normal", effects: [], length, keys: [key(0, [box])] };
 }
 
 function scene(id: string, length: number): Scene {

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { Frame, ZoomIn, ZoomOut } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/i18n";
 import {
   affineFrom,
+  cssEffects,
   gradientBox,
   gradientGeometry,
   heldKey,
@@ -15,7 +16,17 @@ import {
   textWidth,
   unionBounds
 } from "@/lib/document";
-import type { Bounds, EvalLayer, Gradient, PathNode, Point, Shape, Transform } from "@/lib/document";
+import type {
+  Blend,
+  Bounds,
+  Effect,
+  EvalLayer,
+  Gradient,
+  PathNode,
+  Point,
+  Shape,
+  Transform
+} from "@/lib/document";
 import { usePrefs } from "@/lib/prefs";
 import { collectTargets, mapBounds, snapDelta, snapPoint } from "@/lib/snapping";
 import type { SnapLines, SnapTargets } from "@/lib/snapping";
@@ -504,6 +515,18 @@ function ShapeNode({
   );
 }
 
+function layerStyle(blend: Blend, effects: Effect[]): CSSProperties {
+  const style: CSSProperties = {};
+  if (blend !== "normal") {
+    style.mixBlendMode = blend;
+  }
+  const filter = cssEffects(effects);
+  if (filter) {
+    style.filter = filter;
+  }
+  return style;
+}
+
 function LayerContent({
   evaluated,
   transform,
@@ -522,9 +545,7 @@ function LayerContent({
   return (
     <g
       opacity={evaluated.opacity}
-      style={
-        evaluated.blend === "normal" ? undefined : { mixBlendMode: evaluated.blend }
-      }
+      style={layerStyle(evaluated.blend, evaluated.effects)}
       transform={`translate(${transform.x} ${transform.y}) rotate(${transform.rotation}) scale(${transform.scale})`}
     >
       {evaluated.shapes.map((shape, index) => (

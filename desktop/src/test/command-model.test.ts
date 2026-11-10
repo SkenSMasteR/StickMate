@@ -15,6 +15,7 @@ function makeLayer(id: string, name: string, length: number): Layer {
     locked: false,
     opacity: 1,
     blend: "normal",
+    effects: [],
     length,
     keys: [
       {

@@ -350,6 +350,7 @@ mod tests {
                 locked: false,
                 opacity: 1.0,
                 blend: Blend::default(),
+                effects: Vec::new(),
                 length,
                 keys,
             };
@@ -738,6 +739,7 @@ mod tests {
             locked: true,
             opacity: 1.0,
             blend: Blend::default(),
+            effects: Vec::new(),
             length: 8,
             keys: vec![key(0, 1.0), key(4, 2.0)],
         };

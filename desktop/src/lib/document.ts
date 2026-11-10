@@ -469,6 +469,22 @@ export const blends: Blend[] = [
   "luminosity"
 ];
 
+export type Effect =
+  | { kind: "blur"; radius: number }
+  | { kind: "shadow"; x: number; y: number; blur: number; color: string };
+
+export const effectKinds: Effect["kind"][] = ["blur", "shadow"];
+
+export function cssEffects(effects: Effect[]): string {
+  return effects
+    .map((effect) =>
+      effect.kind === "blur"
+        ? `blur(${effect.radius}px)`
+        : `drop-shadow(${effect.x}px ${effect.y}px ${effect.blur}px ${effect.color})`
+    )
+    .join(" ");
+}
+
 export interface Layer {
   id: string;
   name: string;
@@ -476,6 +492,7 @@ export interface Layer {
   locked: boolean;
   opacity: number;
   blend: Blend;
+  effects: Effect[];
   length: number;
   keys: Keyframe[];
 }
@@ -500,6 +517,7 @@ export interface EvalLayer {
   id: string;
   opacity: number;
   blend: Blend;
+  effects: Effect[];
   transform: Transform;
   shapes: Shape[];
 }
@@ -620,6 +638,7 @@ export function docSetLayer(
     locked?: boolean;
     opacity?: number;
     blend?: Blend;
+    effects?: Effect[];
   }
 ): Promise<Document> {
   return invoke<Document>("doc_set_layer", {
@@ -630,7 +649,8 @@ export function docSetLayer(
     visible: patch.visible ?? null,
     locked: patch.locked ?? null,
     opacity: patch.opacity ?? null,
-    blend: patch.blend ?? null
+    blend: patch.blend ?? null,
+    effects: patch.effects ?? null
   });
 }
 

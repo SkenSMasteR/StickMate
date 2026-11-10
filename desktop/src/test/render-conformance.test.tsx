@@ -6,6 +6,7 @@ import App from "@/App";
 import {
   affineFrom,
   composeAffine,
+  cssEffects,
   docEvaluate,
   docNew,
   gradientBox,
@@ -116,6 +117,7 @@ type NormalShape =
 interface NormalLayer {
   opacity: number;
   blend: Blend;
+  filter: string;
   transform: number[];
   shapes: NormalShape[];
 }
@@ -415,6 +417,10 @@ function fixtureScenes() {
     locked: false,
     opacity: 0.5,
     blend: "multiply",
+    effects: [
+      { kind: "blur", radius: 6 },
+      { kind: "shadow", x: 4, y: -3, blur: 8, color: "#000000" }
+    ],
     length: 4,
     keys: [
       key(0, fixtureShapes(), {
@@ -432,6 +438,7 @@ function fixtureScenes() {
     locked: false,
     opacity: 1,
     blend: "normal",
+    effects: [{ kind: "shadow", x: 0, y: 0, blur: 12, color: "#22c55e" }],
     length: 2,
     keys: [key(0, [fixtureShapes()[1]])]
   };
@@ -442,6 +449,7 @@ function fixtureScenes() {
     locked: false,
     opacity: 1,
     blend: "normal",
+    effects: [],
     length: 4,
     keys: [key(0, [fixtureShapes()[2]])]
   };
@@ -452,6 +460,7 @@ function fixtureScenes() {
     locked: false,
     opacity: 1,
     blend: "normal",
+    effects: [],
     length: 3,
     keys: [key(0, tweenStart(), { tween: true }), key(2, tweenEnd())]
   };
@@ -462,6 +471,7 @@ function fixtureScenes() {
     locked: false,
     opacity: 1,
     blend: "normal",
+    effects: [],
     length: 3,
     keys: [
       key(0, [groupStart(), groupHoldStart()], { tween: true }),
@@ -561,6 +571,7 @@ function fromEvaluation(layers: EvalLayer[]): NormalLayer[] {
   return layers.map((layer) => ({
     opacity: layer.opacity,
     blend: layer.blend,
+    filter: cssEffects(layer.effects) || "none",
     transform: radians(layer.transform),
     shapes: layer.shapes.flatMap(normalShapes)
   }));
@@ -581,6 +592,7 @@ function fromSvg(svg: SVGSVGElement): NormalLayer[] {
     const opacity =
       Number(wrapper.getAttribute("opacity") ?? 1) * Number(inner.getAttribute("opacity") ?? 1);
     const blend = cssBlend(inner.getAttribute("style"));
+    const filter = cssFilter(inner.getAttribute("style"));
     const shapes: NormalShape[] = [];
     const readShape = (group: Element): void => {
       if (group.hasAttribute("data-group")) {
@@ -662,6 +674,7 @@ function fromSvg(svg: SVGSVGElement): NormalLayer[] {
     return {
       opacity,
       blend,
+      filter,
       transform: [matrix[0], matrix[1], (matrix[2] * Math.PI) / 180, matrix[3]],
       shapes
     };
@@ -671,6 +684,11 @@ function fromSvg(svg: SVGSVGElement): NormalLayer[] {
 function cssBlend(style: string | null): Blend {
   const match = /mix-blend-mode:\s*([a-z-]+)/.exec(style ?? "");
   return match ? (match[1] as Blend) : "normal";
+}
+
+function cssFilter(style: string | null): string {
+  const match = /(?:^|[;\s])filter:\s*([^;]+)/.exec(style ?? "");
+  return match ? match[1].trim() : "none";
 }
 
 type Entry = unknown[];
@@ -753,6 +771,12 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
       }
       continue;
     }
+    if (index === 0 && name === "set:filter") {
+      if (current && entry[2] !== "none") {
+        current.filter = String(entry[2]);
+      }
+      continue;
+    }
     if (index !== 1) {
       continue;
     }
@@ -764,7 +788,7 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
       if (cleared) {
         cleared = false;
         finish();
-        current = { opacity: 1, blend: "normal", transform: [0, 0, 0, 1], shapes: [] };
+        current = { opacity: 1, blend: "normal", filter: "none", transform: [0, 0, 0, 1], shapes: [] };
         layers.push(current);
       }
       continue;
@@ -888,6 +912,7 @@ function recorder(index: number): CanvasRenderingContext2D {
     "lineJoin",
     "globalAlpha",
     "globalCompositeOperation",
+    "filter",
     "font",
     "textBaseline"
   ]) {

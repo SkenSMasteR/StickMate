@@ -20,6 +20,7 @@ import { useI18n } from "@/i18n";
 import {
   blends,
   clampEasing,
+  effectKinds,
   easingPresets,
   heldKey,
   linearEasing,
@@ -31,6 +32,7 @@ import type {
   AlignMode,
   AlignReference,
   Blend,
+  Effect,
   Easing,
   EasingPresetId,
   Gradient,
@@ -418,6 +420,92 @@ function BlendField({
         ))}
       </select>
     </label>
+  );
+}
+
+const effectIcon =
+  "flex h-7 w-7 items-center justify-center border border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground";
+
+function EffectRow({
+  effect,
+  onChange,
+  onRemove
+}: {
+  effect: Effect;
+  onChange: (effect: Effect) => void;
+  onRemove: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="flex flex-col gap-1 border border-border p-1">
+      <div className="flex items-center gap-2">
+        <select
+          aria-label={t("editor.effectKind")}
+          value={effect.kind}
+          onChange={(event) =>
+            onChange(
+              event.target.value === "blur"
+                ? { kind: "blur", radius: 8 }
+                : { kind: "shadow", x: 4, y: 4, blur: 6, color: "#000000" }
+            )
+          }
+          className="h-7 w-full min-w-0 border border-border bg-transparent px-1 text-xs outline-none focus:border-ring"
+        >
+          {effectKinds.map((kind) => (
+            <option key={kind} value={kind}>
+              {t(`effect.${kind}`)}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          aria-label={t("editor.removeEffect")}
+          title={t("editor.removeEffect")}
+          onClick={onRemove}
+          className={effectIcon}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      {effect.kind === "blur" ? (
+        <NumberField
+          label={t("editor.effectRadius")}
+          value={effect.radius}
+          min={0}
+          max={500}
+          onCommit={(radius) => onChange({ kind: "blur", radius })}
+        />
+      ) : (
+        <>
+          <NumberField
+            label={t("editor.effectOffsetX")}
+            value={effect.x}
+            min={-500}
+            max={500}
+            onCommit={(x) => onChange({ ...effect, x })}
+          />
+          <NumberField
+            label={t("editor.effectOffsetY")}
+            value={effect.y}
+            min={-500}
+            max={500}
+            onCommit={(y) => onChange({ ...effect, y })}
+          />
+          <NumberField
+            label={t("editor.effectBlur")}
+            value={effect.blur}
+            min={0}
+            max={500}
+            onCommit={(blur) => onChange({ ...effect, blur })}
+          />
+          <ColorField
+            label={t("editor.effectColor")}
+            value={effect.color}
+            onChange={(color) => onChange({ ...effect, color })}
+          />
+        </>
+      )}
+    </div>
   );
 }
 
@@ -823,6 +911,38 @@ export default function SidePanel() {
           value={layer.blend}
           onChange={(blend) => actions.setLayerFlags(layer.id, { blend })}
         />
+        <div className="flex flex-col gap-1">
+          {layer.effects.map((effect, index) => (
+            <EffectRow
+              key={index}
+              effect={effect}
+              onChange={(next) =>
+                actions.setLayerFlags(layer.id, {
+                  effects: layer.effects.map((item, position) =>
+                    position === index ? next : item
+                  )
+                })
+              }
+              onRemove={() =>
+                actions.setLayerFlags(layer.id, {
+                  effects: layer.effects.filter((_, position) => position !== index)
+                })
+              }
+            />
+          ))}
+          <button
+            type="button"
+            onClick={() =>
+              actions.setLayerFlags(layer.id, {
+                effects: [...layer.effects, { kind: "blur", radius: 8 }]
+              })
+            }
+            className="flex h-7 items-center gap-1 border border-border px-2 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {t("editor.addEffect")}
+          </button>
+        </div>
         <LabelField label={t("editor.label")} value={key?.label ?? ""} onCommit={(label) => actions.setLabel(label)} />
         <div className="flex items-center gap-2">
           <button
@@ -1160,6 +1280,9 @@ export default function SidePanel() {
                 >
                   {item.name}
                 </button>
+              )}
+              {item.effects.length > 0 && (
+                <span className="shrink-0 text-xs text-muted-foreground">fx</span>
               )}
               <button
                 type="button"

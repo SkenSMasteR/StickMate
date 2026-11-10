@@ -55,6 +55,7 @@ import type {
   AlignReference,
   Blend,
   Document,
+  Effect,
   Easing,
   EvalFrame,
   Layer,
@@ -246,6 +247,7 @@ export interface Actions {
       locked?: boolean;
       opacity?: number;
       blend?: Blend;
+      effects?: Effect[];
     }
   ) => void;
   moveLayer: (layerId: string, index: number) => void;
