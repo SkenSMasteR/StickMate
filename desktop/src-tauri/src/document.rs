@@ -56,6 +56,28 @@ pub enum Gradient {
     Radial { stops: Vec<GradientStop> },
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Blend {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+
 impl Gradient {
     pub fn stops(&self) -> &[GradientStop] {
         match self {
@@ -1171,6 +1193,8 @@ pub struct Layer {
     pub visible: bool,
     pub locked: bool,
     pub opacity: f64,
+    #[serde(default)]
+    pub blend: Blend,
     pub length: u32,
     pub keys: Vec<Keyframe>,
 }
@@ -1183,6 +1207,7 @@ impl Layer {
             visible: true,
             locked: false,
             opacity: 1.0,
+            blend: Blend::default(),
             length: 1,
             keys: vec![Keyframe::empty(0)],
         }
@@ -1310,6 +1335,7 @@ impl Document {
 pub struct EvalLayer {
     pub id: String,
     pub opacity: f64,
+    pub blend: Blend,
     pub transform: Transform,
     pub shapes: Vec<Shape>,
 }
@@ -1660,6 +1686,7 @@ pub fn evaluate_layer(layer: &Layer, frame: u32) -> Option<EvalLayer> {
     Some(EvalLayer {
         id: layer.id.clone(),
         opacity: (layer.opacity * transform.opacity).clamp(0.0, 1.0),
+        blend: layer.blend,
         transform,
         shapes,
     })
@@ -2024,6 +2051,7 @@ impl DocStore {
         visible: Option<bool>,
         locked: Option<bool>,
         opacity: Option<f64>,
+        blend: Option<Blend>,
     ) -> Result<Document, String> {
         let name = match name {
             Some(value) => Some(clean_name(&value).ok_or_else(|| "name is empty".to_string())?),
@@ -2035,6 +2063,8 @@ impl DocStore {
             "layer_visibility"
         } else if locked.is_some() {
             "layer_lock"
+        } else if blend.is_some() {
+            "layer_blend"
         } else {
             "layer_opacity"
         };
@@ -2051,6 +2081,9 @@ impl DocStore {
             }
             if let Some(opacity) = opacity {
                 layer.opacity = opacity.clamp(0.0, 1.0);
+            }
+            if let Some(blend) = blend {
+                layer.blend = blend;
             }
             Ok(())
         })
@@ -3047,8 +3080,9 @@ pub fn doc_set_layer(
     visible: Option<bool>,
     locked: Option<bool>,
     opacity: Option<f64>,
+    blend: Option<Blend>,
 ) -> Result<Document, String> {
-    store.set_layer(&id, &scene_id, &layer_id, name, visible, locked, opacity)
+    store.set_layer(&id, &scene_id, &layer_id, name, visible, locked, opacity, blend)
 }
 
 #[tauri::command]
@@ -3481,7 +3515,7 @@ mod tests {
         let id = &fixture.doc.id;
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None)
             .expect("lock");
         let error = fixture
             .store
@@ -4343,7 +4377,7 @@ mod tests {
         let id = &fixture.doc.id;
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, Some(false), None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, Some(false), None, None, None)
             .expect("hide");
         let frames = fixture
             .store
@@ -4352,7 +4386,7 @@ mod tests {
         assert!(frames[0].layers.is_empty());
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, Some(true), None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, Some(true), None, None, None)
             .expect("show");
         let frames = fixture
             .store
@@ -4367,7 +4401,7 @@ mod tests {
         let id = &fixture.doc.id;
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, None, Some(0.5))
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, None, Some(0.5), None)
             .expect("opacity");
         fixture
             .store
@@ -4512,7 +4546,7 @@ mod tests {
         let id = &fixture.doc.id;
         let error = fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, Some("  ".to_string()), None, None, None)
+            .set_layer(id, &fixture.scene, &fixture.layer, Some("  ".to_string()), None, None, None, None)
             .expect_err("empty name");
         assert_eq!(error, "name is empty");
         assert_eq!(fixture.store.undo(id).expect_err("undo"), "nothing to undo");
@@ -4566,7 +4600,7 @@ mod tests {
         let ink = added.scenes[0].layers[0].id.clone();
         let renamed = fixture
             .store
-            .set_layer(id, &fixture.scene, &ink, Some("Paint".to_string()), None, None, Some(0.4))
+            .set_layer(id, &fixture.scene, &ink, Some("Paint".to_string()), None, None, Some(0.4), None)
             .expect("set");
         assert_eq!(renamed.scenes[0].layers[0].name, "Paint");
         assert_eq!(renamed.scenes[0].layers[0].opacity, 0.4);
@@ -5014,7 +5048,7 @@ mod tests {
         );
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None)
             .expect("lock");
         assert_eq!(
             fixture
@@ -5073,7 +5107,7 @@ mod tests {
             .expect("draw");
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None)
             .expect("lock");
         assert_eq!(
             fixture
@@ -5146,7 +5180,7 @@ mod tests {
             .expect("draw");
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None)
             .expect("lock");
         assert_eq!(
             fixture
@@ -5356,7 +5390,7 @@ mod tests {
         let id = &fixture.doc.id;
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None)
             .expect("lock");
         assert_eq!(
             fixture
@@ -5786,7 +5820,7 @@ mod tests {
             .expect("draw");
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None)
             .expect("lock");
         let pivot = Point { x: 0.0, y: 0.0 };
         assert_eq!(
@@ -6261,7 +6295,7 @@ mod tests {
         );
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None)
             .expect("lock");
         assert_eq!(
             fixture
@@ -6294,7 +6328,7 @@ mod tests {
             .expect("second");
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, None, Some(0.5))
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, None, Some(0.5), None)
             .expect("opacity");
         let before = fixture.store.get(id).expect("get");
         let edited = fixture
@@ -6376,7 +6410,7 @@ mod tests {
             .expect("draw");
         fixture
             .store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None)
             .expect("lock");
         let before = fixture.store.get(id).expect("get");
         let edited = fixture
@@ -6434,6 +6468,7 @@ mod tests {
                 &fixture.scene,
                 &fixture.layer,
                 Some("Ink".to_string()),
+                None,
                 None,
                 None,
                 None,
@@ -7258,7 +7293,7 @@ mod tests {
                 .expect("draw");
         }
         store
-            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None)
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None)
             .expect("lock");
         assert_eq!(
             store

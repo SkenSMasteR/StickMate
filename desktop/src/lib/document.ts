@@ -432,12 +432,50 @@ export interface Keyframe {
   label: string | null;
 }
 
+export type Blend =
+  | "normal"
+  | "multiply"
+  | "screen"
+  | "overlay"
+  | "darken"
+  | "lighten"
+  | "color-dodge"
+  | "color-burn"
+  | "hard-light"
+  | "soft-light"
+  | "difference"
+  | "exclusion"
+  | "hue"
+  | "saturation"
+  | "color"
+  | "luminosity";
+
+export const blends: Blend[] = [
+  "normal",
+  "multiply",
+  "screen",
+  "overlay",
+  "darken",
+  "lighten",
+  "color-dodge",
+  "color-burn",
+  "hard-light",
+  "soft-light",
+  "difference",
+  "exclusion",
+  "hue",
+  "saturation",
+  "color",
+  "luminosity"
+];
+
 export interface Layer {
   id: string;
   name: string;
   visible: boolean;
   locked: boolean;
   opacity: number;
+  blend: Blend;
   length: number;
   keys: Keyframe[];
 }
@@ -461,6 +499,7 @@ export interface Document {
 export interface EvalLayer {
   id: string;
   opacity: number;
+  blend: Blend;
   transform: Transform;
   shapes: Shape[];
 }
@@ -580,6 +619,7 @@ export function docSetLayer(
     visible?: boolean;
     locked?: boolean;
     opacity?: number;
+    blend?: Blend;
   }
 ): Promise<Document> {
   return invoke<Document>("doc_set_layer", {
@@ -589,7 +629,8 @@ export function docSetLayer(
     name: patch.name ?? null,
     visible: patch.visible ?? null,
     locked: patch.locked ?? null,
-    opacity: patch.opacity ?? null
+    opacity: patch.opacity ?? null,
+    blend: patch.blend ?? null
   });
 }
 

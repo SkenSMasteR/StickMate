@@ -2,8 +2,8 @@ import { useEffect, useRef } from "react";
 import { comboFromEvent } from "@/lib/shortcuts";
 import type { ShortcutOverrides } from "@/lib/shortcuts";
 import type { ConfirmOptions } from "@/lib/confirm";
-import { heldKey } from "@/lib/document";
-import type { Document, Layer, Scene } from "@/lib/document";
+import { blends, heldKey } from "@/lib/document";
+import type { Blend, Document, Layer, Scene } from "@/lib/document";
 import type { Actions, TabState, Tool } from "./workspace";
 
 export interface CommandArgOption {
@@ -410,6 +410,29 @@ function parameterCommands(
       (values) =>
         actions.setLayerFlags(String(values.layer), {
           opacity: Number(values.opacity) / 100
+        }),
+      !scene
+    ),
+    prompt(
+      "layer.blend",
+      t("command.layerBlend"),
+      null,
+      [
+        layerArg(),
+        {
+          name: "blend",
+          label: t("palette.arg.blend"),
+          kind: "choice",
+          initial: layer?.blend ?? "normal",
+          options: blends.map((mode) => ({
+            value: mode,
+            label: t(`blend.${mode}`)
+          }))
+        }
+      ],
+      (values) =>
+        actions.setLayerFlags(String(values.layer), {
+          blend: String(values.blend) as Blend
         }),
       !scene
     ),

@@ -151,6 +151,7 @@ function animated(easing: Easing | undefined): Layer {
     visible: true,
     locked: false,
     opacity: 1,
+    blend: "normal",
     length: 11,
     keys: [
       at(0, { tween: true, easing, shapes: [box(0)] }),

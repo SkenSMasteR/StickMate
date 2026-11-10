@@ -604,7 +604,7 @@ mod tests {
         let clip = stage.copy(&stage.source.clone(), vec![0]).expect("copy");
         stage
             .store
-            .set_layer(&stage.id, &stage.scene, &stage.source, None, None, Some(true), None)
+            .set_layer(&stage.id, &stage.scene, &stage.source, None, None, Some(true), None, None)
             .expect("lock");
         let error = stage
             .paste(&stage.source.clone(), clip)

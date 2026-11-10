@@ -522,6 +522,9 @@ function LayerContent({
   return (
     <g
       opacity={evaluated.opacity}
+      style={
+        evaluated.blend === "normal" ? undefined : { mixBlendMode: evaluated.blend }
+      }
       transform={`translate(${transform.x} ${transform.y}) rotate(${transform.rotation}) scale(${transform.scale})`}
     >
       {evaluated.shapes.map((shape, index) => (

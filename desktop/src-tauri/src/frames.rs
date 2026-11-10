@@ -329,7 +329,7 @@ pub fn doc_move_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{new_id, Point, Scene, Shape};
+    use crate::document::{new_id, Blend, Point, Scene, Shape};
     use std::fs;
     use std::path::PathBuf;
 
@@ -349,6 +349,7 @@ mod tests {
                 visible: true,
                 locked: false,
                 opacity: 1.0,
+                blend: Blend::default(),
                 length,
                 keys,
             };
@@ -736,6 +737,7 @@ mod tests {
             visible: true,
             locked: true,
             opacity: 1.0,
+            blend: Blend::default(),
             length: 8,
             keys: vec![key(0, 1.0), key(4, 2.0)],
         };

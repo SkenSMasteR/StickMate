@@ -125,6 +125,7 @@ function layer(id: string, patch: Partial<Layer> = {}): Layer {
     visible: true,
     locked: false,
     opacity: 1,
+    blend: "normal",
     length: 1,
     keys: [key(0, [])],
     ...patch

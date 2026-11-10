@@ -18,6 +18,7 @@ import {
 import { toast } from "sonner";
 import { useI18n } from "@/i18n";
 import {
+  blends,
   clampEasing,
   easingPresets,
   heldKey,
@@ -29,6 +30,7 @@ import {
 import type {
   AlignMode,
   AlignReference,
+  Blend,
   Easing,
   EasingPresetId,
   Gradient,
@@ -386,6 +388,35 @@ function LabelField({
         }}
         className="h-7 w-full min-w-0 border border-border bg-transparent px-1 text-xs outline-none focus:border-ring"
       />
+    </label>
+  );
+}
+
+function BlendField({
+  label,
+  value,
+  onChange
+}: {
+  label: string;
+  value: Blend;
+  onChange: (blend: Blend) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <label className="flex items-center gap-2 text-xs">
+      <span className="w-20 shrink-0 text-muted-foreground">{label}</span>
+      <select
+        aria-label={label}
+        value={value}
+        onChange={(event) => onChange(event.target.value as Blend)}
+        className="h-7 w-full min-w-0 border border-border bg-transparent px-1 text-xs outline-none focus:border-ring"
+      >
+        {blends.map((mode) => (
+          <option key={mode} value={mode}>
+            {t(`blend.${mode}`)}
+          </option>
+        ))}
+      </select>
     </label>
   );
 }
@@ -786,6 +817,11 @@ export default function SidePanel() {
           min={0}
           max={100}
           onCommit={(value) => actions.setLayerFlags(layer.id, { opacity: value / 100 })}
+        />
+        <BlendField
+          label={t("editor.layerBlend")}
+          value={layer.blend}
+          onChange={(blend) => actions.setLayerFlags(layer.id, { blend })}
         />
         <LabelField label={t("editor.label")} value={key?.label ?? ""} onCommit={(label) => actions.setLabel(label)} />
         <div className="flex items-center gap-2">

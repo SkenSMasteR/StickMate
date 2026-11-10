@@ -190,6 +190,9 @@ function diffLayers(prev: Scene, next: Scene): string | null {
     if (before.opacity !== after.opacity) {
       return "layer_opacity";
     }
+    if (before.blend !== after.blend) {
+      return "layer_blend";
+    }
     const keys = diffKeys(before, after);
     if (keys) {
       return keys;

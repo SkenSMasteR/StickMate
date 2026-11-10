@@ -53,6 +53,7 @@ import {
 import type {
   AlignMode,
   AlignReference,
+  Blend,
   Document,
   Easing,
   EvalFrame,
@@ -240,7 +241,12 @@ export interface Actions {
   renameLayer: (layerId: string, name: string) => void;
   setLayerFlags: (
     layerId: string,
-    patch: { visible?: boolean; locked?: boolean; opacity?: number }
+    patch: {
+      visible?: boolean;
+      locked?: boolean;
+      opacity?: number;
+      blend?: Blend;
+    }
   ) => void;
   moveLayer: (layerId: string, index: number) => void;
   removeLayer: (layerId: string) => void;

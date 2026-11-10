@@ -52,7 +52,7 @@ describe("editor shell", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: en["palette.run"] }));
     await waitFor(() => expect(layerLength(doc.id)).toBe(4));
-    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
   }, 30000);
 
   test("the tools panel button opens the palette", async () => {

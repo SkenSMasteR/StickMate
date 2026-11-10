@@ -2,6 +2,7 @@ import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import {
   affineFrom,
   applyAffine,
+  blends,
   clampEasing,
   composeAffine,
   easeProgress,
@@ -17,6 +18,7 @@ import type {
   Affine,
   AlignMode,
   AlignReference,
+  Blend,
   Bounds,
   Document,
   Easing,
@@ -494,6 +496,7 @@ function newLayer(name: string): Layer {
     visible: true,
     locked: false,
     opacity: 1,
+    blend: "normal",
     length: 1,
     keys: [emptyKey(0)]
   };
@@ -814,6 +817,7 @@ function evaluateLayer(layer: Layer, frame: number): EvalLayer | null {
   return {
     id: layer.id,
     opacity: Math.min(1, Math.max(0, layer.opacity * transform.opacity)),
+    blend: layer.blend,
     transform,
     shapes
   };
@@ -1090,6 +1094,13 @@ mockIPC(
               1,
               Math.max(0, a.opacity as number)
             );
+          }
+          if (a.blend !== null && a.blend !== undefined) {
+            const value = a.blend as Blend;
+            if (!blends.includes(value)) {
+              throw new Error(`unknown blend mode ${value}`);
+            }
+            target.blend = value;
           }
         });
       case "doc_remove_layer":

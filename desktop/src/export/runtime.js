@@ -394,9 +394,14 @@
     }
     return {
       opacity: clamp(layer.opacity * transform.opacity, 0, 1),
+      blend: layer.blend,
       transform,
       shapes
     };
+  }
+
+  function compositeOf(blend) {
+    return blend && blend !== "normal" ? blend : "source-over";
   }
 
   function polygonVertices(x, y, w, h, sides) {
@@ -569,7 +574,9 @@
         }
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.globalAlpha = layer.opacity;
+        ctx.globalCompositeOperation = compositeOf(layer.blend);
         ctx.drawImage(buffer, 0, 0);
+        ctx.globalCompositeOperation = "source-over";
         ctx.globalAlpha = 1;
       }
     }
