@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::document::{DocStore, Document, Easing, Keyframe, Layer, Transform};
+use crate::document::{find_layer, DocStore, Document, Easing, Keyframe, Layer, Transform};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FrameClip {
@@ -129,7 +129,7 @@ impl DocStore {
         count: u32,
     ) -> Result<Document, String> {
         self.edit_named(id, "insert_frames", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             check_count(count)?;
             check_frame(layer, frame)?;
@@ -152,7 +152,7 @@ impl DocStore {
         count: u32,
     ) -> Result<Document, String> {
         self.edit_named(id, "remove_frames", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             check_count(count)?;
             check_frame(layer, frame)?;
@@ -175,10 +175,8 @@ impl DocStore {
             .iter()
             .find(|scene| scene.id == scene_id)
             .ok_or_else(|| "unknown scene".to_string())?;
-        let layer = scene
-            .layers
-            .iter()
-            .find(|layer| layer.id == layer_id)
+        let layer = find_layer(&scene.layers, layer_id)
+            .filter(|layer| !layer.folder)
             .ok_or_else(|| "unknown layer".to_string())?;
         check_count(count)?;
         check_frame(layer, frame)?;
@@ -194,7 +192,7 @@ impl DocStore {
         clip: FrameClip,
     ) -> Result<Document, String> {
         self.edit_named(id, "paste_frames", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             check_clip(&clip)?;
             check_frame(layer, frame)?;
@@ -212,7 +210,7 @@ impl DocStore {
         count: u32,
     ) -> Result<Document, String> {
         self.edit_named(id, "duplicate_frames", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             check_count(count)?;
             check_frame(layer, frame)?;
@@ -232,7 +230,7 @@ impl DocStore {
         target: u32,
     ) -> Result<Document, String> {
         self.edit_named(id, "move_frames", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             check_count(count)?;
             check_frame(layer, frame)?;
@@ -354,6 +352,8 @@ mod tests {
                 masked: false,
                 length,
                 keys,
+                folder: false,
+                children: Vec::new(),
             };
             Self::with_layer(tag, layer)
         }
@@ -744,6 +744,8 @@ mod tests {
             masked: false,
             length: 8,
             keys: vec![key(0, 1.0), key(4, 2.0)],
+            folder: false,
+            children: Vec::new(),
         };
         let fixture = Fixture::with_layer("locked", layer);
         let id = &fixture.doc.id;

@@ -1331,6 +1331,10 @@ pub struct Layer {
     pub masked: bool,
     pub length: u32,
     pub keys: Vec<Keyframe>,
+    #[serde(default)]
+    pub folder: bool,
+    #[serde(default)]
+    pub children: Vec<Layer>,
 }
 
 impl Layer {
@@ -1346,6 +1350,25 @@ impl Layer {
             masked: false,
             length: 1,
             keys: vec![Keyframe::empty(0)],
+            folder: false,
+            children: Vec::new(),
+        }
+    }
+
+    fn new_folder(name: String) -> Self {
+        Self {
+            id: new_id("l"),
+            name,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            blend: Blend::default(),
+            effects: Vec::new(),
+            masked: false,
+            length: 0,
+            keys: Vec::new(),
+            folder: true,
+            children: Vec::new(),
         }
     }
 
@@ -1378,6 +1401,19 @@ impl Layer {
         index
     }
 
+    pub(crate) fn content_length(&self) -> u32 {
+        if self.folder {
+            self.children
+                .iter()
+                .map(Layer::content_length)
+                .max()
+                .unwrap_or(1)
+                .max(1)
+        } else {
+            self.length
+        }
+    }
+
     pub(crate) fn writable(&self) -> Result<(), String> {
         if self.locked {
             Err("layer is locked".to_string())
@@ -1387,6 +1423,106 @@ impl Layer {
     }
 }
 
+pub(crate) const MAX_FOLDER_DEPTH: usize = 16;
+
+pub(crate) fn find_layer<'a>(layers: &'a [Layer], id: &str) -> Option<&'a Layer> {
+    layers.iter().find_map(|layer| {
+        if layer.id == id {
+            Some(layer)
+        } else {
+            find_layer(&layer.children, id)
+        }
+    })
+}
+
+fn layer_path(layers: &[Layer], id: &str, trail: &[usize]) -> Option<Vec<usize>> {
+    for (index, layer) in layers.iter().enumerate() {
+        let mut next = trail.to_vec();
+        next.push(index);
+        if layer.id == id {
+            return Some(next);
+        }
+        if let Some(found) = layer_path(&layer.children, id, &next) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn descend<'a>(layers: &'a mut [Layer], path: &[usize]) -> Option<&'a mut Layer> {
+    let (&first, rest) = path.split_first()?;
+    let item = layers.get_mut(first)?;
+    if rest.is_empty() {
+        return Some(item);
+    }
+    descend(&mut item.children, rest)
+}
+
+fn ancestor_locked(layers: &[Layer], path: &[usize]) -> bool {
+    let mut current = layers;
+    let mut locked = false;
+    for (depth, index) in path.iter().enumerate() {
+        let Some(layer) = current.get(*index) else {
+            return locked;
+        };
+        if depth + 1 == path.len() {
+            return locked;
+        }
+        locked |= layer.locked;
+        current = &layer.children;
+    }
+    locked
+}
+
+pub(crate) fn find_layer_mut<'a>(
+    layers: &'a mut [Layer],
+    id: &str,
+) -> Option<(&'a mut Layer, bool)> {
+    let path = layer_path(layers, id, &[])?;
+    let inherited = ancestor_locked(layers, &path);
+    Some((descend(layers, &path)?, inherited))
+}
+
+pub(crate) fn leaf_count(layers: &[Layer]) -> usize {
+    layers
+        .iter()
+        .map(|layer| {
+            if layer.folder {
+                leaf_count(&layer.children)
+            } else {
+                1
+            }
+        })
+        .sum()
+}
+
+pub(crate) fn contains_layer(layers: &[Layer], id: &str) -> bool {
+    layers
+        .iter()
+        .any(|layer| layer.id == id || contains_layer(&layer.children, id))
+}
+
+fn validate_folders(layers: &[Layer], level: usize, ids: &mut Vec<String>) -> Result<(), String> {
+    for layer in layers {
+        if level > MAX_FOLDER_DEPTH {
+            return Err("folders cannot nest deeper than 16 levels".to_string());
+        }
+        if layer.id.is_empty() || ids.contains(&layer.id) {
+            return Err("duplicate layer id".to_string());
+        }
+        ids.push(layer.id.clone());
+        if layer.folder {
+            if !layer.keys.is_empty() || layer.masked {
+                return Err("folders cannot hold keyframes or clips".to_string());
+            }
+            validate_folders(&layer.children, level + 1, ids)?;
+        } else if !layer.children.is_empty() {
+            return Err("only folders can hold layers".to_string());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Scene {
     pub id: String,
@@ -1394,16 +1530,165 @@ pub struct Scene {
     pub layers: Vec<Layer>,
 }
 
-fn validate_scene_masks(scene: &mut Scene) -> Result<(), String> {
-    for index in 1..scene.layers.len() {
-        if scene.layers[index].masked && scene.layers[index - 1].masked {
-            scene.layers[index].masked = false;
+fn validate_layer_masks(layers: &mut [Layer]) {
+    for index in 1..layers.len() {
+        let provider_clipped = layers[index - 1].masked || layers[index - 1].folder;
+        if layers[index].folder || layers[index].masked && provider_clipped {
+            layers[index].masked = false;
         }
     }
-    if let Some(top) = scene.layers.first_mut() {
+    if let Some(top) = layers.first_mut() {
         top.masked = false;
     }
+    for layer in layers.iter_mut() {
+        validate_layer_masks(&mut layer.children);
+    }
+}
+
+fn validate_scene_masks(scene: &mut Scene) -> Result<(), String> {
+    let mut ids = Vec::new();
+    validate_folders(&scene.layers, 1, &mut ids)?;
+    validate_layer_masks(&mut scene.layers);
     Ok(())
+}
+
+fn remove_layer_tree(layers: &mut Vec<Layer>, layer_id: &str) -> Result<Layer, String> {
+    if let Some(index) = layers.iter().position(|layer| layer.id == layer_id) {
+        return Ok(layers.remove(index));
+    }
+    for layer in layers.iter_mut() {
+        if let Ok(removed) = remove_layer_tree(&mut layer.children, layer_id) {
+            return Ok(removed);
+        }
+    }
+    Err("unknown layer".to_string())
+}
+
+fn insert_layer_tree(
+    layers: &mut Vec<Layer>,
+    parent: Option<&str>,
+    index: usize,
+    layer: Layer,
+) -> Result<(), String> {
+    let Some(parent_id) = parent else {
+        let at = index.min(layers.len());
+        layers.insert(at, layer);
+        return Ok(());
+    };
+    for current in layers.iter_mut() {
+        if current.id == parent_id {
+            if !current.folder {
+                return Err("target is not a folder".to_string());
+            }
+            let at = index.min(current.children.len());
+            current.children.insert(at, layer);
+            return Ok(());
+        }
+        if find_layer(&current.children, parent_id).is_some() {
+            return insert_layer_tree(&mut current.children, Some(parent_id), index, layer);
+        }
+    }
+    Err("unknown folder".to_string())
+}
+
+fn layer_depth(layers: &[Layer], layer_id: &str, level: usize) -> Option<usize> {
+    layers.iter().find_map(|layer| {
+        if layer.id == layer_id {
+            Some(level)
+        } else {
+            layer_depth(&layer.children, layer_id, level + 1)
+        }
+    })
+}
+
+fn subtree_height(layer: &Layer) -> usize {
+    1 + layer
+        .children
+        .iter()
+        .map(subtree_height)
+        .max()
+        .unwrap_or(0)
+}
+
+fn subtree_leaf_count(layer: &Layer) -> usize {
+    if layer.folder {
+        layer.children.iter().map(subtree_leaf_count).sum()
+    } else {
+        1
+    }
+}
+
+fn set_layer_mask(
+    layers: &mut Vec<Layer>,
+    layer_id: &str,
+    masked: bool,
+) -> Result<(), String> {
+    for index in 0..layers.len() {
+        if layers[index].id == layer_id {
+            if masked {
+                if layers[index].folder {
+                    return Err("folders cannot be clipped".to_string());
+                }
+                if index == 0 {
+                    return Err("the top layer cannot be clipped".to_string());
+                }
+                if layers[index - 1].masked {
+                    return Err("a mask layer cannot itself be clipped".to_string());
+                }
+                if layers[index - 1].folder {
+                    return Err("clipping needs a layer directly above".to_string());
+                }
+            }
+            layers[index].masked = masked;
+            return Ok(());
+        }
+        if find_layer(&layers[index].children, layer_id).is_some() {
+            return set_layer_mask(&mut layers[index].children, layer_id, masked);
+        }
+    }
+    Err("unknown layer".to_string())
+}
+
+fn open_folder(layers: &mut Vec<Layer>, folder_id: &str) -> Result<(), String> {
+    if let Some(index) = layers.iter().position(|layer| layer.id == folder_id) {
+        if !layers[index].folder {
+            return Err("target is not a folder".to_string());
+        }
+        let folder = layers.remove(index);
+        for (offset, child) in folder.children.into_iter().enumerate() {
+            layers.insert(index + offset, child);
+        }
+        return Ok(());
+    }
+    for layer in layers.iter_mut() {
+        if find_layer(&layer.children, folder_id).is_some() {
+            return open_folder(&mut layer.children, folder_id);
+        }
+    }
+    Err("unknown folder".to_string())
+}
+
+fn duplicate_layer_tree(layers: &mut Vec<Layer>, layer_id: &str) -> Result<(), String> {
+    for index in 0..layers.len() {
+        if layers[index].id == layer_id {
+            let mut copy = layers[index].clone();
+            reseed_layer(&mut copy);
+            copy.name = format!("{} copy", copy.name);
+            layers.insert(index + 1, copy);
+            return Ok(());
+        }
+        if find_layer(&layers[index].children, layer_id).is_some() {
+            return duplicate_layer_tree(&mut layers[index].children, layer_id);
+        }
+    }
+    Err("unknown layer".to_string())
+}
+
+fn reseed_layer(layer: &mut Layer) {
+    layer.id = new_id("l");
+    for child in &mut layer.children {
+        reseed_layer(child);
+    }
 }
 
 impl Scene {
@@ -1419,17 +1704,14 @@ impl Scene {
     pub fn length(&self) -> u32 {
         self.layers
             .iter()
-            .map(|layer| layer.length)
+            .map(Layer::content_length)
             .max()
             .unwrap_or(1)
             .max(1)
     }
 
-    pub(crate) fn layer_index(&self, layer_id: &str) -> Result<usize, String> {
-        self.layers
-            .iter()
-            .position(|layer| layer.id == layer_id)
-            .ok_or_else(|| "unknown layer".to_string())
+    pub(crate) fn leaf_count(&self) -> usize {
+        leaf_count(&self.layers)
     }
 }
 
@@ -1452,7 +1734,7 @@ impl Document {
             .ok_or_else(|| "unknown scene".to_string())
     }
 
-    pub(crate) fn layer_mut(
+    pub(crate) fn leaf_mut(
         &mut self,
         scene_id: &str,
         layer_id: &str,
@@ -1462,34 +1744,74 @@ impl Document {
             .iter_mut()
             .find(|scene| scene.id == scene_id)
             .ok_or_else(|| "unknown scene".to_string())?;
-        let index = scene.layer_index(layer_id)?;
-        Ok(&mut scene.layers[index])
+        let (layer, inherited) = find_layer_mut(&mut scene.layers, layer_id)
+            .ok_or_else(|| "unknown layer".to_string())?;
+        if layer.folder {
+            return Err("folders cannot hold frames or shapes".to_string());
+        }
+        if inherited {
+            return Err("layer is locked".to_string());
+        }
+        Ok(layer)
     }
 
     pub fn evaluate(&self, scene_id: &str, frame: u32) -> Result<EvalFrame, String> {
         let index = self.scene_index(scene_id)?;
-        let layers = &self.scenes[index].layers;
-        let mut evaluated = Vec::new();
-        for (position, layer) in layers.iter().enumerate() {
-            let mut item = match evaluate_layer(layer, frame) {
-                Some(item) => item,
-                None => continue,
-            };
-            if layer.masked && position > 0 {
-                item.mask = mask_from(&layers[position - 1], frame);
-            }
-            evaluated.push(item);
-        }
         Ok(EvalFrame {
             frame,
-            layers: evaluated,
+            layers: evaluate_layers(&self.scenes[index].layers, frame),
         })
     }
+}
+
+fn evaluate_layers(layers: &[Layer], frame: u32) -> Vec<EvalLayer> {
+    let mut evaluated = Vec::new();
+    for (position, layer) in layers.iter().enumerate() {
+        let mut item = if layer.folder {
+            match evaluate_folder(layer, frame) {
+                Some(item) => item,
+                None => continue,
+            }
+        } else {
+            match evaluate_layer(layer, frame) {
+                Some(item) => item,
+                None => continue,
+            }
+        };
+        if layer.masked && position > 0 {
+            item.mask = mask_from(&layers[position - 1], frame);
+        }
+        evaluated.push(item);
+    }
+    evaluated
+}
+
+fn evaluate_folder(folder: &Layer, frame: u32) -> Option<EvalLayer> {
+    if !folder.visible {
+        return None;
+    }
+    let children = evaluate_layers(&folder.children, frame);
+    if children.is_empty() {
+        return None;
+    }
+    Some(EvalLayer {
+        id: folder.id.clone(),
+        folder: true,
+        opacity: folder.opacity.clamp(0.0, 1.0),
+        blend: folder.blend,
+        effects: folder.effects.clone(),
+        mask: None,
+        transform: Transform::default(),
+        shapes: Vec::new(),
+        children,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct EvalLayer {
     pub id: String,
+    #[serde(default)]
+    pub folder: bool,
     pub opacity: f64,
     pub blend: Blend,
     pub effects: Vec<Effect>,
@@ -1497,6 +1819,8 @@ pub struct EvalLayer {
     pub mask: Option<EvalMask>,
     pub transform: Transform,
     pub shapes: Vec<Shape>,
+    #[serde(default)]
+    pub children: Vec<EvalLayer>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -1853,17 +2177,19 @@ pub fn evaluate_layer(layer: &Layer, frame: u32) -> Option<EvalLayer> {
     }
     Some(EvalLayer {
         id: layer.id.clone(),
+        folder: false,
         opacity: (layer.opacity * transform.opacity).clamp(0.0, 1.0),
         blend: layer.blend,
         effects: layer.effects.clone(),
         mask: None,
         transform,
         shapes,
+        children: Vec::new(),
     })
 }
 
 fn mask_from(layer: &Layer, frame: u32) -> Option<EvalMask> {
-    if !layer.visible || frame >= layer.length {
+    if layer.folder || !layer.visible || frame >= layer.length {
         return None;
     }
     let evaluated = evaluate_layer(layer, frame)?;
@@ -2184,7 +2510,7 @@ impl DocStore {
             copy.id = new_id("s");
             copy.name = format!("{} copy", copy.name);
             for layer in &mut copy.layers {
-                layer.id = new_id("l");
+                reseed_layer(layer);
             }
             doc.scenes.insert(index + 1, copy);
             Ok(())
@@ -2211,14 +2537,45 @@ impl DocStore {
         id: &str,
         scene_id: &str,
         name: String,
+        parent_id: Option<String>,
     ) -> Result<Document, String> {
         self.edit_named(id, "add_layer", |doc| {
             let index = doc.scene_index(scene_id)?;
             let scene = &mut doc.scenes[index];
-            let fallback = format!("Layer {}", scene.layers.len() + 1);
-            scene
-                .layers
-                .insert(0, Layer::new(clean_name(&name).unwrap_or(fallback)));
+            let fallback = format!("Layer {}", scene.leaf_count() + 1);
+            let layer = Layer::new(clean_name(&name).unwrap_or(fallback));
+            insert_layer_tree(&mut scene.layers, parent_id.as_deref(), 0, layer)?;
+            validate_scene_masks(scene)
+        })
+    }
+
+    pub fn add_folder(
+        &self,
+        id: &str,
+        scene_id: &str,
+        name: String,
+        parent_id: Option<String>,
+    ) -> Result<Document, String> {
+        self.edit_named(id, "add_folder", |doc| {
+            let index = doc.scene_index(scene_id)?;
+            let scene = &mut doc.scenes[index];
+            let fallback = format!("Folder {}", scene.leaf_count() + 1);
+            let folder = Layer::new_folder(clean_name(&name).unwrap_or(fallback));
+            insert_layer_tree(&mut scene.layers, parent_id.as_deref(), 0, folder)?;
+            validate_scene_masks(scene)
+        })
+    }
+
+    pub fn remove_folder(
+        &self,
+        id: &str,
+        scene_id: &str,
+        folder_id: &str,
+    ) -> Result<Document, String> {
+        self.edit_named(id, "remove_folder", |doc| {
+            let index = doc.scene_index(scene_id)?;
+            let scene = &mut doc.scenes[index];
+            open_folder(&mut scene.layers, folder_id)?;
             validate_scene_masks(scene)
         })
     }
@@ -2258,36 +2615,28 @@ impl DocStore {
         self.edit_named(id, step, |doc| {
             let scene_index = doc.scene_index(scene_id)?;
             let scene = &mut doc.scenes[scene_index];
-            let index = scene.layer_index(layer_id)?;
+            if let Some(masked) = mask {
+                set_layer_mask(&mut scene.layers, layer_id, masked)?;
+            }
+            let (layer, _) = find_layer_mut(&mut scene.layers, layer_id)
+                .ok_or_else(|| "unknown layer".to_string())?;
             if let Some(name) = &name {
-                scene.layers[index].name = name.clone();
+                layer.name = name.clone();
             }
             if let Some(visible) = visible {
-                scene.layers[index].visible = visible;
+                layer.visible = visible;
             }
             if let Some(locked) = locked {
-                scene.layers[index].locked = locked;
+                layer.locked = locked;
             }
             if let Some(opacity) = opacity {
-                scene.layers[index].opacity = opacity.clamp(0.0, 1.0);
+                layer.opacity = opacity.clamp(0.0, 1.0);
             }
             if let Some(blend) = blend {
-                scene.layers[index].blend = blend;
+                layer.blend = blend;
             }
             if let Some(effects) = effects {
-                scene.layers[index].effects =
-                    effects.iter().map(Effect::sanitized).collect();
-            }
-            if let Some(masked) = mask {
-                if masked {
-                    if index == 0 {
-                        return Err("the top layer cannot be clipped".to_string());
-                    }
-                    if scene.layers[index - 1].masked {
-                        return Err("a mask layer cannot itself be clipped".to_string());
-                    }
-                }
-                scene.layers[index].masked = masked;
+                layer.effects = effects.iter().map(Effect::sanitized).collect();
             }
             validate_scene_masks(scene)
         })
@@ -2302,11 +2651,16 @@ impl DocStore {
         self.edit_named(id, "remove_layer", |doc| {
             let index = doc.scene_index(scene_id)?;
             let scene = &mut doc.scenes[index];
-            if scene.layers.len() < 2 {
+            if scene.leaf_count() < 2 {
                 return Err("a scene needs at least one layer".to_string());
             }
-            let layer = scene.layer_index(layer_id)?;
-            scene.layers.remove(layer);
+            let removed = find_layer(&scene.layers, layer_id)
+                .ok_or_else(|| "unknown layer".to_string())?;
+            let leaves = subtree_leaf_count(removed);
+            if scene.leaf_count() - leaves < 1 {
+                return Err("a scene needs at least one layer".to_string());
+            }
+            remove_layer_tree(&mut scene.layers, layer_id)?;
             validate_scene_masks(scene)
         })
     }
@@ -2317,14 +2671,37 @@ impl DocStore {
         scene_id: &str,
         layer_id: &str,
         index: usize,
+        parent_id: Option<String>,
     ) -> Result<Document, String> {
         self.edit_named(id, "move_layer", |doc| {
             let scene_index = doc.scene_index(scene_id)?;
             let scene = &mut doc.scenes[scene_index];
-            let from = scene.layer_index(layer_id)?;
-            let layer = scene.layers.remove(from);
-            let to = index.min(scene.layers.len());
-            scene.layers.insert(to, layer);
+            let target = parent_id.as_deref();
+            let (height, cycle) = {
+                let moved = find_layer(&scene.layers, layer_id)
+                    .ok_or_else(|| "unknown layer".to_string())?;
+                let nested = target.map_or(false, |parent| {
+                    parent == layer_id || contains_layer(&moved.children, parent)
+                });
+                (subtree_height(moved), nested)
+            };
+            if let Some(parent) = target {
+                let depth = layer_depth(&scene.layers, parent, 1)
+                    .ok_or_else(|| "unknown folder".to_string())?;
+                let folder =
+                    find_layer(&scene.layers, parent).ok_or_else(|| "unknown folder".to_string())?;
+                if !folder.folder {
+                    return Err("target is not a folder".to_string());
+                }
+                if cycle {
+                    return Err("a folder cannot contain itself".to_string());
+                }
+                if depth + height > MAX_FOLDER_DEPTH {
+                    return Err("folders cannot nest deeper than 16 levels".to_string());
+                }
+            }
+            let moved = remove_layer_tree(&mut scene.layers, layer_id)?;
+            insert_layer_tree(&mut scene.layers, parent_id.as_deref(), index, moved)?;
             validate_scene_masks(scene)
         })
     }
@@ -2337,7 +2714,7 @@ impl DocStore {
         frame: u32,
     ) -> Result<Document, String> {
         self.edit_named(id, "insert_frame", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let at = frame.min(layer.length);
             for key in &mut layer.keys {
@@ -2360,7 +2737,7 @@ impl DocStore {
     ) -> Result<Document, String> {
         let step = if blank { "blank_keyframe" } else { "add_keyframe" };
         self.edit_named(id, step, |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let index = layer.key_at(frame);
             if blank {
@@ -2382,7 +2759,7 @@ impl DocStore {
         frame: u32,
     ) -> Result<Document, String> {
         self.edit_named(id, "remove_frame", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             if let Some(index) = layer.key_index(frame) {
                 layer.keys.remove(index);
@@ -2411,7 +2788,7 @@ impl DocStore {
     ) -> Result<Document, String> {
         let step = if tween { "add_tween" } else { "remove_tween" };
         self.edit_named(id, step, |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let index = layer.key_at(frame);
             let key = &mut layer.keys[index];
@@ -2434,7 +2811,7 @@ impl DocStore {
         let label = label.and_then(|value| clean_name(&value));
         let step = if label.is_some() { "set_label" } else { "clear_label" };
         self.edit_named(id, step, |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let index = layer.key_at(frame);
             layer.keys[index].label = label.clone();
@@ -2461,7 +2838,7 @@ impl DocStore {
             Shape::Group { .. } => "draw_group",
         };
         self.edit_named(id, step, |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let index = layer.key_at(frame);
             layer.keys[index].shapes.push(shape);
@@ -2489,7 +2866,7 @@ impl DocStore {
         }
         let samples = densify(&path, radius / 2.0);
         self.edit_named(id, "erase", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let index = layer.key_at(frame);
             let key = &mut layer.keys[index];
@@ -2549,7 +2926,7 @@ impl DocStore {
         color: String,
     ) -> Result<Document, String> {
         self.edit_named(id, "paint_shape", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let key_index = layer.key_at(frame);
             let key = &mut layer.keys[key_index];
@@ -2586,7 +2963,7 @@ impl DocStore {
         index: usize,
     ) -> Result<Document, String> {
         self.edit_named(id, "delete_shape", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let key_index = layer.key_at(frame);
             let key = &mut layer.keys[key_index];
@@ -2635,7 +3012,7 @@ impl DocStore {
             "move_shapes"
         };
         self.edit_named(id, step, |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let source = layer
                 .held_index(frame)
@@ -2682,7 +3059,7 @@ impl DocStore {
                 w: f64::from(doc.width),
                 h: f64::from(doc.height),
             };
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let source = layer
                 .held_index(frame)
@@ -2731,7 +3108,7 @@ impl DocStore {
         sorted.dedup();
         let step = if to_front { "bring_to_front" } else { "send_to_back" };
         self.edit_named(id, step, |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let len = layer
                 .held_index(frame)
@@ -2773,7 +3150,7 @@ impl DocStore {
         sorted.sort_unstable();
         sorted.dedup();
         self.edit_named(id, "delete_shapes", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let len = layer
                 .held_index(frame)
@@ -2808,7 +3185,7 @@ impl DocStore {
             return Err("select at least two shapes".to_string());
         }
         self.edit_named(id, "group_shapes", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let source = layer
                 .held_index(frame)
@@ -2845,7 +3222,7 @@ impl DocStore {
         index: usize,
     ) -> Result<Document, String> {
         self.edit_named(id, "ungroup_shape", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let source = layer
                 .held_index(frame)
@@ -2875,7 +3252,7 @@ impl DocStore {
         transform: Transform,
     ) -> Result<Document, String> {
         self.edit_named(id, "set_transform", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let index = layer.key_at(frame);
             layer.keys[index].transform = transform.sanitized();
@@ -2894,7 +3271,7 @@ impl DocStore {
     ) -> Result<Document, String> {
         validate(&shape)?;
         self.edit_named(id, "replace_shape", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let key_index = layer.key_at(frame);
             let key = &mut layer.keys[key_index];
@@ -3270,8 +3647,30 @@ pub fn doc_add_layer(
     id: String,
     scene_id: String,
     name: String,
+    parent_id: Option<String>,
 ) -> Result<Document, String> {
-    store.add_layer(&id, &scene_id, name)
+    store.add_layer(&id, &scene_id, name, parent_id)
+}
+
+#[tauri::command]
+pub fn doc_add_folder(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    name: String,
+    parent_id: Option<String>,
+) -> Result<Document, String> {
+    store.add_folder(&id, &scene_id, name, parent_id)
+}
+
+#[tauri::command]
+pub fn doc_remove_folder(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    folder_id: String,
+) -> Result<Document, String> {
+    store.remove_folder(&id, &scene_id, &folder_id)
 }
 
 #[tauri::command]
@@ -3310,8 +3709,9 @@ pub fn doc_move_layer(
     scene_id: String,
     layer_id: String,
     index: usize,
+    parent_id: Option<String>,
 ) -> Result<Document, String> {
-    store.move_layer(&id, &scene_id, &layer_id, index)
+    store.move_layer(&id, &scene_id, &layer_id, index, parent_id)
 }
 
 #[tauri::command]
@@ -4707,7 +5107,7 @@ mod tests {
             .expect("draw content");
         let added = fixture
             .store
-            .add_layer(id, &fixture.scene, "Mask".to_string())
+            .add_layer(id, &fixture.scene, "Mask".to_string(), None)
             .expect("add");
         let mask_id = added.scenes[0].layers[0].id.clone();
         fixture
@@ -4758,7 +5158,7 @@ mod tests {
         let id = &fixture.doc.id;
         let added = fixture
             .store
-            .add_layer(id, &fixture.scene, "Top".to_string())
+            .add_layer(id, &fixture.scene, "Top".to_string(), None)
             .expect("add");
         let top_id = added.scenes[0].layers[0].id.clone();
         fixture
@@ -4767,7 +5167,7 @@ mod tests {
             .expect("mask");
         fixture
             .store
-            .move_layer(id, &fixture.scene, &top_id, 1)
+            .move_layer(id, &fixture.scene, &top_id, 1, None)
             .expect("move");
         let scene = &fixture.store.get(id).expect("get").scenes[0];
         assert!(!scene.layers[0].masked);
@@ -4780,12 +5180,12 @@ mod tests {
         let id = &fixture.doc.id;
         let added = fixture
             .store
-            .add_layer(id, &fixture.scene, "Middle".to_string())
+            .add_layer(id, &fixture.scene, "Middle".to_string(), None)
             .expect("add");
         let middle_id = added.scenes[0].layers[0].id.clone();
         fixture
             .store
-            .add_layer(id, &fixture.scene, "Top".to_string())
+            .add_layer(id, &fixture.scene, "Top".to_string(), None)
             .expect("add top");
         fixture
             .store
@@ -4971,7 +5371,7 @@ mod tests {
     fn layers_can_be_added_renamed_reordered_and_removed() {
         let fixture = Fixture::new("layers");
         let id = &fixture.doc.id;
-        let added = fixture.store.add_layer(id, &fixture.scene, "Ink".to_string()).expect("add");
+        let added = fixture.store.add_layer(id, &fixture.scene, "Ink".to_string(), None).expect("add");
         assert_eq!(added.scenes[0].layers.len(), 2);
         assert_eq!(added.scenes[0].layers[0].name, "Ink");
         let ink = added.scenes[0].layers[0].id.clone();
@@ -4981,10 +5381,454 @@ mod tests {
             .expect("set");
         assert_eq!(renamed.scenes[0].layers[0].name, "Paint");
         assert_eq!(renamed.scenes[0].layers[0].opacity, 0.4);
-        let moved = fixture.store.move_layer(id, &fixture.scene, &ink, 1).expect("move");
+        let moved = fixture.store.move_layer(id, &fixture.scene, &ink, 1, None).expect("move");
         assert_eq!(moved.scenes[0].layers[1].id, ink);
         let removed = fixture.store.remove_layer(id, &fixture.scene, &ink).expect("remove");
         assert_eq!(removed.scenes[0].layers.len(), 1);
+    }
+
+    fn folder_of(doc: &Document, name: &str) -> String {
+        doc.scenes[0]
+            .layers
+            .iter()
+            .find(|layer| layer.name == name)
+            .expect("folder")
+            .id
+            .clone()
+    }
+
+    fn child_of<'a>(layer: &'a Layer, name: &str) -> &'a Layer {
+        layer
+            .children
+            .iter()
+            .find(|child| child.name == name)
+            .expect("child")
+    }
+
+    #[test]
+    fn folders_hold_layers_and_keep_their_own_identity() {
+        let fixture = Fixture::new("folders");
+        let id = &fixture.doc.id;
+        let added = fixture
+            .store
+            .add_folder(id, &fixture.scene, "Art".to_string(), None)
+            .expect("add folder");
+        let folder = folder_of(&added, "Art");
+        assert!(added.scenes[0].layers[0].folder);
+        assert_eq!(added.scenes[0].layers[0].keys.len(), 0);
+        let moved = fixture
+            .store
+            .move_layer(id, &fixture.scene, &fixture.layer, 0, Some(folder.clone()))
+            .expect("move in");
+        assert_eq!(moved.scenes[0].layers.len(), 1);
+        assert_eq!(moved.scenes[0].layers[0].children.len(), 1);
+        assert_eq!(moved.scenes[0].layers[0].children[0].id, fixture.layer);
+        assert_eq!(leaf_count(&moved.scenes[0].layers), 1);
+        let restored: Layer =
+            serde_json::from_str(&serde_json::to_string(&moved.scenes[0].layers[0]).expect("json"))
+                .expect("layer");
+        assert_eq!(restored, moved.scenes[0].layers[0]);
+    }
+
+    #[test]
+    fn documents_saved_before_folders_still_load() {
+        let fixture = Fixture::new("folder-legacy");
+        let mut stored = serde_json::to_value(&fixture.doc).expect("json");
+        for scene in stored["scenes"].as_array_mut().expect("scenes") {
+            for layer in scene["layers"].as_array_mut().expect("layers") {
+                layer.as_object_mut().expect("object").remove("folder");
+                layer.as_object_mut().expect("object").remove("children");
+            }
+        }
+        let restored: Document = serde_json::from_value(stored).expect("legacy document");
+        assert_eq!(restored, fixture.doc);
+    }
+
+    #[test]
+    fn a_locked_folder_locks_every_layer_inside() {
+        let fixture = Fixture::new("folder-lock");
+        let id = &fixture.doc.id;
+        let folder = fixture
+            .store
+            .add_folder(id, &fixture.scene, "Art".to_string(), None)
+            .expect("folder");
+        let folder_id = folder_of(&folder, "Art");
+        fixture
+            .store
+            .move_layer(id, &fixture.scene, &fixture.layer, 0, Some(folder_id.clone()))
+            .expect("move in");
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &folder_id, None, None, Some(true), None, None, None, None)
+            .expect("lock folder");
+        assert_eq!(
+            fixture
+                .store
+                .draw(id, &fixture.scene, &fixture.layer, 0, stroke(1.0))
+                .expect_err("locked"),
+            "layer is locked"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .insert_frame(id, &fixture.scene, &fixture.layer, 0)
+                .expect_err("locked"),
+            "layer is locked"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .set_transform(id, &fixture.scene, &fixture.layer, 0, Transform::default())
+                .expect_err("locked"),
+            "layer is locked"
+        );
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &folder_id, None, None, Some(false), None, None, None, None)
+            .expect("unlock folder");
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(1.0))
+            .expect("draw after unlock");
+    }
+
+    #[test]
+    fn a_hidden_folder_hides_every_layer_inside() {
+        let fixture = Fixture::new("folder-visibility");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(1.0))
+            .expect("draw");
+        let added = fixture
+            .store
+            .add_folder(id, &fixture.scene, "Art".to_string(), None)
+            .expect("folder");
+        let folder_id = folder_of(&added, "Art");
+        fixture
+            .store
+            .move_layer(id, &fixture.scene, &fixture.layer, 0, Some(folder_id.clone()))
+            .expect("move in");
+        let visible = fixture
+            .store
+            .get(id)
+            .expect("get")
+            .evaluate(&fixture.scene, 0)
+            .expect("evaluate");
+        assert_eq!(visible.layers.len(), 1);
+        assert_eq!(visible.layers[0].children.len(), 1);
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &folder_id, None, Some(false), None, None, None, None, None)
+            .expect("hide folder");
+        assert!(fixture
+            .store
+            .get(id)
+            .expect("get")
+            .evaluate(&fixture.scene, 0)
+            .expect("evaluate")
+            .layers
+            .is_empty());
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &folder_id, None, Some(true), None, None, None, None, None)
+            .expect("show folder");
+        assert_eq!(
+            fixture
+                .store
+                .get(id)
+                .expect("get")
+                .evaluate(&fixture.scene, 0)
+                .expect("evaluate")
+                .layers
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn folders_refuse_frames_and_shapes() {
+        let fixture = Fixture::new("folder-frames");
+        let id = &fixture.doc.id;
+        let added = fixture
+            .store
+            .add_folder(id, &fixture.scene, "Art".to_string(), None)
+            .expect("folder");
+        let folder_id = folder_of(&added, "Art");
+        assert_eq!(
+            fixture
+                .store
+                .draw(id, &fixture.scene, &folder_id, 0, stroke(1.0))
+                .expect_err("draw"),
+            "folders cannot hold frames or shapes"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .insert_frame(id, &fixture.scene, &folder_id, 0)
+                .expect_err("frame"),
+            "folders cannot hold frames or shapes"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .remove_frames(id, &fixture.scene, &folder_id, 0, 1)
+                .expect_err("remove frames"),
+            "folders cannot hold frames or shapes"
+        );
+    }
+
+    #[test]
+    fn removing_a_folder_splices_its_layers_back_in_order() {
+        let fixture = Fixture::new("folder-open");
+        let id = &fixture.doc.id;
+        let added = fixture
+            .store
+            .add_folder(id, &fixture.scene, "Art".to_string(), None)
+            .expect("folder");
+        let folder_id = folder_of(&added, "Art");
+        let second = fixture
+            .store
+            .add_layer(id, &fixture.scene, "Ink".to_string(), Some(folder_id.clone()))
+            .expect("layer in folder");
+        let ink = child_of(&second.scenes[0].layers[0], "Ink").id.clone();
+        fixture
+            .store
+            .move_layer(id, &fixture.scene, &fixture.layer, 1, Some(folder_id.clone()))
+            .expect("move in");
+        let opened = fixture
+            .store
+            .remove_folder(id, &fixture.scene, &folder_id)
+            .expect("open");
+        assert_eq!(opened.scenes[0].layers.len(), 2);
+        assert_eq!(opened.scenes[0].layers[0].id, ink);
+        assert_eq!(opened.scenes[0].layers[1].id, fixture.layer);
+        assert_eq!(opened.scenes[0].layers[1].name, "Layer 1");
+        assert_eq!(
+            fixture
+                .store
+                .remove_folder(id, &fixture.scene, &ink)
+                .expect_err("not a folder"),
+            "target is not a folder"
+        );
+    }
+
+    #[test]
+    fn folder_nesting_is_capped_and_cycles_refused() {
+        let fixture = Fixture::new("folder-depth");
+        let id = &fixture.doc.id;
+        let mut parent: Option<String> = None;
+        let mut deepest = String::new();
+        let mut outermost = String::new();
+        let mut inner = String::new();
+        for level in 0..MAX_FOLDER_DEPTH {
+            let added = fixture
+                .store
+                .add_folder(id, &fixture.scene, format!("Level {level}"), parent.clone())
+                .expect("folder");
+            let newest = match &parent {
+                None => added.scenes[0].layers[0].id.clone(),
+                Some(open) => find_layer(&added.scenes[0].layers, open)
+                    .expect("open folder")
+                    .children[0]
+                    .id
+                    .clone(),
+            };
+            deepest = newest.clone();
+            if level == 0 {
+                outermost = newest.clone();
+            }
+            if level == 1 {
+                inner = newest.clone();
+            }
+            parent = Some(newest);
+        }
+        assert_eq!(
+            fixture
+                .store
+                .move_layer(id, &fixture.scene, &fixture.layer, 0, Some(deepest.clone()))
+                .expect_err("too deep"),
+            "folders cannot nest deeper than 16 levels"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .move_layer(id, &fixture.scene, &deepest, 0, Some(deepest.clone()))
+                .expect_err("cycle"),
+            "a folder cannot contain itself"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .move_layer(id, &fixture.scene, &outermost, 0, Some(deepest.clone()))
+                .expect_err("ancestor into descendant"),
+            "a folder cannot contain itself"
+        );
+        fixture
+            .store
+            .move_layer(id, &fixture.scene, &inner, 0, Some(outermost.clone()))
+            .expect("reorder inside the current folder");
+        assert_eq!(
+            fixture
+                .store
+                .move_layer(id, &fixture.scene, &deepest, 0, Some(fixture.layer.clone()))
+                .expect_err("leaf parent"),
+            "target is not a folder"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .move_layer(id, &fixture.scene, &fixture.layer, 0, Some("nope".to_string()))
+                .expect_err("unknown"),
+            "unknown folder"
+        );
+    }
+
+    #[test]
+    fn clipping_ignores_folders_and_refuses_folder_targets() {
+        let fixture = Fixture::new("folder-mask");
+        let id = &fixture.doc.id;
+        let added = fixture
+            .store
+            .add_folder(id, &fixture.scene, "Art".to_string(), None)
+            .expect("folder");
+        let folder_id = folder_of(&added, "Art");
+        assert_eq!(
+            fixture
+                .store
+                .set_layer(id, &fixture.scene, &folder_id, None, None, None, None, None, None, Some(true))
+                .expect_err("folder clip"),
+            "folders cannot be clipped"
+        );
+        let second = fixture
+            .store
+            .add_layer(id, &fixture.scene, "Ink".to_string(), None)
+            .expect("layer");
+        let ink = second.scenes[0].layers[0].id.clone();
+        let base = second.scenes[0].layers[2].id.clone();
+        assert_eq!(
+            fixture
+                .store
+                .set_layer(id, &fixture.scene, &ink, None, None, None, None, None, None, Some(true))
+                .expect_err("top clip"),
+            "the top layer cannot be clipped"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .set_layer(id, &fixture.scene, &base, None, None, None, None, None, None, Some(true))
+                .expect_err("clip below folder"),
+            "clipping needs a layer directly above"
+        );
+        fixture
+            .store
+            .move_layer(id, &fixture.scene, &folder_id, 2, None)
+            .expect("move folder down");
+        fixture
+            .store
+            .set_layer(id, &fixture.scene, &base, None, None, None, None, None, None, Some(true))
+            .expect("clip under a plain layer");
+        assert!(fixture.store.get(id).expect("get").scenes[0].layers[1].masked);
+    }
+
+    #[test]
+    fn scene_length_follows_layers_inside_folders() {
+        let fixture = Fixture::new("folder-length");
+        let id = &fixture.doc.id;
+        let added = fixture
+            .store
+            .add_folder(id, &fixture.scene, "Art".to_string(), None)
+            .expect("folder");
+        let folder_id = folder_of(&added, "Art");
+        fixture
+            .store
+            .insert_frames(id, &fixture.scene, &fixture.layer, 0, 7)
+            .expect("extend");
+        let scene = fixture.store.get(id).expect("get").scenes[0].clone();
+        assert_eq!(scene.length(), 8);
+        let moved = fixture
+            .store
+            .move_layer(id, &fixture.scene, &fixture.layer, 0, Some(folder_id))
+            .expect("move in");
+        assert_eq!(moved.scenes[0].length(), 8);
+    }
+
+    #[test]
+    fn evaluation_returns_a_tree_of_layers() {
+        let fixture = Fixture::new("folder-evaluate");
+        let id = &fixture.doc.id;
+        fixture
+            .store
+            .draw(id, &fixture.scene, &fixture.layer, 0, stroke(1.0))
+            .expect("draw");
+        let added = fixture
+            .store
+            .add_folder(id, &fixture.scene, "Art".to_string(), None)
+            .expect("folder");
+        let folder_id = folder_of(&added, "Art");
+        let inner = fixture
+            .store
+            .add_layer(id, &fixture.scene, "Ink".to_string(), Some(folder_id.clone()))
+            .expect("layer");
+        let ink = child_of(&inner.scenes[0].layers[0], "Ink").id.clone();
+        fixture
+            .store
+            .draw(id, &fixture.scene, &ink, 0, stroke(2.0))
+            .expect("draw inside");
+        let frame = fixture
+            .store
+            .get(id)
+            .expect("get")
+            .evaluate(&fixture.scene, 0)
+            .expect("evaluate");
+        assert_eq!(frame.layers.len(), 2);
+        let folder = frame.layers.iter().find(|layer| layer.id == folder_id).expect("folder");
+        assert!(folder.folder);
+        assert_eq!(folder.children.len(), 1);
+        assert_eq!(folder.children[0].shapes.len(), 1);
+        assert!(folder.shapes.is_empty());
+        assert_eq!(folder.transform, Transform::default());
+        let empty = fixture
+            .store
+            .remove_layer(id, &fixture.scene, &ink)
+            .expect("remove inner");
+        assert_eq!(
+            empty
+                .evaluate(&fixture.scene, 0)
+                .expect("evaluate")
+                .layers
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn duplicating_a_folder_reseeds_every_layer_inside() {
+        let fixture = Fixture::new("folder-duplicate");
+        let id = &fixture.doc.id;
+        let added = fixture
+            .store
+            .add_folder(id, &fixture.scene, "Art".to_string(), None)
+            .expect("folder");
+        let folder_id = folder_of(&added, "Art");
+        fixture
+            .store
+            .move_layer(id, &fixture.scene, &fixture.layer, 0, Some(folder_id.clone()))
+            .expect("move in");
+        let copy = fixture
+            .store
+            .duplicate_layer(id, &fixture.scene, &folder_id)
+            .expect("duplicate");
+        assert_eq!(copy.scenes[0].layers.len(), 2);
+        let original = &copy.scenes[0].layers[0];
+        let clone = &copy.scenes[0].layers[1];
+        assert_eq!(clone.name, "Art copy");
+        assert_eq!(clone.children.len(), 1);
+        assert_eq!(clone.children[0].name, "Layer 1");
+        assert_ne!(clone.children[0].id, fixture.layer);
+        assert!(!contains_layer(&original.children, &clone.children[0].id));
+        let _ = fixture.store.undo(id).expect("undo");
+        assert_eq!(fixture.store.get(id).expect("get").scenes[0].layers.len(), 1);
     }
 
     #[test]
@@ -6825,7 +7669,7 @@ mod tests {
         let id = &fixture.doc.id;
         let top = fixture
             .store
-            .add_layer(id, &fixture.scene, "Top".to_string())
+            .add_layer(id, &fixture.scene, "Top".to_string(), None)
             .expect("add");
         let top_id = top.scenes[0].layers[0].id.clone();
         let before = fixture.store.get(id).expect("get");
@@ -8196,11 +9040,7 @@ impl DocStore {
         self.edit_named(id, "duplicate_layer", |doc| {
             let index = doc.scene_index(scene_id)?;
             let scene = &mut doc.scenes[index];
-            let at = scene.layer_index(layer_id)?;
-            let mut copy = scene.layers[at].clone();
-            copy.id = new_id("l");
-            copy.name = format!("{} copy", copy.name);
-            scene.layers.insert(at + 1, copy);
+            duplicate_layer_tree(&mut scene.layers, layer_id)?;
             validate_scene_masks(scene)
         })
     }

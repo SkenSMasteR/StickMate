@@ -212,6 +212,54 @@ fn preview_url(text: &str) -> String {
     url
 }
 
+fn validate_layers(
+    layers: &[document::Layer],
+    ids: &mut Vec<String>,
+    invalid: &str,
+) -> Result<(), String> {
+    for layer in layers {
+        if layer.id.is_empty() || ids.contains(&layer.id) {
+            return Err(invalid.to_string());
+        }
+        ids.push(layer.id.clone());
+        if layer.folder {
+            if !layer.keys.is_empty() {
+                return Err(invalid.to_string());
+            }
+            validate_layers(&layer.children, ids, invalid)?;
+            continue;
+        }
+        if layer.keys.is_empty() {
+            return Err(invalid.to_string());
+        }
+        for (index, key) in layer.keys.iter().enumerate() {
+            let ordered = if index == 0 {
+                key.frame == 0
+            } else {
+                key.frame > layer.keys[index - 1].frame
+            };
+            if !ordered || key.frame >= layer.length {
+                return Err(invalid.to_string());
+            }
+            let transform = &key.transform;
+            if !transform.x.is_finite()
+                || !transform.y.is_finite()
+                || !transform.rotation.is_finite()
+                || !transform.scale.is_finite()
+                || transform.scale <= 0.0
+                || !transform.opacity.is_finite()
+                || !(0.0..=1.0).contains(&transform.opacity)
+            {
+                return Err("template project transform is invalid".to_string());
+            }
+            for shape in &key.shapes {
+                document::validate(shape)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_document(doc: &Document) -> Result<(), String> {
     let invalid = "template project is invalid".to_string();
     if doc.width == 0 || doc.height == 0 || doc.width > 8192 || doc.height > 8192 {
@@ -229,37 +277,8 @@ fn validate_document(doc: &Document) -> Result<(), String> {
             return Err(invalid);
         }
         scenes.push(&scene.id);
-        let mut layers: Vec<&str> = Vec::new();
-        for layer in &scene.layers {
-            if layer.id.is_empty() || layers.contains(&layer.id.as_str()) || layer.keys.is_empty() {
-                return Err(invalid);
-            }
-            layers.push(&layer.id);
-            for (index, key) in layer.keys.iter().enumerate() {
-                let ordered = if index == 0 {
-                    key.frame == 0
-                } else {
-                    key.frame > layer.keys[index - 1].frame
-                };
-                if !ordered || key.frame >= layer.length {
-                    return Err(invalid);
-                }
-                let transform = &key.transform;
-                if !transform.x.is_finite()
-                    || !transform.y.is_finite()
-                    || !transform.rotation.is_finite()
-                    || !transform.scale.is_finite()
-                    || transform.scale <= 0.0
-                    || !transform.opacity.is_finite()
-                    || !(0.0..=1.0).contains(&transform.opacity)
-                {
-                    return Err("template project transform is invalid".to_string());
-                }
-                for shape in &key.shapes {
-                    document::validate(shape)?;
-                }
-            }
-        }
+        let mut ids: Vec<String> = Vec::new();
+        validate_layers(&scene.layers, &mut ids, &invalid)?;
     }
     Ok(())
 }

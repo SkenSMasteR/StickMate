@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { Frame, ZoomIn, ZoomOut } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/i18n";
@@ -9,7 +9,9 @@ import {
   gradientBox,
   gradientGeometry,
   heldKey,
+  findLayer,
   identityTransform,
+  leafLayers,
   polygonVertices,
   shapeBounds,
   shapeGradient,
@@ -541,7 +543,8 @@ function LayerContent({
   interactive,
   cursor,
   selected,
-  onDown
+  onDown,
+  children
 }: {
   evaluated: EvalLayer;
   transform: Transform;
@@ -549,6 +552,7 @@ function LayerContent({
   cursor: string;
   selected: number[];
   onDown: (index: number, event: ReactPointerEvent) => void;
+  children?: ReactNode;
 }) {
   const clipId = evaluated.mask ? `clip-${evaluated.id}` : undefined;
   const body = (
@@ -568,6 +572,7 @@ function LayerContent({
           onDown={(event) => onDown(index, event)}
         />
       ))}
+      {children}
     </g>
   );
   if (!evaluated.mask || !clipId) {
@@ -752,7 +757,7 @@ export default function Canvas() {
 
   const snapTargetsFor = (moving: number[]): SnapTargets => {
     const boxes: Bounds[] = [];
-    for (const item of current?.layers ?? []) {
+    for (const item of leafLayers(current?.layers ?? [])) {
       item.shapes.forEach((shape, index) => {
         if (item.id === layer.id && moving.includes(index)) {
           return;
@@ -801,7 +806,7 @@ export default function Canvas() {
   commitRef.current = commitPen;
 
   const activeShapes =
-    current?.layers.find((item) => item.id === layer.id)?.shapes ?? [];
+    findLayer(current?.layers ?? [], layer.id)?.shapes ?? [];
   const selectedShape =
     tab.selected.length === 1 ? activeShapes[tab.selected[0]] : undefined;
   const selectionBounds = unionBounds(activeShapes, tab.selected);
@@ -1363,6 +1368,22 @@ export default function Canvas() {
 
   const renderLayers = (evaluated: EvalLayer[], faded: boolean) =>
     [...evaluated].reverse().map((item) => {
+      if (item.folder) {
+        return (
+          <g key={item.id} data-folder="true" opacity={faded ? view.onionOpacity : 1}>
+            <LayerContent
+              evaluated={item}
+              transform={item.transform}
+              interactive={false}
+              cursor={shapeCursor}
+              selected={[]}
+              onDown={() => undefined}
+            >
+              {renderLayers(item.children, faded)}
+            </LayerContent>
+          </g>
+        );
+      }
       const isActive = item.id === layer.id;
       const previewing = isActive && !faded && selPreview !== null;
       const content =

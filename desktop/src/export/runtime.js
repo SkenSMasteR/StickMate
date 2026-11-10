@@ -7,10 +7,21 @@
     return Math.min(high, Math.max(low, value));
   }
 
+  function layerLength(layer) {
+    if (!layer.folder) {
+      return layer.length;
+    }
+    let length = 1;
+    for (const child of layer.children) {
+      length = Math.max(length, layerLength(child));
+    }
+    return length;
+  }
+
   function sceneLength(scene) {
     let length = 1;
     for (const layer of scene.layers) {
-      length = Math.max(length, layer.length);
+      length = Math.max(length, layerLength(layer));
     }
     return length;
   }
@@ -396,13 +407,61 @@
       }
     }
     return {
+      folder: false,
       opacity: clamp(layer.opacity * transform.opacity, 0, 1),
       blend: layer.blend,
       effects: layer.effects,
       mask: null,
       transform,
-      shapes
+      shapes,
+      children: []
     };
+  }
+
+  function evaluateFolder(folder, frame) {
+    if (!folder.visible) {
+      return null;
+    }
+    const children = evaluateLayers(folder.children, frame);
+    if (children.length === 0) {
+      return null;
+    }
+    return {
+      folder: true,
+      opacity: clamp(folder.opacity, 0, 1),
+      blend: folder.blend,
+      effects: folder.effects,
+      mask: null,
+      transform: { x: 0, y: 0, rotation: 0, scale: 1, opacity: 1 },
+      shapes: [],
+      children
+    };
+  }
+
+  function maskFrom(provider, frame) {
+    if (!provider || provider.folder || !provider.visible || frame >= provider.length) {
+      return null;
+    }
+    const evaluated = evaluateLayer(provider, frame);
+    if (!evaluated) {
+      return null;
+    }
+    return { transform: evaluated.transform, shapes: evaluated.shapes };
+  }
+
+  function evaluateLayers(layers, frame) {
+    const evaluated = [];
+    layers.forEach((layer, position) => {
+      const result = layer.folder ? evaluateFolder(layer, frame) : evaluateLayer(layer, frame);
+      if (!result) {
+        return;
+      }
+      if (layer.masked && position > 0) {
+        result.mask = maskFrom(layers[position - 1], frame);
+      }
+      evaluated.push(result);
+    });
+    return evaluated;
   }
 
   function filterOf(effects) {
@@ -565,6 +624,8 @@
   function load(project) {
     const scenes = project.scenes;
     const scale = project.scale;
+    const width = project.width;
+    const height = project.height;
     const startFrame = project.startFrame;
     const endFrame = project.endFrame;
     let frameCount = 0;
@@ -585,6 +646,7 @@
     let bctx = null;
     let scratch = null;
     let sctx = null;
+    const surfaces = [];
 
     function evaluate(at) {
       let scene = scenes[0];
@@ -599,41 +661,43 @@
         }
         scene = scenes[index];
       }
-      const layers = [];
-      scene.layers.forEach((layer, position) => {
-        const evaluated = evaluateLayer(layer, local);
-        if (!evaluated) {
-          return;
-        }
-        if (layer.masked && position > 0) {
-          const provider = evaluateLayer(scene.layers[position - 1], local);
-          if (provider) {
-            evaluated.mask = {
-              transform: provider.transform,
-              shapes: provider.shapes
-            };
-          }
-        }
-        layers.push(evaluated);
-      });
-      return layers;
+      return evaluateLayers(scene.layers, local);
     }
 
-    function render() {
-      if (!ctx) {
-        return;
+    function surface(depth) {
+      let entry = surfaces[depth];
+      if (!entry) {
+        const holder = document.createElement("canvas");
+        holder.width = width;
+        holder.height = height;
+        entry = { canvas: holder, ctx: holder.getContext("2d") };
+        surfaces[depth] = entry;
       }
-      const width = project.width;
-      const height = project.height;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.clearRect(0, 0, width, height);
-      if (project.background) {
-        ctx.fillStyle = project.background;
-        ctx.fillRect(0, 0, width, height);
-      }
-      const layers = evaluate(frame);
-      for (let index = layers.length - 1; index >= 0; index -= 1) {
-        const layer = layers[index];
+      return entry;
+    }
+
+    function composite(target, layer, source) {
+      target.setTransform(1, 0, 0, 1, 0, 0);
+      target.globalAlpha = layer.opacity;
+      target.globalCompositeOperation = compositeOf(layer.blend);
+      target.filter = filterOf(layer.effects);
+      target.drawImage(source, 0, 0);
+      target.filter = "none";
+      target.globalCompositeOperation = "source-over";
+      target.globalAlpha = 1;
+    }
+
+    function renderList(list, target, depth) {
+      for (let index = list.length - 1; index >= 0; index -= 1) {
+        const layer = list[index];
+        if (layer.folder) {
+          const holder = surface(depth);
+          holder.ctx.setTransform(1, 0, 0, 1, 0, 0);
+          holder.ctx.clearRect(0, 0, width, height);
+          renderList(layer.children, holder.ctx, depth + 1);
+          composite(target, layer, holder.canvas);
+          continue;
+        }
         bctx.setTransform(1, 0, 0, 1, 0, 0);
         bctx.clearRect(0, 0, width, height);
         bctx.setTransform(scale, 0, 0, scale, 0, 0);
@@ -660,15 +724,21 @@
           sctx.globalCompositeOperation = "source-over";
           source = scratch;
         }
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.globalAlpha = layer.opacity;
-        ctx.globalCompositeOperation = compositeOf(layer.blend);
-        ctx.filter = filterOf(layer.effects);
-        ctx.drawImage(source, 0, 0);
-        ctx.filter = "none";
-        ctx.globalCompositeOperation = "source-over";
-        ctx.globalAlpha = 1;
+        composite(target, layer, source);
       }
+    }
+
+    function render() {
+      if (!ctx) {
+        return;
+      }
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      if (project.background) {
+        ctx.fillStyle = project.background;
+        ctx.fillRect(0, 0, width, height);
+      }
+      renderList(evaluate(frame), ctx, 0);
     }
 
     function tick() {

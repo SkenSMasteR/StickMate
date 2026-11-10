@@ -61,6 +61,8 @@ function layer(id: string, patch: Partial<Layer> = {}): Layer {
     masked: false,
     length: 4,
     keys: [key(0)],
+    folder: false,
+    children: [],
     ...patch
   };
 }

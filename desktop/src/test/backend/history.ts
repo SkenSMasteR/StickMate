@@ -166,46 +166,66 @@ function diffKeys(prev: Layer, next: Layer): string | null {
   return null;
 }
 
-function diffLayers(prev: Scene, next: Scene): string | null {
-  if (next.layers.length > prev.layers.length) {
-    const added = next.layers.find(
-      (item) => !prev.layers.some((other) => other.id === item.id)
-    );
-    return added && added.name.endsWith(" copy") ? "duplicate_layer" : "add_layer";
+function layersOf(layers: Layer[], into: Layer[] = []): Layer[] {
+  for (const layer of layers) {
+    into.push(layer);
+    layersOf(layer.children, into);
   }
-  if (next.layers.length < prev.layers.length) {
+  return into;
+}
+
+function diffLayers(prev: Scene, next: Scene): string | null {
+  const before = layersOf(prev.layers);
+  const after = layersOf(next.layers);
+  const missing = (item: Layer, list: Layer[]) => !list.some((other) => other.id === item.id);
+  const added = after.filter((item) => missing(item, before));
+  const removed = before.filter((item) => missing(item, after));
+  if (added.some((item) => item.folder)) {
+    return "add_folder";
+  }
+  for (const gone of removed) {
+    if (!gone.folder) {
+      continue;
+    }
+    const opened = gone.children.some((child) => after.some((item) => item.id === child.id));
+    return opened ? "remove_folder" : "remove_layer";
+  }
+  if (added.length > 0) {
+    return added[added.length - 1].name.endsWith(" copy") ? "duplicate_layer" : "add_layer";
+  }
+  if (removed.length > 0) {
     return "remove_layer";
   }
-  const prevIds = prev.layers.map((item) => item.id).join(",");
-  const nextIds = next.layers.map((item) => item.id).join(",");
-  if (prevIds !== nextIds) {
+  if (before.map((item) => item.id).join(",") !== after.map((item) => item.id).join(",")) {
     return "move_layer";
   }
-  for (let index = 0; index < next.layers.length; index += 1) {
-    const before = prev.layers[index];
-    const after = next.layers[index];
-    if (before.name !== after.name) {
+  for (const current of after) {
+    const previous = before.find((item) => item.id === current.id);
+    if (!previous) {
+      continue;
+    }
+    if (previous.name !== current.name) {
       return "rename_layer";
     }
-    if (before.visible !== after.visible) {
+    if (previous.visible !== current.visible) {
       return "layer_visibility";
     }
-    if (before.locked !== after.locked) {
+    if (previous.locked !== current.locked) {
       return "layer_lock";
     }
-    if (before.opacity !== after.opacity) {
+    if (previous.opacity !== current.opacity) {
       return "layer_opacity";
     }
-    if (before.blend !== after.blend) {
+    if (previous.blend !== current.blend) {
       return "layer_blend";
     }
-    if (JSON.stringify(before.effects) !== JSON.stringify(after.effects)) {
+    if (JSON.stringify(previous.effects) !== JSON.stringify(current.effects)) {
       return "layer_effects";
     }
-    if (before.masked !== after.masked) {
+    if (previous.masked !== current.masked) {
       return "layer_mask";
     }
-    const keys = diffKeys(before, after);
+    const keys = diffKeys(previous, current);
     if (keys) {
       return keys;
     }

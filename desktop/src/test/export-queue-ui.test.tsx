@@ -40,7 +40,7 @@ function key(frame: number): Keyframe {
 }
 
 function layer(id: string, length: number): Layer {
-  return { id, name: id, visible: true, locked: false, opacity: 1, blend: "normal", effects: [], masked: false, length, keys: [key(0)] };
+  return { id, name: id, visible: true, locked: false, opacity: 1, blend: "normal", effects: [], masked: false, folder: false, children: [], length, keys: [key(0)] };
 }
 
 function scene(id: string, length: number): Scene {

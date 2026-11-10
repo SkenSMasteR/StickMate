@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { comboFromEvent } from "@/lib/shortcuts";
 import type { ShortcutOverrides } from "@/lib/shortcuts";
 import type { ConfirmOptions } from "@/lib/confirm";
-import { blends, heldKey } from "@/lib/document";
+import { blends, folderOptions, heldKey } from "@/lib/document";
 import type { Blend, Document, Layer, Scene } from "@/lib/document";
 import type { Actions, TabState, Tool } from "./workspace";
 
@@ -84,7 +84,16 @@ function parameterCommands(
   const ready = Boolean(doc && scene && layer && tab);
   const layers = scene?.layers ?? [];
   const scenes = doc?.scenes ?? [];
-  const layerOptions = layers.map((item) => ({ value: item.id, label: item.name }));
+  const tree: CommandArgOption[] = [];
+  const walk = (items: Layer[], depth: number) => {
+    for (const item of items) {
+      tree.push({ value: item.id, label: `${"\u2013 ".repeat(depth)}${item.name}` });
+      walk(item.children, depth + 1);
+    }
+  };
+  walk(layers, 0);
+  const folders = folderOptions(layers);
+  const layerOptions = tree;
   const sceneOptions = scenes.map((item) => ({ value: item.id, label: item.name }));
   const projectOptions = ids.map((id) => ({ value: id, label: docs[id]?.name ?? id }));
   const layerArg = (): CommandArg => ({
@@ -100,6 +109,20 @@ function parameterCommands(
     kind: "choice",
     options: sceneOptions,
     initial: scene?.id ?? scenes[0]?.id ?? ""
+  });
+  const folderArg = (): CommandArg => ({
+    name: "folder",
+    label: t("palette.arg.folder"),
+    kind: "choice",
+    options: folders,
+    initial: layer?.folder ? layer.id : folders[0]?.value ?? ""
+  });
+  const parentArg = (): CommandArg => ({
+    name: "parent",
+    label: t("palette.arg.parent"),
+    kind: "choice",
+    options: [{ value: "", label: t("palette.topLevel") }, ...folders],
+    initial: ""
   });
   const projectArg = (): CommandArg => ({
     name: "project",
@@ -326,10 +349,48 @@ function parameterCommands(
       null,
       [
         layerArg(),
-        intArg("index", t("palette.arg.position"), 1, Math.max(1, layers.length), layerIndex)
+        parentArg(),
+        intArg("index", t("palette.arg.position"), 1, Math.max(1, tree.length), layerIndex)
       ],
-      (values) => actions.moveLayer(String(values.layer), Number(values.index) - 1),
+      (values) =>
+        actions.moveLayer(
+          String(values.layer),
+          Number(values.index) - 1,
+          values.parent ? String(values.parent) : null
+        ),
       !scene
+    ),
+    prompt(
+      "layer.addIn",
+      t("command.addLayerIn"),
+      null,
+      [parentArg()],
+      (values) => actions.addLayer(values.parent ? String(values.parent) : null),
+      !scene
+    ),
+    prompt(
+      "folder.addIn",
+      t("command.addFolderIn"),
+      null,
+      [parentArg()],
+      (values) => actions.addFolder(values.parent ? String(values.parent) : null),
+      !scene
+    ),
+    prompt(
+      "folder.unwrap",
+      t("command.unwrapFolder"),
+      null,
+      [folderArg()],
+      (values) => actions.unwrapFolder(String(values.folder)),
+      folders.length === 0
+    ),
+    prompt(
+      "folder.collapse",
+      t("command.collapseFolder"),
+      null,
+      [folderArg()],
+      (values) => actions.toggleFolder(String(values.folder)),
+      folders.length === 0
     ),
     prompt(
       "layer.duplicate",
@@ -586,7 +647,8 @@ export function buildCommands(
     { id: "view.shortcuts", label: t("command.shortcuts"), keys: "ctrl+alt+k", run: openShortcuts },
     { id: "view.export", label: t("command.export"), keys: "ctrl+e", run: openExport },
     { id: "view.palette", label: t("command.palette"), keys: "ctrl+k", run: () => context?.openPalette(), disabled: !context },
-    { id: "layer.add", label: t("command.addLayer"), keys: "ctrl+alt+n", run: actions.addLayer },
+    { id: "layer.add", label: t("command.addLayer"), keys: "ctrl+alt+n", run: () => actions.addLayer() },
+    { id: "folder.add", label: t("command.addFolder"), keys: "ctrl+alt+shift+n", run: () => actions.addFolder() },
     { id: "scene.add", label: t("command.addScene"), keys: "ctrl+shift+n", run: actions.addScene }
   ];
   for (const [direction, dx, dy] of [

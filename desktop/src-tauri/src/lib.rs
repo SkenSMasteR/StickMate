@@ -75,6 +75,8 @@ pub fn run() {
             document::doc_duplicate_scene,
             document::doc_move_scene,
             document::doc_add_layer,
+            document::doc_add_folder,
+            document::doc_remove_folder,
             document::doc_set_layer,
             document::doc_remove_layer,
             document::doc_move_layer,

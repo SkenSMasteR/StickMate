@@ -154,6 +154,8 @@ function animated(easing: Easing | undefined): Layer {
     blend: "normal",
     effects: [],
     masked: false,
+    folder: false,
+    children: [],
     length: 11,
     keys: [
       at(0, { tween: true, easing, shapes: [box(0)] }),

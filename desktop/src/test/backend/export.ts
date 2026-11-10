@@ -1,4 +1,5 @@
 import runtimeSource from "@/export/runtime.js?raw";
+import { layerLength } from "@/lib/document";
 import type { Document, Scene } from "@/lib/document";
 import type { ExportOptions, ExportResult } from "@/lib/export";
 import type { MockExtension } from "../backend";
@@ -13,7 +14,7 @@ export function reset(): void {
 }
 
 function sceneLength(scene: Scene): number {
-  return Math.max(1, ...scene.layers.map((layer) => layer.length));
+  return Math.max(1, ...scene.layers.map(layerLength));
 }
 
 function escapeHtml(value: string): string {

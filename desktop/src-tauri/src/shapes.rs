@@ -283,7 +283,7 @@ impl DocStore {
         mut indices: Vec<usize>,
     ) -> Result<ShapeClip, String> {
         let mut doc = self.get(id)?;
-        let mut clip = snapshot(doc.layer_mut(scene_id, layer_id)?, frame)?;
+        let mut clip = snapshot(doc.leaf_mut(scene_id, layer_id)?, frame)?;
         indices.sort_unstable();
         indices.dedup();
         clip.shapes = indices
@@ -310,7 +310,7 @@ impl DocStore {
         check_clip(&clip)?;
         let mut indices = Vec::new();
         let document = self.edit_named(id, "paste_shapes", |doc| {
-            let layer = doc.layer_mut(scene_id, layer_id)?;
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
             layer.writable()?;
             let target = snapshot(layer, frame)?;
             let (matrix, scale, rotation) = conversion(clip.transform, target.transform)?;
@@ -392,7 +392,7 @@ mod tests {
 
         fn add_layer(&self) -> String {
             self.store
-                .add_layer(&self.id, &self.scene, "Top".to_string())
+                .add_layer(&self.id, &self.scene, "Top".to_string(), None)
                 .expect("layer")
                 .scenes[0]
                 .layers[0]

@@ -74,7 +74,7 @@ fn scene_length(scene: &Scene) -> u32 {
     scene
         .layers
         .iter()
-        .map(|layer| layer.length)
+        .map(|layer| layer.content_length())
         .max()
         .unwrap_or(1)
         .max(1)

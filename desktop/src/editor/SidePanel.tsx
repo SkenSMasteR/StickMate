@@ -14,7 +14,11 @@ import {
   AlignVerticalDistributeCenter,
   ArrowDown,
   ArrowUp,
+  ChevronDown,
+  ChevronRight,
   Copy,
+  FolderMinus,
+  FolderPlus,
   Plus,
   Scissors,
   Trash2
@@ -27,11 +31,13 @@ import {
   effectKinds,
   easingPresets,
   heldKey,
+  leafCount,
   linearEasing,
   sameEasing,
   shapeGradient,
   textLayout,
-  unionBounds
+  unionBounds,
+  visibleRows
 } from "@/lib/document";
 import type {
   AlignMode,
@@ -849,6 +855,11 @@ export default function SidePanel() {
   }
 
   const key = heldKey(layer, frame);
+  const collapsedIds = tab.collapsedFolders;
+  const rows = visibleRows(scene.layers, collapsedIds);
+  const activeRow = rows.find((row) => row.layer.id === layer.id) ?? null;
+  const activeParent =
+    activeRow === null ? null : activeRow.layer.folder ? activeRow.layer.id : activeRow.parentId;
   const rounded = (value: number) => Number(value.toFixed(2));
   const selectedIndex = tab.selected.length === 1 ? tab.selected[0] : null;
   const selectedShape =
@@ -1337,114 +1348,163 @@ export default function SidePanel() {
       <Section
         title={t("editor.layers")}
         action={
-          <button
-            type="button"
-            title={t("command.addLayer")}
-            aria-label={t("command.addLayer")}
-            onClick={actions.addLayer}
-            className={iconButton}
-          >
-            <Plus className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              title={t("command.addLayer")}
+              aria-label={t("command.addLayer")}
+              onClick={() => actions.addLayer(activeParent)}
+              className={iconButton}
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title={t("command.addFolder")}
+              aria-label={t("command.addFolder")}
+              onClick={() => actions.addFolder(activeParent)}
+              className={iconButton}
+            >
+              <FolderPlus className="h-4 w-4" />
+            </button>
+          </div>
         }
       >
         <div className="flex flex-col">
-          {scene.layers.map((item, index) => (
-            <div
-              key={item.id}
-              className={cn(
-                "flex items-center gap-1 border border-transparent px-1 py-0.5",
-                item.id === layer.id && "border-border bg-accent"
-              )}
-            >
-              {renaming === item.id ? (
-                <input
-                  autoFocus
-                  value={draft}
-                  aria-label={t("editor.layerName")}
-                  onChange={(event) => setDraft(event.target.value)}
-                  onBlur={commitRename}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      commitRename();
-                    }
-                    if (event.key === "Escape") {
-                      setRenaming(null);
-                    }
-                  }}
-                  className="h-6 w-full min-w-0 border border-ring bg-background px-1 text-xs outline-none"
-                />
-              ) : (
+          {rows.map((row) => {
+            const item = row.layer;
+            const folded = collapsedIds.includes(item.id);
+            return (
+              <div
+                key={item.id}
+                data-folder={item.folder}
+                className={cn(
+                  "flex items-center gap-1 border border-transparent px-1 py-0.5",
+                  item.id === layer.id && "border-border bg-accent"
+                )}
+              >
+                <div
+                  className="flex min-w-0 flex-1 items-center gap-1"
+                  style={{ paddingLeft: row.depth * 12 }}
+                >
+                  {item.folder ? (
+                    <button
+                      type="button"
+                      aria-expanded={!folded}
+                      title={folded ? t("editor.expandFolder") : t("editor.collapseFolder")}
+                      aria-label={folded ? t("editor.expandFolder") : t("editor.collapseFolder")}
+                      onClick={() => actions.toggleFolder(item.id)}
+                      className="flex h-6 w-4 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+                    >
+                      {folded ? (
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      ) : (
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  ) : (
+                    <span className="h-6 w-4 shrink-0" />
+                  )}
+                  {renaming === item.id ? (
+                    <input
+                      autoFocus
+                      value={draft}
+                      aria-label={t("editor.layerName")}
+                      onChange={(event) => setDraft(event.target.value)}
+                      onBlur={commitRename}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          commitRename();
+                        }
+                        if (event.key === "Escape") {
+                          setRenaming(null);
+                        }
+                      }}
+                      className="h-6 min-w-0 flex-1 border border-ring bg-background px-1 text-xs outline-none"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => actions.selectLayer(item.id)}
+                      onDoubleClick={() => {
+                        setRenaming(item.id);
+                        setDraft(item.name);
+                      }}
+                      className="h-6 min-w-0 flex-1 truncate text-left text-xs"
+                      title={item.name}
+                    >
+                      {item.name}
+                    </button>
+                  )}
+                </div>
+                {item.effects.length > 0 && (
+                  <span className="shrink-0 text-xs text-muted-foreground">fx</span>
+                )}
+                {item.folder ? (
+                  <button
+                    type="button"
+                    title={t("editor.unwrapFolder")}
+                    aria-label={t("editor.unwrapFolder")}
+                    onClick={() => actions.unwrapFolder(item.id)}
+                    className={iconButton}
+                  >
+                    <FolderMinus className="h-3.5 w-3.5" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={row.index === 0}
+                    aria-pressed={item.masked}
+                    title={t("editor.layerMask")}
+                    aria-label={t("editor.layerMask")}
+                    onClick={() => actions.setLayerFlags(item.id, { masked: !item.masked })}
+                    className={cn(iconButton, item.masked && "text-foreground")}
+                  >
+                    <Scissors className="h-3.5 w-3.5" />
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={() => actions.selectLayer(item.id)}
-                  onDoubleClick={() => {
-                    setRenaming(item.id);
-                    setDraft(item.name);
-                  }}
-                  className="h-6 min-w-0 flex-1 truncate text-left text-xs"
-                  title={item.name}
+                  disabled={row.index === 0}
+                  title={t("editor.moveUp")}
+                  aria-label={t("editor.moveUp")}
+                  onClick={() => actions.moveLayer(item.id, row.index - 1, row.parentId)}
+                  className={iconButton}
                 >
-                  {item.name}
+                  <ArrowUp className="h-3.5 w-3.5" />
                 </button>
-              )}
-              {item.effects.length > 0 && (
-                <span className="shrink-0 text-xs text-muted-foreground">fx</span>
-              )}
-              <button
-                type="button"
-                disabled={index === 0}
-                aria-pressed={item.masked}
-                title={t("editor.layerMask")}
-                aria-label={t("editor.layerMask")}
-                onClick={() =>
-                  actions.setLayerFlags(item.id, { masked: !item.masked })
-                }
-                className={cn(iconButton, item.masked && "text-foreground")}
-              >
-                <Scissors className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                disabled={index === 0}
-                title={t("editor.moveUp")}
-                aria-label={t("editor.moveUp")}
-                onClick={() => actions.moveLayer(item.id, index - 1)}
-                className={iconButton}
-              >
-                <ArrowUp className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                disabled={index === scene.layers.length - 1}
-                title={t("editor.moveDown")}
-                aria-label={t("editor.moveDown")}
-                onClick={() => actions.moveLayer(item.id, index + 1)}
-                className={iconButton}
-              >
-                <ArrowDown className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                title={t("editor.duplicateLayer")}
-                aria-label={t("editor.duplicateLayer")}
-                onClick={() => actions.duplicateLayer(item.id)}
-                className={iconButton}
-              >
-                <Copy className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                disabled={scene.layers.length < 2}
-                title={t("editor.deleteLayer")}
-                aria-label={t("editor.deleteLayer")}
-                onClick={() => actions.removeLayer(item.id)}
-                className={cn(iconButton, "hover:text-destructive")}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ))}
+                <button
+                  type="button"
+                  disabled={row.index === row.total - 1}
+                  title={t("editor.moveDown")}
+                  aria-label={t("editor.moveDown")}
+                  onClick={() => actions.moveLayer(item.id, row.index + 1, row.parentId)}
+                  className={iconButton}
+                >
+                  <ArrowDown className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  title={t("editor.duplicateLayer")}
+                  aria-label={t("editor.duplicateLayer")}
+                  onClick={() => actions.duplicateLayer(item.id)}
+                  className={iconButton}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  disabled={leafCount(scene.layers) < 2}
+                  title={t(item.folder ? "editor.deleteFolder" : "editor.deleteLayer")}
+                  aria-label={t(item.folder ? "editor.deleteFolder" : "editor.deleteLayer")}
+                  onClick={() => actions.removeLayer(item.id)}
+                  className={cn(iconButton, "hover:text-destructive")}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            );
+          })}
         </div>
       </Section>
     </div>

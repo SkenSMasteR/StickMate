@@ -17,6 +17,8 @@ function makeLayer(id: string, name: string, length: number): Layer {
     blend: "normal",
     effects: [],
     masked: false,
+    folder: false,
+    children: [],
     length,
     keys: [
       {
@@ -58,6 +60,7 @@ function fixtureTab(): TabState {
   return {
     sceneId: "s1",
     layerId: "l1",
+    collapsedFolders: [],
     frame: 1,
     selectedFrames: [],
     loopStart: null,
@@ -125,7 +128,7 @@ function tick(): Promise<void> {
 describe("command model", () => {
   test("the five argument call keeps only zero argument commands", () => {
     const commands = buildCommands(stubActions(), t, {}, vi.fn(), vi.fn());
-    expect(commands.length).toBe(61);
+    expect(commands.length).toBe(62);
     expect(commands.every((item) => item.args === undefined)).toBe(true);
     expect(commands.find((item) => item.id === "view.palette")?.disabled).toBe(true);
     expect(commands.some((item) => item.id === "layer.rename")).toBe(false);
@@ -171,6 +174,10 @@ describe("command model", () => {
       "layer.select",
       "layer.rename",
       "layer.move",
+      "layer.addIn",
+      "folder.addIn",
+      "folder.unwrap",
+      "folder.collapse",
       "layer.duplicate",
       "layer.remove",
       "layer.visibility",
@@ -189,7 +196,7 @@ describe("command model", () => {
     ]) {
       expect(ids, id).toContain(id);
     }
-    expect(commands.length).toBe(91);
+    expect(commands.length).toBe(96);
     for (const command of commands) {
       if (command.args) {
         expect(typeof command.runArgs, command.id).toBe("function");
@@ -255,7 +262,10 @@ describe("command model", () => {
     const onion = commands.find((item) => item.id === "view.onionRange");
     expect(onion?.args?.[0]).toMatchObject({ min: 1, max: 5, initial: 2 });
     const move = commands.find((item) => item.id === "layer.move");
-    expect(move?.args?.[1]).toMatchObject({ min: 1, max: 2, initial: 1 });
+    expect(move?.args?.[1]).toMatchObject({ kind: "choice", initial: "" });
+    expect(move?.args?.[1].options).toEqual([{ value: "", label: "palette.topLevel" }]);
+    expect(move?.args?.[2]).toMatchObject({ min: 1, max: 2, initial: 1 });
+    expect(commands.find((item) => item.id === "folder.unwrap")?.disabled).toBe(true);
     const zoom = commands.find((item) => item.id === "view.zoom");
     expect(zoom?.args?.[0]).toMatchObject({ min: 10, max: 800, initial: 100 });
     const rename = commands.find((item) => item.id === "layer.rename");
@@ -317,7 +327,13 @@ describe("command model", () => {
     byId("tool.pick")?.runArgs?.({ tool: "brush" });
     expect(actions.setTool).toHaveBeenCalledWith("brush");
     byId("layer.move")?.runArgs?.({ layer: "l2", index: 1 });
-    expect(actions.moveLayer).toHaveBeenCalledWith("l2", 0);
+    expect(actions.moveLayer).toHaveBeenCalledWith("l2", 0, null);
+    byId("layer.addIn")?.runArgs?.({ parent: "l1" });
+    expect(actions.addLayer).toHaveBeenCalledWith("l1");
+    byId("folder.unwrap")?.runArgs?.({ folder: "l1" });
+    expect(actions.unwrapFolder).toHaveBeenCalledWith("l1");
+    byId("folder.collapse")?.runArgs?.({ folder: "l1" });
+    expect(actions.toggleFolder).toHaveBeenCalledWith("l1");
     byId("layer.opacity")?.runArgs?.({ layer: "l1", opacity: 50 });
     expect(actions.setLayerFlags).toHaveBeenCalledWith("l1", { opacity: 0.5 });
     byId("scene.move")?.runArgs?.({ scene: "s2", index: 1 });

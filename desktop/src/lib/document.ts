@@ -563,6 +563,8 @@ export interface Layer {
   masked: boolean;
   length: number;
   keys: Keyframe[];
+  folder: boolean;
+  children: Layer[];
 }
 
 export interface Scene {
@@ -588,12 +590,14 @@ export interface EvalMask {
 
 export interface EvalLayer {
   id: string;
+  folder: boolean;
   opacity: number;
   blend: Blend;
   effects: Effect[];
   mask: EvalMask | null;
   transform: Transform;
   shapes: Shape[];
+  children: EvalLayer[];
 }
 
 export interface EvalFrame {
@@ -618,8 +622,74 @@ export const identityTransform: Transform = {
   opacity: 1
 };
 
+export function layerLength(layer: Layer): number {
+  if (!layer.folder) {
+    return layer.length;
+  }
+  return layer.children.reduce((longest, child) => Math.max(longest, layerLength(child)), 1);
+}
+
 export function sceneLength(scene: Scene): number {
-  return scene.layers.reduce((longest, layer) => Math.max(longest, layer.length), 1);
+  return scene.layers.reduce((longest, layer) => Math.max(longest, layerLength(layer)), 1);
+}
+
+export function findLayer<T extends { id: string; children: T[] }>(
+  layers: T[],
+  layerId: string
+): T | null {
+  for (const layer of layers) {
+    if (layer.id === layerId) {
+      return layer;
+    }
+    const nested = findLayer(layer.children, layerId);
+    if (nested) {
+      return nested;
+    }
+  }
+  return null;
+}
+
+export function leafLayers<T extends { folder: boolean; children: T[] }>(layers: T[]): T[] {
+  return layers.flatMap((layer) => (layer.folder ? leafLayers(layer.children) : [layer]));
+}
+
+export function leafCount(layers: Layer[]): number {
+  return layers.reduce((total, layer) => total + (layer.folder ? leafCount(layer.children) : 1), 0);
+}
+
+export interface LayerRow {
+  layer: Layer;
+  depth: number;
+  index: number;
+  total: number;
+  parentId: string | null;
+}
+
+export function visibleRows(
+  layers: Layer[],
+  collapsed: string[],
+  depth = 0,
+  parentId: string | null = null
+): LayerRow[] {
+  const rows: LayerRow[] = [];
+  layers.forEach((layer, index) => {
+    rows.push({ layer, depth, index, total: layers.length, parentId });
+    if (layer.folder && !collapsed.includes(layer.id)) {
+      rows.push(...visibleRows(layer.children, collapsed, depth + 1, layer.id));
+    }
+  });
+  return rows;
+}
+
+export function folderOptions(layers: Layer[], depth = 0): { value: string; label: string }[] {
+  const options: { value: string; label: string }[] = [];
+  for (const layer of layers) {
+    if (layer.folder) {
+      options.push({ value: layer.id, label: `${"\u2013 ".repeat(depth)}${layer.name}` });
+      options.push(...folderOptions(layer.children, depth + 1));
+    }
+  }
+  return options;
 }
 
 export function heldKey(layer: Layer, frame: number): Keyframe | null {
@@ -697,9 +767,23 @@ export function docMoveScene(
 export function docAddLayer(
   id: string,
   sceneId: string,
-  name: string
+  name: string,
+  parentId?: string | null
 ): Promise<Document> {
-  return invoke<Document>("doc_add_layer", { id, sceneId, name });
+  return invoke<Document>("doc_add_layer", { id, sceneId, name, parentId: parentId ?? null });
+}
+
+export function docAddFolder(
+  id: string,
+  sceneId: string,
+  name: string,
+  parentId?: string | null
+): Promise<Document> {
+  return invoke<Document>("doc_add_folder", { id, sceneId, name, parentId: parentId ?? null });
+}
+
+export function docRemoveFolder(id: string, sceneId: string, folderId: string): Promise<Document> {
+  return invoke<Document>("doc_remove_folder", { id, sceneId, folderId });
 }
 
 export function docSetLayer(
@@ -742,9 +826,16 @@ export function docMoveLayer(
   id: string,
   sceneId: string,
   layerId: string,
-  index: number
+  index: number,
+  parentId?: string | null
 ): Promise<Document> {
-  return invoke<Document>("doc_move_layer", { id, sceneId, layerId, index });
+  return invoke<Document>("doc_move_layer", {
+    id,
+    sceneId,
+    layerId,
+    index,
+    parentId: parentId ?? null
+  });
 }
 
 export function docInsertFrame(

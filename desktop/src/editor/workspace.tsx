@@ -13,6 +13,7 @@ import { useConfirm } from "@/lib/confirm";
 import { usePrefs } from "@/lib/prefs";
 import type { ViewPrefs } from "@/lib/view";
 import {
+  docAddFolder,
   docAddLayer,
   docAddScene,
   docAlignShapes,
@@ -32,6 +33,7 @@ import {
   docNew,
   docPaintShape,
   docRemoveFrame,
+  docRemoveFolder,
   docRemoveLayer,
   docRemoveScene,
   docRename,
@@ -46,6 +48,7 @@ import {
   docUndo,
   docUngroupShape,
   docRedo,
+  findLayer,
   heldKey,
   identityTransform,
   sceneLength
@@ -96,6 +99,7 @@ export type Tool =
 export interface TabState {
   sceneId: string;
   layerId: string;
+  collapsedFolders: string[];
   frame: number;
   selectedFrames: number[];
   loopStart: number | null;
@@ -133,6 +137,7 @@ function firstTab(doc: Document): TabState {
   return {
     sceneId: scene.id,
     layerId: scene.layers[0].id,
+    collapsedFolders: [],
     frame: 0,
     selectedFrames: [],
     loopStart: null,
@@ -160,6 +165,15 @@ function firstTab(doc: Document): TabState {
 
 function clamp(value: number, low: number, high: number): number {
   return Math.min(Math.max(value, low), high);
+}
+
+function firstIn(doc: Document, sceneId: string, parentId: string | null): Layer | null {
+  const target = doc.scenes.find((item) => item.id === sceneId);
+  if (!target) {
+    return null;
+  }
+  const list = parentId ? findLayer(target.layers, parentId)?.children ?? [] : target.layers;
+  return list[0] ?? null;
 }
 
 function frameRange(start: number, count: number): number[] {
@@ -238,7 +252,10 @@ export interface Actions {
   toggleTween: () => void;
   setEasing: (easing: Easing) => void;
   setLabel: (label: string) => void;
-  addLayer: () => void;
+  addLayer: (parentId?: string | null) => void;
+  addFolder: (parentId?: string | null) => void;
+  unwrapFolder: (folderId: string) => void;
+  toggleFolder: (folderId: string) => void;
   renameLayer: (layerId: string, name: string) => void;
   setLayerFlags: (
     layerId: string,
@@ -251,7 +268,7 @@ export interface Actions {
       masked?: boolean;
     }
   ) => void;
-  moveLayer: (layerId: string, index: number) => void;
+  moveLayer: (layerId: string, index: number, parentId?: string | null) => void;
   removeLayer: (layerId: string) => void;
   duplicateLayer: (layerId: string) => void;
   addScene: () => void;
@@ -285,13 +302,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       : null;
   const layer =
     scene && tab
-      ? scene.layers.find((item) => item.id === tab.layerId) ?? scene.layers[0]
+      ? findLayer(scene.layers, tab.layerId) ?? scene.layers[0]
       : null;
   const total = scene ? sceneLength(scene) : 1;
   const frame = tab ? clamp(tab.frame, 0, total - 1) : 0;
   const evaluated =
-    frames.length > 0
-      ? frames[frames.length - 1].layers.find((item) => item.id === layer?.id)
+    frames.length > 0 && layer
+      ? findLayer(frames[frames.length - 1].layers, layer.id) ?? undefined
       : undefined;
   const transform =
     evaluated?.transform ??
@@ -795,28 +812,46 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         const key = heldKey(l, frame);
         return docSetLabel(d.id, s.id, l.id, key?.frame ?? frame, label);
       }),
-    addLayer: () =>
+    addLayer: (parentId) =>
       edit(async (d, s) => {
-        const next = await docAddLayer(d.id, s.id, "");
-        const target = next.scenes.find((item) => item.id === s.id);
-        if (target) {
-          setTab({ layerId: target.layers[0].id, selected: [], pivot: null, selectedFrames: [] });
+        const next = await docAddLayer(d.id, s.id, "", parentId ?? null);
+        const added = firstIn(next, s.id, parentId ?? null);
+        if (added) {
+          setTab({ layerId: added.id, selected: [], pivot: null, selectedFrames: [] });
         }
         return next;
       }),
+    addFolder: (parentId) =>
+      edit(async (d, s) => {
+        const next = await docAddFolder(d.id, s.id, "", parentId ?? null);
+        const added = firstIn(next, s.id, parentId ?? null);
+        if (added) {
+          setTab({ layerId: added.id, selected: [], pivot: null, selectedFrames: [] });
+        }
+        return next;
+      }),
+    unwrapFolder: (folderId) => edit((d, s) => docRemoveFolder(d.id, s.id, folderId)),
+    toggleFolder: (folderId) => {
+      const collapsed = tab?.collapsedFolders ?? [];
+      setTab({
+        collapsedFolders: collapsed.includes(folderId)
+          ? collapsed.filter((item) => item !== folderId)
+          : [...collapsed, folderId]
+      });
+    },
     renameLayer: (layerId, name) =>
       edit((d, s) => docSetLayer(d.id, s.id, layerId, { name })),
     setLayerFlags: (layerId, patch) =>
       edit((d, s) => docSetLayer(d.id, s.id, layerId, patch)),
-    moveLayer: (layerId, index) =>
-      edit((d, s) => docMoveLayer(d.id, s.id, layerId, index)),
+    moveLayer: (layerId, index, parentId) =>
+      edit((d, s) => docMoveLayer(d.id, s.id, layerId, index, parentId ?? null)),
     removeLayer: (layerId) => {
-      const target = scene?.layers.find((item) => item.id === layerId);
+      const target = scene ? findLayer(scene.layers, layerId) : null;
       if (!target || !scene) {
         return;
       }
       void confirm({
-        title: t("editor.deleteLayer"),
+        title: t(target.folder ? "editor.deleteFolder" : "editor.deleteLayer"),
         description: target.name,
         confirmLabel: t("editor.delete"),
         cancelLabel: t("editor.cancel"),

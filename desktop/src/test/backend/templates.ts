@@ -1,4 +1,4 @@
-import type { Document, Shape } from "@/lib/document";
+import type { Document, Layer, Shape } from "@/lib/document";
 import type { MockExtension } from "../backend";
 
 const CATALOG_LIMIT = 256 * 1024;
@@ -358,6 +358,60 @@ function validateShape(shape: Shape): void {
   }
 }
 
+function validateLayers(layers: Layer[], ids: Set<string>, invalid: string): void {
+  for (const layer of layers) {
+    if (!layer || typeof layer.id !== "string" || !layer.id || ids.has(layer.id)) {
+      throw new Error(invalid);
+    }
+    ids.add(layer.id);
+    if (!Array.isArray(layer.keys) || !Number.isInteger(layer.length)) {
+      throw new Error(invalid);
+    }
+    if (layer.folder) {
+      if (layer.keys.length > 0) {
+        throw new Error(invalid);
+      }
+      if (!Array.isArray(layer.children)) {
+        throw new Error(invalid);
+      }
+      validateLayers(layer.children, ids, invalid);
+      continue;
+    }
+    if (layer.keys.length === 0) {
+      throw new Error(invalid);
+    }
+    layer.keys.forEach((key, index) => {
+      if (!key || !Number.isInteger(key.frame)) {
+        throw new Error(invalid);
+      }
+      const ordered = index === 0 ? key.frame === 0 : key.frame > layer.keys[index - 1].frame;
+      if (!ordered || key.frame >= layer.length) {
+        throw new Error(invalid);
+      }
+      const transform = key.transform;
+      if (
+        !transform ||
+        ![
+          transform.x,
+          transform.y,
+          transform.rotation,
+          transform.scale,
+          transform.opacity
+        ].every((number) => Number.isFinite(number)) ||
+        transform.scale <= 0 ||
+        transform.opacity < 0 ||
+        transform.opacity > 1
+      ) {
+        throw new Error("template project transform is invalid");
+      }
+      if (!Array.isArray(key.shapes) || typeof key.tween !== "boolean") {
+        throw new Error(invalid);
+      }
+      key.shapes.forEach(validateShape);
+    });
+  }
+}
+
 function parseProject(body: string, expected: Manifest): Document {
   const invalid = "template project is invalid";
   let value: unknown;
@@ -407,51 +461,7 @@ function parseProject(body: string, expected: Manifest): Document {
       throw new Error(invalid);
     }
     scenes.add(scene.id);
-    const layers = new Set<string>();
-    for (const layer of scene.layers) {
-      if (
-        !layer ||
-        typeof layer.id !== "string" ||
-        !layer.id ||
-        layers.has(layer.id) ||
-        !Array.isArray(layer.keys) ||
-        layer.keys.length === 0 ||
-        !Number.isInteger(layer.length)
-      ) {
-        throw new Error(invalid);
-      }
-      layers.add(layer.id);
-      layer.keys.forEach((key, index) => {
-        if (!key || !Number.isInteger(key.frame)) {
-          throw new Error(invalid);
-        }
-        const ordered =
-          index === 0 ? key.frame === 0 : key.frame > layer.keys[index - 1].frame;
-        if (!ordered || key.frame >= layer.length) {
-          throw new Error(invalid);
-        }
-        const transform = key.transform;
-        if (
-          !transform ||
-          ![
-            transform.x,
-            transform.y,
-            transform.rotation,
-            transform.scale,
-            transform.opacity
-          ].every((number) => Number.isFinite(number)) ||
-          transform.scale <= 0 ||
-          transform.opacity < 0 ||
-          transform.opacity > 1
-        ) {
-          throw new Error("template project transform is invalid");
-        }
-        if (!Array.isArray(key.shapes) || typeof key.tween !== "boolean") {
-          throw new Error(invalid);
-        }
-        key.shapes.forEach(validateShape);
-      });
-    }
+    validateLayers(scene.layers, new Set<string>(), invalid);
   }
   if (
     doc.width !== expected.width ||

@@ -16,7 +16,7 @@ import {
   shapeGradient,
   textLinePositions
 } from "@/lib/document";
-import type { Blend, EvalLayer, Keyframe, Layer, Shape, Transform } from "@/lib/document";
+import type { Blend, EvalLayer, Keyframe, Layer, Scene, Shape, Transform } from "@/lib/document";
 import source from "@/export/runtime.js?raw";
 import { installBackend, store } from "./backend";
 import { flush, getCanvas, press } from "./utils";
@@ -136,6 +136,7 @@ interface NormalLayer {
   transform: number[];
   mask: NormalMask | null;
   shapes: NormalShape[];
+  children: NormalLayer[];
 }
 
 const identity: Transform = { x: 0, y: 0, rotation: 0, scale: 1, opacity: 1 };
@@ -446,6 +447,8 @@ function fixtureScenes() {
       { kind: "shadow", x: 4, y: -3, blur: 8, color: "#000000" }
     ],
     masked: false,
+    folder: false,
+    children: [],
     length: 4,
     keys: [
       key(0, fixtureShapes(), {
@@ -465,6 +468,8 @@ function fixtureScenes() {
     blend: "normal",
     effects: [{ kind: "shadow", x: 0, y: 0, blur: 12, color: "#22c55e" }],
     masked: true,
+    folder: false,
+    children: [],
     length: 2,
     keys: [key(0, [fixtureShapes()[1]])]
   };
@@ -477,6 +482,8 @@ function fixtureScenes() {
     blend: "normal",
     effects: [],
     masked: false,
+    folder: false,
+    children: [],
     length: 4,
     keys: [key(0, [fixtureShapes()[2]])]
   };
@@ -489,6 +496,8 @@ function fixtureScenes() {
     blend: "normal",
     effects: [],
     masked: false,
+    folder: false,
+    children: [],
     length: 3,
     keys: [key(0, tweenStart(), { tween: true }), key(2, tweenEnd())]
   };
@@ -501,6 +510,8 @@ function fixtureScenes() {
     blend: "normal",
     effects: [],
     masked: false,
+    folder: false,
+    children: [],
     length: 3,
     keys: [
       key(0, [groupStart(), groupHoldStart()], { tween: true }),
@@ -508,6 +519,73 @@ function fixtureScenes() {
     ]
   };
   return [{ id: "s0", name: "Scene 1", layers: [top, mid, hidden, tweened, grouped] }];
+}
+
+function leafLayer(id: string, name: string, shapes: Shape[], patch: Partial<Layer> = {}): Layer {
+  return {
+    id,
+    name,
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend: "normal",
+    effects: [],
+    masked: false,
+    folder: false,
+    children: [],
+    length: 3,
+    keys: [key(0, shapes)],
+    ...patch
+  };
+}
+
+function folderLayer(
+  id: string,
+  name: string,
+  children: Layer[],
+  patch: Partial<Layer> = {}
+): Layer {
+  return {
+    id,
+    name,
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend: "normal",
+    effects: [],
+    masked: false,
+    folder: true,
+    children,
+    length: 0,
+    keys: [],
+    ...patch
+  };
+}
+
+function folderFixture(): Scene[] {
+  const shapes = fixtureShapes();
+  const art = folderLayer(
+    "f-art",
+    "Art",
+    [
+      folderLayer("f-deep", "Deep", [
+        leafLayer("f-provider", "Provider", [shapes[1]]),
+        leafLayer("f-clipped", "Clipped", [shapes[2]], { masked: true }),
+        leafLayer("f-gone", "Gone", [shapes[3]], { visible: false })
+      ]),
+      leafLayer("f-top", "Art Top", [shapes[0]]),
+      folderLayer("f-hidden", "Hidden", [leafLayer("f-buried", "Buried", [shapes[4]])], {
+        visible: false
+      })
+    ],
+    {
+      opacity: 0.5,
+      blend: "multiply",
+      effects: [{ kind: "blur", radius: 3 }]
+    }
+  );
+  const base = leafLayer("f-base", "Base", [shapes[5]]);
+  return [{ id: "s0", name: "Scene 1", layers: [art, base] }];
 }
 
 function flat(points: Array<{ x: number; y: number }>): number[] {
@@ -609,7 +687,8 @@ function fromEvaluation(layers: EvalLayer[]): NormalLayer[] {
     mask: layer.mask
       ? { transform: radians(layer.mask.transform), shapes: layer.mask.shapes.flatMap(normalShapes) }
       : null,
-    shapes: layer.shapes.flatMap(normalShapes)
+    shapes: layer.shapes.flatMap(normalShapes),
+    children: fromEvaluation(layer.children)
   }));
 }
 
@@ -618,128 +697,157 @@ function numbers(value: string | null): number[] {
 }
 
 function fromSvg(svg: SVGSVGElement): NormalLayer[] {
-  const wrappers = Array.from(svg.querySelectorAll<SVGGElement>(":scope > g"));
-  return wrappers.map((wrapper) => {
-    const inner = wrapper.querySelector<SVGGElement>("g[transform]");
-    if (!inner) {
-      throw new Error("layer group is missing its transform");
+  return fromSvgGroups(Array.from(svg.querySelectorAll<SVGGElement>(":scope > g")));
+}
+
+function fromSvgGroups(wrappers: SVGGElement[]): NormalLayer[] {
+  return wrappers.map(fromSvgGroup).reverse();
+}
+
+function fromSvgGroup(wrapper: SVGGElement): NormalLayer {
+  const inner = wrapper.querySelector<SVGGElement>("g[transform]");
+  if (!inner) {
+    throw new Error("layer group is missing its transform");
+  }
+  const matrix = numbers(inner.getAttribute("transform"));
+  const opacity =
+    Number(wrapper.getAttribute("opacity") ?? 1) * Number(inner.getAttribute("opacity") ?? 1);
+  const blend = cssBlend(inner.getAttribute("style"));
+  const filter = cssFilter(inner.getAttribute("style"));
+  let shapes: NormalShape[] = [];
+  const readShape = (group: Element): void => {
+    if (group.hasAttribute("data-group")) {
+      for (const child of Array.from(group.children)) {
+        readShape(child);
+      }
+      return;
     }
-    const matrix = numbers(inner.getAttribute("transform"));
-    const opacity =
-      Number(wrapper.getAttribute("opacity") ?? 1) * Number(inner.getAttribute("opacity") ?? 1);
-    const blend = cssBlend(inner.getAttribute("style"));
-    const filter = cssFilter(inner.getAttribute("style"));
-    let shapes: NormalShape[] = [];
-    const readShape = (group: Element): void => {
-      if (group.hasAttribute("data-group")) {
-        for (const child of Array.from(group.children)) {
-          readShape(child);
-        }
-        return;
+    const painted = group.querySelector("polyline, text, polygon, path, rect, ellipse");
+    if (!painted) {
+      return;
+    }
+    const tag = painted.tagName.toLowerCase();
+    const stroke = painted.getAttribute("stroke") ?? "";
+    const width = Number(painted.getAttribute("stroke-width") ?? 0);
+    if (tag === "polyline") {
+      const points = numbers(painted.getAttribute("points"));
+      if (points.length >= 4) {
+        shapes.push({ kind: "Stroke", points, color: stroke, width });
       }
-      const painted = group.querySelector("polyline, text, polygon, path, rect, ellipse");
-      if (!painted) {
-        return;
-      }
-      const tag = painted.tagName.toLowerCase();
-      const stroke = painted.getAttribute("stroke") ?? "";
-      const width = Number(painted.getAttribute("stroke-width") ?? 0);
-      if (tag === "polyline") {
-        const points = numbers(painted.getAttribute("points"));
-        if (points.length >= 4) {
-          shapes.push({ kind: "Stroke", points, color: stroke, width });
-        }
-        return;
-      }
-      if (tag === "text") {
-        const spans = Array.from(painted.querySelectorAll("tspan"));
-        const lines = spans.map((span) => ({
-          text: span.textContent ?? "",
-          at: [Number(span.getAttribute("x")), Number(span.getAttribute("y"))]
-        }));
-        shapes.push({
-          kind: "Text",
-          text: lines.map((line) => line.text).join("\n"),
-          size: Number(painted.getAttribute("font-size")),
-          family: painted.getAttribute("font-family") ?? "",
-          color: painted.getAttribute("fill") ?? "",
-          spacing: Number(painted.getAttribute("letter-spacing")),
-          lines,
-          matrix: painted.hasAttribute("transform") ? numbers(painted.getAttribute("transform")) : [1, 0, 0, 1, 0, 0]
-        });
-        return;
-      }
-      const paint: Paint = {
-        fill: svgPaintFill(svg, painted.getAttribute("fill") ?? ""),
-        stroke,
-        width
-      };
-      if (tag === "polygon") {
-        shapes.push({ kind: "Polygon", points: numbers(painted.getAttribute("points")), paint });
-        return;
-      }
-      if (tag === "path") {
-        const tokens = (painted.getAttribute("d") ?? "").match(/[MCZ]|-?\d+(?:\.\d+)?/gi) ?? [];
-        const commands = tokens.map((token) =>
-          /^[MCZ]$/i.test(token) ? token.toUpperCase() : Number(token)
-        );
-        shapes.push({ kind: "Path", commands, closed: commands.includes("Z"), paint });
-        return;
-      }
-      if (tag === "rect") {
-        shapes.push({
-          kind: "Rect",
-          box: [
-            Number(painted.getAttribute("x")),
-            Number(painted.getAttribute("y")),
-            Number(painted.getAttribute("width")),
-            Number(painted.getAttribute("height"))
-          ],
-          paint
-        });
-        return;
-      }
+      return;
+    }
+    if (tag === "text") {
+      const spans = Array.from(painted.querySelectorAll("tspan"));
+      const lines = spans.map((span) => ({
+        text: span.textContent ?? "",
+        at: [Number(span.getAttribute("x")), Number(span.getAttribute("y"))]
+      }));
       shapes.push({
-        kind: "Ellipse",
+        kind: "Text",
+        text: lines.map((line) => line.text).join("\n"),
+        size: Number(painted.getAttribute("font-size")),
+        family: painted.getAttribute("font-family") ?? "",
+        color: painted.getAttribute("fill") ?? "",
+        spacing: Number(painted.getAttribute("letter-spacing")),
+        lines,
+        matrix: painted.hasAttribute("transform") ? numbers(painted.getAttribute("transform")) : [1, 0, 0, 1, 0, 0]
+      });
+      return;
+    }
+    const paint: Paint = {
+      fill: svgPaintFill(svgRoot(wrapper), painted.getAttribute("fill") ?? ""),
+      stroke,
+      width
+    };
+    if (tag === "polygon") {
+      shapes.push({ kind: "Polygon", points: numbers(painted.getAttribute("points")), paint });
+      return;
+    }
+    if (tag === "path") {
+      const tokens = (painted.getAttribute("d") ?? "").match(/[MCZ]|-?\d+(?:\.\d+)?/gi) ?? [];
+      const commands = tokens.map((token) =>
+        /^[MCZ]$/i.test(token) ? token.toUpperCase() : Number(token)
+      );
+      shapes.push({ kind: "Path", commands, closed: commands.includes("Z"), paint });
+      return;
+    }
+    if (tag === "rect") {
+      shapes.push({
+        kind: "Rect",
         box: [
-          Number(painted.getAttribute("cx")),
-          Number(painted.getAttribute("cy")),
-          Number(painted.getAttribute("rx")),
-          Number(painted.getAttribute("ry"))
+          Number(painted.getAttribute("x")),
+          Number(painted.getAttribute("y")),
+          Number(painted.getAttribute("width")),
+          Number(painted.getAttribute("height"))
         ],
         paint
       });
-    };
-    for (const group of Array.from(inner.children)) {
-      readShape(group);
+      return;
     }
-    const painted = shapes;
-    let mask: NormalMask | null = null;
-    const clip = wrapper.querySelector("clipPath");
-    if (clip) {
-      const clipInner = clip.querySelector<SVGGElement>("g[transform]");
-      if (!clipInner) {
-        throw new Error("clip path is missing its transform");
-      }
-      const clipMatrix = numbers(clipInner.getAttribute("transform"));
-      shapes = [];
-      for (const group of Array.from(clipInner.children)) {
-        readShape(group);
-      }
-      mask = {
-        transform: [clipMatrix[0], clipMatrix[1], (clipMatrix[2] * Math.PI) / 180, clipMatrix[3]],
-        shapes
-      };
-    }
+    shapes.push({
+      kind: "Ellipse",
+      box: [
+        Number(painted.getAttribute("cx")),
+        Number(painted.getAttribute("cy")),
+        Number(painted.getAttribute("rx")),
+        Number(painted.getAttribute("ry"))
+      ],
+      paint
+    });
+  };
+  if (wrapper.hasAttribute("data-folder")) {
     return {
       opacity,
       blend,
       filter,
       transform: [matrix[0], matrix[1], (matrix[2] * Math.PI) / 180, matrix[3]],
-      mask,
-      shapes: painted
+      mask: null,
+      shapes: [],
+      children: fromSvgGroups(Array.from(inner.children).filter(isGroup))
     };
-  }).reverse();
+  }
+  for (const group of Array.from(inner.children)) {
+    readShape(group);
+  }
+  const painted = shapes;
+  let mask: NormalMask | null = null;
+  const clip = wrapper.querySelector("clipPath");
+  if (clip) {
+    const clipInner = clip.querySelector<SVGGElement>("g[transform]");
+    if (!clipInner) {
+      throw new Error("clip path is missing its transform");
+    }
+    const clipMatrix = numbers(clipInner.getAttribute("transform"));
+    shapes = [];
+    for (const group of Array.from(clipInner.children)) {
+      readShape(group);
+    }
+    mask = {
+      transform: [clipMatrix[0], clipMatrix[1], (clipMatrix[2] * Math.PI) / 180, clipMatrix[3]],
+      shapes
+    };
+  }
+  return {
+    opacity,
+    blend,
+    filter,
+    transform: [matrix[0], matrix[1], (matrix[2] * Math.PI) / 180, matrix[3]],
+    mask,
+    shapes: painted,
+    children: []
+  };
+}
+
+function isGroup(element: Element): element is SVGGElement {
+  return element.tagName.toLowerCase() === "g";
+}
+
+function svgRoot(element: Element): SVGSVGElement {
+  const root = element.closest("svg");
+  if (!root) {
+    throw new Error("group is not inside an svg");
+  }
+  return root as SVGSVGElement;
 }
 
 function cssBlend(style: string | null): Blend {
@@ -755,7 +863,28 @@ function cssFilter(style: string | null): string {
 type Entry = unknown[];
 
 function fromTrace(log: Entry[]): { background: string | null; layers: NormalLayer[] } {
-  const layers: NormalLayer[] = [];
+  const page: NormalLayer[] = [];
+  const surfaces = new Map<number, NormalLayer[]>();
+  const styles = new Map<number, { opacity: number; blend: Blend; filter: string }>();
+  const listOn = (index: number): NormalLayer[] => {
+    if (index === 0) {
+      return page;
+    }
+    let list = surfaces.get(index);
+    if (!list) {
+      list = [];
+      surfaces.set(index, list);
+    }
+    return list;
+  };
+  const styleOn = (index: number) => {
+    let style = styles.get(index);
+    if (!style) {
+      style = { opacity: 1, blend: "normal", filter: "none" };
+      styles.set(index, style);
+    }
+    return style;
+  };
   let background: string | null = null;
   let fill: unknown = "";
   let stroke = "";
@@ -824,25 +953,46 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
       }
       continue;
     }
-    if (index === 0 && name === "set:globalAlpha") {
-      if (active && args[0] !== 1) {
-        active.opacity = args[0];
-      }
+    const painted = index === 1 || index === 2;
+    if (!painted && name === "set:globalAlpha" && args[0] !== 1) {
+      styleOn(index).opacity = args[0] as number;
       continue;
     }
-    if (index === 0 && name === "set:globalCompositeOperation") {
-      if (active && entry[2] !== "source-over") {
-        active.blend = entry[2] as Blend;
-      }
+    if (!painted && name === "set:globalCompositeOperation" && entry[2] !== "source-over") {
+      styleOn(index).blend = entry[2] as Blend;
       continue;
     }
-    if (index === 0 && name === "set:filter") {
-      if (active && entry[2] !== "none") {
-        active.filter = String(entry[2]);
-      }
+    if (!painted && name === "set:filter" && entry[2] !== "none") {
+      styleOn(index).filter = String(entry[2]);
       continue;
     }
-    if (index !== 1 && index !== 2) {
+    if (!painted && name === "drawImage") {
+      finish();
+      const style = styleOn(index);
+      const target = listOn(index);
+      const source = ids.get(entry[2] as HTMLCanvasElement) ?? -1;
+      if (source >= 3) {
+        target.push({
+          opacity: style.opacity,
+          blend: style.blend,
+          filter: style.filter,
+          transform: [0, 0, 0, 1],
+          mask: null,
+          shapes: [],
+          children: listOn(source).splice(0).reverse()
+        });
+      } else if (!active) {
+        throw new Error("layer composited before it was drawn");
+      } else {
+        active.opacity = style.opacity;
+        active.blend = style.blend;
+        active.filter = style.filter;
+        target.push(active);
+      }
+      styles.set(index, { opacity: 1, blend: "normal", filter: "none" });
+      continue;
+    }
+    if (!painted) {
       continue;
     }
     const inScratch = index === 2;
@@ -863,10 +1013,10 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
           filter: "none",
           transform: [0, 0, 0, 1],
           mask: null,
-          shapes: []
+          shapes: [],
+          children: []
         };
         current = active;
-        layers.push(active);
       } else if (cleared === "mask") {
         cleared = null;
         finish();
@@ -967,7 +1117,7 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
     ops.push({ name, args });
   }
   finish();
-  return { background, layers: layers.reverse() };
+  return { background, layers: page.reverse() };
 }
 
 let log: Entry[] = [];
@@ -1036,7 +1186,7 @@ function recorder(index: number): CanvasRenderingContext2D {
   return target as unknown as CanvasRenderingContext2D;
 }
 
-function payload(scale = 1) {
+function payload(scale = 1, folders = false) {
   return {
     id: "d0",
     name: "Conformance",
@@ -1044,7 +1194,7 @@ function payload(scale = 1) {
     height: 100,
     fps: 10,
     background: "#ffffff",
-    scenes: fixtureScenes(),
+    scenes: folders ? folderFixture() : fixtureScenes(),
     loop: false,
     scale,
     startFrame: 0,
@@ -1052,16 +1202,16 @@ function payload(scale = 1) {
   };
 }
 
-function player(scale = 1): Player {
+function player(scale = 1, folders = false): Player {
   ids = new Map();
   const canvas = document.createElement("canvas");
-  const instance = StickMate.load(payload(scale));
+  const instance = StickMate.load(payload(scale, folders));
   instance.mount(canvas);
   return instance;
 }
 
-function traceAt(frame: number, scale = 1): NormalLayer[] {
-  const instance = player(scale);
+function traceAt(frame: number, scale = 1, folders = false): NormalLayer[] {
+  const instance = player(scale, folders);
   log = [];
   instance.seek(frame);
   const parsed = fromTrace(log);
@@ -1069,14 +1219,14 @@ function traceAt(frame: number, scale = 1): NormalLayer[] {
   return parsed.layers;
 }
 
-async function mountEditor(): Promise<{ id: string; svg: SVGSVGElement }> {
+async function mountEditor(folders = false): Promise<{ id: string; svg: SVGSVGElement }> {
   installBackend("editor");
   const doc = await docNew("Conformance", 200, 100, 10, "#ffffff");
   const state = store.get(doc.id);
   if (!state) {
     throw new Error("document is not in the store");
   }
-  state.doc.scenes = fixtureScenes();
+  state.doc.scenes = folders ? folderFixture() : fixtureScenes();
   render(<App />);
   await act(async () => {
     await emit("editor-open", doc.id);
@@ -1133,8 +1283,34 @@ describe("editor and export renderer conformance", () => {
     expect(traceAt(0)).toEqual(expected);
   });
 
-  test("every shape kind survives the round trip", async () => {
-    const { svg } = await mountEditor();
+  test("layer folders composite identically in both renderers", async () => {
+    const { id, svg } = await mountEditor(true);
+    const evaluated = await docEvaluate(id, "s0", 0, 2);
+    for (const frame of evaluated) {
+      const expected = fromEvaluation(frame.layers);
+      expect(fromSvg(svg)).toEqual(expected);
+      expect(traceAt(frame.frame, 1, true)).toEqual(expected);
+    }
+    const [art, base] = fromEvaluation(evaluated[0].layers);
+    expect(art).toMatchObject({
+      opacity: 0.5,
+      blend: "multiply",
+      filter: "blur(3px)",
+      transform: [0, 0, 0, 1],
+      mask: null,
+      shapes: []
+    });
+    expect(base.shapes).toHaveLength(1);
+    const [deep, topOfArt] = art.children;
+    expect(art.children).toHaveLength(2);
+    expect(deep.children).toHaveLength(2);
+    expect(deep.children[0].shapes).toHaveLength(1);
+    expect(deep.children[1].shapes).toHaveLength(1);
+    expect(deep.children[1].mask?.shapes).toEqual(deep.children[0].shapes);
+    expect(topOfArt.shapes).toHaveLength(1);
+  });
+
+  test("every shape kind survives the round trip", async () => {    const { svg } = await mountEditor();
     const kinds = fromSvg(svg)[0].shapes.map((shape) => shape.kind);
     expect(kinds).toEqual([
       "Stroke",

@@ -68,7 +68,7 @@ function sanitizeEffects(effects: Effect[]): Effect[] {
 }
 
 function maskFrom(provider: Layer | undefined, frame: number): EvalMask | null {
-  if (!provider || !provider.visible || frame >= provider.length) {
+  if (!provider || provider.folder || !provider.visible || frame >= provider.length) {
     return null;
   }
   const evaluated = evaluateLayer(provider, frame);
@@ -78,15 +78,22 @@ function maskFrom(provider: Layer | undefined, frame: number): EvalMask | null {
   return { transform: evaluated.transform, shapes: evaluated.shapes };
 }
 
-function validateSceneMasks(target: Scene): void {
-  for (let index = 1; index < target.layers.length; index += 1) {
-    if (target.layers[index].masked && target.layers[index - 1].masked) {
-      target.layers[index].masked = false;
+function validateLayerMasks(layers: Layer[]): void {
+  for (let index = 1; index < layers.length; index += 1) {
+    const clipped = layers[index - 1].masked || layers[index - 1].folder;
+    if (layers[index].folder || (layers[index].masked && clipped)) {
+      layers[index].masked = false;
     }
   }
-  if (target.layers.length > 0) {
-    target.layers[0].masked = false;
+  if (layers.length > 0) {
+    layers[0].masked = false;
   }
+  layers.forEach((layer) => validateLayerMasks(layer.children));
+}
+
+function validateSceneMasks(target: Scene): void {
+  validateFolders(target.layers, 1, []);
+  validateLayerMasks(target.layers);
 }
 
 const identity = (): Transform => ({
@@ -569,8 +576,212 @@ function newLayer(name: string): Layer {
     effects: [],
     masked: false,
     length: 1,
-    keys: [emptyKey(0)]
+    keys: [emptyKey(0)],
+    folder: false,
+    children: []
   };
+}
+
+function newFolder(name: string): Layer {
+  return {
+    id: id("l"),
+    name,
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend: "normal",
+    effects: [],
+    masked: false,
+    length: 0,
+    keys: [],
+    folder: true,
+    children: []
+  };
+}
+
+const maxFolderDepth = 16;
+
+function findLayer(layers: Layer[], layerId: string): Layer | null {
+  for (const layer of layers) {
+    if (layer.id === layerId) {
+      return layer;
+    }
+    const nested = findLayer(layer.children, layerId);
+    if (nested) {
+      return nested;
+    }
+  }
+  return null;
+}
+
+function leafCount(layers: Layer[]): number {
+  return layers.reduce((total, layer) => total + (layer.folder ? leafCount(layer.children) : 1), 0);
+}
+
+function subtreeLeafCount(layer: Layer): number {
+  return layer.folder ? layer.children.reduce((total, child) => total + subtreeLeafCount(child), 0) : 1;
+}
+
+function containsLayer(layers: Layer[], layerId: string): boolean {
+  return layers.some((layer) => layer.id === layerId || containsLayer(layer.children, layerId));
+}
+
+function subtreeHeight(layer: Layer): number {
+  return 1 + layer.children.reduce((tallest, child) => Math.max(tallest, subtreeHeight(child)), 0);
+}
+
+function layerDepth(layers: Layer[], layerId: string, level: number): number | null {
+  for (const layer of layers) {
+    if (layer.id === layerId) {
+      return level;
+    }
+    const nested = layerDepth(layer.children, layerId, level + 1);
+    if (nested !== null) {
+      return nested;
+    }
+  }
+  return null;
+}
+
+function ancestorLocked(layers: Layer[], layerId: string, inherited = false): boolean {
+  for (const layer of layers) {
+    if (layer.id === layerId) {
+      return inherited;
+    }
+    if (ancestorLocked(layer.children, layerId, inherited || layer.locked)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function reseedLayer(layer: Layer): void {
+  layer.id = id("l");
+  layer.children.forEach(reseedLayer);
+}
+
+function insertLayerTree(
+  layers: Layer[],
+  parentId: string | null | undefined,
+  index: number,
+  layer: Layer
+): void {
+  if (parentId === null || parentId === undefined) {
+    layers.splice(Math.min(index, layers.length), 0, layer);
+    return;
+  }
+  for (const current of layers) {
+    if (current.id === parentId) {
+      if (!current.folder) {
+        throw new Error("target is not a folder");
+      }
+      current.children.splice(Math.min(index, current.children.length), 0, layer);
+      return;
+    }
+    if (findLayer(current.children, parentId)) {
+      insertLayerTree(current.children, parentId, index, layer);
+      return;
+    }
+  }
+  throw new Error("unknown folder");
+}
+
+function removeLayerTree(layers: Layer[], layerId: string): Layer {
+  const index = layers.findIndex((layer) => layer.id === layerId);
+  if (index >= 0) {
+    return layers.splice(index, 1)[0];
+  }
+  for (const layer of layers) {
+    if (findLayer(layer.children, layerId)) {
+      return removeLayerTree(layer.children, layerId);
+    }
+  }
+  throw new Error("unknown layer");
+}
+
+function duplicateLayerTree(layers: Layer[], layerId: string): void {
+  const index = layers.findIndex((layer) => layer.id === layerId);
+  if (index >= 0) {
+    const copy = structuredClone(layers[index]);
+    reseedLayer(copy);
+    copy.name = `${copy.name} copy`;
+    layers.splice(index + 1, 0, copy);
+    return;
+  }
+  for (const layer of layers) {
+    if (findLayer(layer.children, layerId)) {
+      duplicateLayerTree(layer.children, layerId);
+      return;
+    }
+  }
+  throw new Error("unknown layer");
+}
+
+function openFolderTree(layers: Layer[], folderId: string): void {
+  const index = layers.findIndex((layer) => layer.id === folderId);
+  if (index >= 0) {
+    if (!layers[index].folder) {
+      throw new Error("target is not a folder");
+    }
+    const [folder] = layers.splice(index, 1);
+    folder.children.forEach((child, offset) => layers.splice(index + offset, 0, child));
+    return;
+  }
+  for (const layer of layers) {
+    if (findLayer(layer.children, folderId)) {
+      openFolderTree(layer.children, folderId);
+      return;
+    }
+  }
+  throw new Error("unknown folder");
+}
+
+function setLayerMask(layers: Layer[], layerId: string, masked: boolean): void {
+  for (let index = 0; index < layers.length; index += 1) {
+    if (layers[index].id === layerId) {
+      if (masked) {
+        if (layers[index].folder) {
+          throw new Error("folders cannot be clipped");
+        }
+        if (index === 0) {
+          throw new Error("the top layer cannot be clipped");
+        }
+        if (layers[index - 1].masked) {
+          throw new Error("a mask layer cannot itself be clipped");
+        }
+        if (layers[index - 1].folder) {
+          throw new Error("clipping needs a layer directly above");
+        }
+      }
+      layers[index].masked = masked;
+      return;
+    }
+    if (findLayer(layers[index].children, layerId)) {
+      setLayerMask(layers[index].children, layerId, masked);
+      return;
+    }
+  }
+  throw new Error("unknown layer");
+}
+
+function validateFolders(layers: Layer[], level: number, ids: string[]): void {
+  for (const layer of layers) {
+    if (level > maxFolderDepth) {
+      throw new Error("folders cannot nest deeper than 16 levels");
+    }
+    if (!layer.id || ids.includes(layer.id)) {
+      throw new Error("duplicate layer id");
+    }
+    ids.push(layer.id);
+    if (layer.folder) {
+      if (layer.keys.length > 0 || layer.masked) {
+        throw new Error("folders cannot hold keyframes or clips");
+      }
+      validateFolders(layer.children, level + 1, ids);
+    } else if (layer.children.length > 0) {
+      throw new Error("only folders can hold layers");
+    }
+  }
 }
 
 function newScene(name: string): Scene {
@@ -890,13 +1101,51 @@ function evaluateLayer(layer: Layer, frame: number): EvalLayer | null {
   }
   return {
     id: layer.id,
+    folder: false,
     opacity: Math.min(1, Math.max(0, layer.opacity * transform.opacity)),
     blend: layer.blend,
     effects: layer.effects,
     mask: null,
     transform,
-    shapes
+    shapes,
+    children: []
   };
+}
+
+function evaluateFolder(folder: Layer, frame: number): EvalLayer | null {
+  if (!folder.visible) {
+    return null;
+  }
+  const children = evaluateLayers(folder.children, frame);
+  if (children.length === 0) {
+    return null;
+  }
+  return {
+    id: folder.id,
+    folder: true,
+    opacity: Math.min(1, Math.max(0, folder.opacity)),
+    blend: folder.blend,
+    effects: folder.effects,
+    mask: null,
+    transform: identity(),
+    shapes: [],
+    children
+  };
+}
+
+function evaluateLayers(layers: Layer[], frame: number): EvalLayer[] {
+  const evaluated: EvalLayer[] = [];
+  layers.forEach((item, position) => {
+    const evaluatedLayer = item.folder ? evaluateFolder(item, frame) : evaluateLayer(item, frame);
+    if (!evaluatedLayer) {
+      return;
+    }
+    if (item.masked && position > 0) {
+      evaluatedLayer.mask = maskFrom(layers[position - 1], frame);
+    }
+    evaluated.push(evaluatedLayer);
+  });
+  return evaluated;
 }
 
 export interface State {
@@ -924,10 +1173,25 @@ function scene(doc: Document, sceneId: string): Scene {
   return found;
 }
 
-function layer(doc: Document, sceneId: string, layerId: string): Layer {
-  const found = scene(doc, sceneId).layers.find((item) => item.id === layerId);
+function anyLayer(doc: Document, sceneId: string, layerId: string): Layer {
+  const found = findLayer(scene(doc, sceneId).layers, layerId);
   if (!found) {
     throw new Error("unknown layer");
+  }
+  return found;
+}
+
+function layer(doc: Document, sceneId: string, layerId: string): Layer {
+  const layers = scene(doc, sceneId).layers;
+  const found = findLayer(layers, layerId);
+  if (!found) {
+    throw new Error("unknown layer");
+  }
+  if (found.folder) {
+    throw new Error("folders cannot hold frames or shapes");
+  }
+  if (ancestorLocked(layers, layerId)) {
+    throw new Error("layer is locked");
   }
   return found;
 }
@@ -979,6 +1243,15 @@ export interface MockContext {
   state: typeof state;
   scene: typeof scene;
   layer: typeof layer;
+  anyLayer: typeof anyLayer;
+  findLayer: typeof findLayer;
+  leafCount: typeof leafCount;
+  newFolder: typeof newFolder;
+  insertLayerTree: typeof insertLayerTree;
+  removeLayerTree: typeof removeLayerTree;
+  duplicateLayerTree: typeof duplicateLayerTree;
+  reseedLayer: typeof reseedLayer;
+  setLayerMask: typeof setLayerMask;
   edit: typeof edit;
   id: typeof id;
   newLayer: typeof newLayer;
@@ -988,6 +1261,7 @@ export interface MockContext {
   keyAt: typeof keyAt;
   writable: typeof writable;
   evaluateLayer: typeof evaluateLayer;
+  evaluateLayers: typeof evaluateLayers;
   validateSceneMasks: typeof validateSceneMasks;
   identity: typeof identity;
 }
@@ -1004,6 +1278,15 @@ const context: MockContext = {
   state,
   scene,
   layer,
+  anyLayer,
+  findLayer,
+  leafCount,
+  newFolder,
+  insertLayerTree,
+  removeLayerTree,
+  duplicateLayerTree,
+  reseedLayer,
+  setLayerMask,
   edit,
   id,
   newLayer,
@@ -1013,6 +1296,7 @@ const context: MockContext = {
   keyAt,
   writable,
   evaluateLayer,
+  evaluateLayers,
   validateSceneMasks,
   identity
 };
@@ -1127,9 +1411,7 @@ mockIPC(
           const copy = structuredClone(doc.scenes[index]);
           copy.id = id("s");
           copy.name = `${copy.name} copy`;
-          copy.layers.forEach((item) => {
-            item.id = id("l");
-          });
+          copy.layers.forEach(reseedLayer);
           doc.scenes.splice(index + 1, 0, copy);
         });
       case "doc_move_scene":
@@ -1145,18 +1427,42 @@ mockIPC(
       case "doc_add_layer":
         return edit(a.id as string, (doc) => {
           const target = scene(doc, a.sceneId as string);
-          target.layers.unshift(
+          insertLayerTree(
+            target.layers,
+            a.parentId as string | null,
+            0,
             newLayer(
-              cleanName(a.name as string) ?? `Layer ${target.layers.length + 1}`
+              cleanName(a.name as string) ?? `Layer ${leafCount(target.layers) + 1}`
             )
           );
+          validateSceneMasks(target);
+        });
+      case "doc_add_folder":
+        return edit(a.id as string, (doc) => {
+          const target = scene(doc, a.sceneId as string);
+          insertLayerTree(
+            target.layers,
+            a.parentId as string | null,
+            0,
+            newFolder(
+              cleanName(a.name as string) ?? `Folder ${leafCount(target.layers) + 1}`
+            )
+          );
+          validateSceneMasks(target);
+        });
+      case "doc_remove_folder":
+        return edit(a.id as string, (doc) => {
+          const target = scene(doc, a.sceneId as string);
+          openFolderTree(target.layers, a.folderId as string);
           validateSceneMasks(target);
         });
       case "doc_set_layer":
         return edit(a.id as string, (doc) => {
           const target = scene(doc, a.sceneId as string);
-          const item = layer(doc, a.sceneId as string, a.layerId as string);
-          const index = target.layers.indexOf(item);
+          const item = anyLayer(doc, a.sceneId as string, a.layerId as string);
+          if (a.masked !== null && a.masked !== undefined) {
+            setLayerMask(target.layers, a.layerId as string, a.masked as boolean);
+          }
           if (a.name !== null && a.name !== undefined) {
             const name = cleanName(a.name as string);
             if (!name) {
@@ -1186,42 +1492,48 @@ mockIPC(
           if (a.effects !== null && a.effects !== undefined) {
             item.effects = sanitizeEffects(a.effects as Effect[]);
           }
-          if (a.masked !== null && a.masked !== undefined) {
-            if (a.masked as boolean) {
-              if (index === 0) {
-                throw new Error("the top layer cannot be clipped");
-              }
-              if (target.layers[index - 1].masked) {
-                throw new Error("a mask layer cannot itself be clipped");
-              }
-            }
-            item.masked = a.masked as boolean;
-          }
           validateSceneMasks(target);
         });
       case "doc_remove_layer":
         return edit(a.id as string, (doc) => {
           const target = scene(doc, a.sceneId as string);
-          if (target.layers.length < 2) {
+          if (leafCount(target.layers) < 2) {
             throw new Error("a scene needs at least one layer");
           }
-          target.layers.splice(
-            target.layers.indexOf(
-              layer(doc, a.sceneId as string, a.layerId as string)
-            ),
-            1
-          );
+          const item = anyLayer(doc, a.sceneId as string, a.layerId as string);
+          if (leafCount(target.layers) - subtreeLeafCount(item) < 1) {
+            throw new Error("a scene needs at least one layer");
+          }
+          removeLayerTree(target.layers, a.layerId as string);
           validateSceneMasks(target);
         });
       case "doc_move_layer":
         return edit(a.id as string, (doc) => {
           const target = scene(doc, a.sceneId as string);
-          const item = layer(doc, a.sceneId as string, a.layerId as string);
-          target.layers.splice(target.layers.indexOf(item), 1);
-          target.layers.splice(
-            Math.min(a.index as number, target.layers.length),
-            0,
-            item
+          const item = anyLayer(doc, a.sceneId as string, a.layerId as string);
+          const height = subtreeHeight(item);
+          const parentId = a.parentId as string | null;
+          if (parentId !== null && parentId !== undefined) {
+            const depth = layerDepth(target.layers, parentId, 1);
+            if (depth === null) {
+              throw new Error("unknown folder");
+            }
+            const folder = findLayer(target.layers, parentId);
+            if (!folder || !folder.folder) {
+              throw new Error("target is not a folder");
+            }
+            if (parentId === item.id || containsLayer(item.children, parentId)) {
+              throw new Error("a folder cannot contain itself");
+            }
+            if (depth + height > maxFolderDepth) {
+              throw new Error("folders cannot nest deeper than 16 levels");
+            }
+          }
+          insertLayerTree(
+            target.layers,
+            parentId,
+            a.index as number,
+            removeLayerTree(target.layers, a.layerId as string)
           );
           validateSceneMasks(target);
         });
@@ -1605,18 +1917,7 @@ mockIPC(
         const target = scene(current.doc, a.sceneId as string);
         const frames: EvalFrame[] = [];
         for (let frame = start; frame <= end; frame += 1) {
-          const layers: EvalLayer[] = [];
-          target.layers.forEach((item, position) => {
-            const evaluated = evaluateLayer(item, frame);
-            if (!evaluated) {
-              return;
-            }
-            if (item.masked && position > 0) {
-              evaluated.mask = maskFrom(target.layers[position - 1], frame);
-            }
-            layers.push(evaluated);
-          });
-          frames.push({ frame, layers });
+          frames.push({ frame, layers: evaluateLayers(target.layers, frame) });
         }
         return frames;
       }

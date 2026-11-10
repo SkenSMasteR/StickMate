@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import {
   ArrowRight,
+  ChevronDown,
+  ChevronRight,
   ClipboardPaste,
   Copy,
   CopyPlus,
@@ -28,6 +30,7 @@ import {
 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import type { Layer } from "@/lib/document";
+import { visibleRows } from "@/lib/document";
 import { cn } from "@/lib/utils";
 import ToolButton from "./ToolButton";
 import { useWorkspace } from "./workspace";
@@ -120,7 +123,8 @@ export default function Timeline() {
   for (let index = from; index <= to; index += 1) {
     frames.push(index);
   }
-  const contentHeight = HEADER + scene.layers.length * ROW;
+  const rows = visibleRows(scene.layers, tab.collapsedFolders);
+  const contentHeight = HEADER + rows.length * ROW;
   const selected = new Set(tab.selectedFrames);
 
   const rangeTo = (frame: number): number[] => {
@@ -155,8 +159,8 @@ export default function Timeline() {
       return;
     }
     event.currentTarget.setPointerCapture(event.pointerId);
-    if (cell.row >= 0 && cell.row < scene.layers.length) {
-      actions.selectLayer(scene.layers[cell.row].id);
+    if (cell.row >= 0 && cell.row < rows.length) {
+      actions.selectLayer(rows[cell.row].layer.id);
     }
     if (event.ctrlKey || event.metaKey) {
       scrubbing.current = false;
@@ -323,42 +327,70 @@ export default function Timeline() {
             >
               {t("editor.layers")}
             </div>
-            {scene.layers.map((item) => (
+            {rows.map((row) => {
+              const item = row.layer;
+              const folded = row.layer.folder && tab.collapsedFolders.includes(item.id);
+              return (
               <div
                 key={item.id}
+                data-folder={item.folder}
                 className={cn(
                   "flex items-center gap-1 border-b border-border/60 px-1",
                   item.id === layer.id && "bg-accent"
                 )}
                 style={{ height: ROW }}
               >
-                <button
-                  type="button"
-                  title={item.visible ? t("editor.hideLayer") : t("editor.showLayer")}
-                  aria-label={item.visible ? t("editor.hideLayer") : t("editor.showLayer")}
-                  onClick={() => actions.setLayerFlags(item.id, { visible: !item.visible })}
-                  className="flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+                <div
+                  className="flex min-w-0 flex-1 items-center gap-1"
+                  style={{ paddingLeft: row.depth * 12 }}
                 >
-                  {item.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
-                </button>
-                <button
-                  type="button"
-                  title={item.locked ? t("editor.unlockLayer") : t("editor.lockLayer")}
-                  aria-label={item.locked ? t("editor.unlockLayer") : t("editor.lockLayer")}
-                  onClick={() => actions.setLayerFlags(item.id, { locked: !item.locked })}
-                  className="flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
-                >
-                  {item.locked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => actions.selectLayer(item.id)}
-                  className="min-w-0 flex-1 truncate text-left text-xs"
-                >
-                  {item.name}
-                </button>
+                  {item.folder ? (
+                    <button
+                      type="button"
+                      aria-expanded={!folded}
+                      title={folded ? t("editor.expandFolder") : t("editor.collapseFolder")}
+                      aria-label={folded ? t("editor.expandFolder") : t("editor.collapseFolder")}
+                      onClick={() => actions.toggleFolder(item.id)}
+                      className="flex h-5 w-4 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+                    >
+                      {folded ? (
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      ) : (
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  ) : (
+                    <span className="h-5 w-4 shrink-0" />
+                  )}
+                  <button
+                    type="button"
+                    title={item.visible ? t("editor.hideLayer") : t("editor.showLayer")}
+                    aria-label={item.visible ? t("editor.hideLayer") : t("editor.showLayer")}
+                    onClick={() => actions.setLayerFlags(item.id, { visible: !item.visible })}
+                    className="flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+                  >
+                    {item.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                  </button>
+                  <button
+                    type="button"
+                    title={item.locked ? t("editor.unlockLayer") : t("editor.lockLayer")}
+                    aria-label={item.locked ? t("editor.unlockLayer") : t("editor.lockLayer")}
+                    onClick={() => actions.setLayerFlags(item.id, { locked: !item.locked })}
+                    className="flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+                  >
+                    {item.locked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => actions.selectLayer(item.id)}
+                    className="min-w-0 flex-1 truncate text-left text-xs"
+                  >
+                    {item.name}
+                  </button>
+                </div>
               </div>
-            ))}
+              );
+            })}
           </div>
 
           <div
@@ -398,26 +430,27 @@ export default function Timeline() {
               />
             )}
 
-            {scene.layers.map((item, rowIndex) => (
+            {rows.map((row, rowIndex) => (
               <div
-                key={item.id}
+                key={row.layer.id}
+                data-folder={row.layer.folder}
                 className={cn(
                   "absolute left-0 right-0 border-b border-border/60",
-                  item.id === layer.id && "bg-accent/30"
+                  row.layer.id === layer.id && "bg-accent/30"
                 )}
                 style={{ top: HEADER + rowIndex * ROW, height: ROW }}
               >
-                {cellsOf(item, from, to).map((cell) => (
+                {(row.layer.folder ? [] : cellsOf(row.layer, from, to)).map((cell) => (
                   <div
                     key={cell.frame}
                     data-frame={cell.frame}
-                    data-selected={item.id === layer.id && selected.has(cell.frame)}
+                    data-selected={row.layer.id === layer.id && selected.has(cell.frame)}
                     className={cn(
                       "absolute top-0 h-full border-r border-border/40",
                       cell.state === "held" && "bg-muted/60",
                       cell.state === "tween" && "bg-primary/15",
                       cell.state === "past" && "border-r-transparent",
-                      item.id === layer.id && selected.has(cell.frame) && "bg-primary/40"
+                      row.layer.id === layer.id && selected.has(cell.frame) && "bg-primary/40"
                     )}
                     style={{ left: cell.frame * CELL, width: CELL }}
                   >
