@@ -241,7 +241,9 @@ describe("command palette", () => {
     const rows = screen.getAllByRole("option");
     expect(rows.length).toBeGreaterThan(40);
     const seek = rows.find((row) => row.textContent?.startsWith("Go to frame"));
-    expect(seek?.textContent).toContain("Ctrl+G");
+    expect(seek?.textContent).toContain("Not set");
+    const group = rows.find((row) => row.textContent?.startsWith("Group"));
+    expect(group?.textContent).toContain("Ctrl+G");
     const rename = rows.find((row) => row.textContent?.startsWith("Rename layer"));
     expect(rename?.textContent).toContain("Not set");
     await closePalette();
@@ -320,13 +322,13 @@ describe("command palette", () => {
     await closePalette();
   }, 60000);
 
-  test("the seek binding opens a prefilled form and rejects out of range frames", async () => {
+  test("the seek command opens a prefilled form and rejects out of range frames", async () => {
     const doc = await renderHost();
     await insertOneFrame();
     await waitFor(() => expect(layerOf(doc).length).toBe(2));
     await insertOneFrame();
     await waitFor(() => expect(layerOf(doc).length).toBe(3));
-    await press("g", { ctrlKey: true });
+    await openForm("go to frame");
     await waitFor(() => expect(field("Frame number")).toBeTruthy());
     expect(field("Frame number").value).toBe("3");
     expect(field("Frame number").min).toBe("1");
@@ -480,8 +482,7 @@ describe("command palette", () => {
     await waitFor(() => expect(layerOf(doc).length).toBe(2));
     await insertOneFrame();
     await waitFor(() => expect(probe().frame).toBe("2"));
-    await press("g", { ctrlKey: true });
-    await waitFor(() => expect(field("Frame number")).toBeTruthy());
+    await openForm("go to frame");
     await setValue(field("Frame number"), "1");
     await runForm();
     await waitFor(() => expect(probe().frame).toBe("0"));
@@ -522,22 +523,22 @@ describe("command palette", () => {
     await press("k", { ctrlKey: true, altKey: true });
     await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
     expect(binding("Rename layer").textContent).toBe("Not set");
-    expect(binding("Go to frame").textContent).toBe("Ctrl+G");
+    expect(binding("Group").textContent).toBe("Ctrl+G");
     expect(binding("Command palette").textContent).toBe("Ctrl+K");
     expect(screen.getByText("Project")).toBeTruthy();
     await record("Rename layer");
-    expect(screen.getByText("Ctrl+G is already used by Go to frame")).toBeTruthy();
+    expect(screen.getByText("Ctrl+G is already used by Group")).toBeTruthy();
     await clickButton("Cancel");
     expect(binding("Rename layer").textContent).toBe("Not set");
     await record("Rename layer");
     await clickButton("Reassign");
     expect(binding("Rename layer").textContent).toBe("Ctrl+G");
-    expect(binding("Go to frame").textContent).toBe("Not set");
+    expect(binding("Group").textContent).toBe("Not set");
     await clickButton("Done");
     await waitFor(() =>
       expect(server.data.shortcuts).toEqual({
         "layer.rename": "ctrl+g",
-        "frame.seek": null
+        "edit.group": null
       })
     );
     await press("g", { ctrlKey: true });
@@ -550,8 +551,7 @@ describe("command palette", () => {
   test("text entry inside the palette and in panel inputs never fires canvas commands", async () => {
     await renderHost();
     await press("v");
-    await press("g", { ctrlKey: true });
-    await waitFor(() => expect(field("Frame number")).toBeTruthy());
+    await openForm("go to frame");
     await keyOn(field("Frame number"), "p");
     expect(probe().tool).toBe("select");
     await act(async () => {

@@ -18,6 +18,11 @@ function checkShape(shape: Shape): void {
     if (value && typeof value === "object") return Object.values(value).every(finite);
     return true;
   };
+  if (shape.kind === "Group") {
+    if (!shape.children.length) throw new Error("invalid clipboard shape");
+    shape.children.forEach(checkShape);
+    return;
+  }
   if (!finite(shape) || ("width" in shape && shape.width < 0)
     || ("w" in shape && (shape.w < 0 || shape.h < 0))
     || (shape.kind === "Stroke" && (!shape.points.length || shape.points.length > 100_000))

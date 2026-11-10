@@ -168,6 +168,45 @@ function tweenEnd(): Shape[] {
   ];
 }
 
+function groupStart(): Shape {
+  return {
+    kind: "Group",
+    children: [
+      { kind: "Rect", x: 10, y: 10, w: 30, h: 20, fill: "#3b82f6", stroke: "#111827", width: 2 },
+      { kind: "Ellipse", x: 50, y: 15, w: 24, h: 16, fill: "#22c55e", stroke: "#111827", width: 1.5 }
+    ]
+  };
+}
+
+function groupEnd(): Shape {
+  return {
+    kind: "Group",
+    children: [
+      { kind: "Rect", x: 30, y: 20, w: 40, h: 30, fill: "#ef4444", stroke: "#111827", width: 4 },
+      { kind: "Ellipse", x: 80, y: 25, w: 30, h: 20, fill: "#0ea5e9", stroke: "#111827", width: 2.5 }
+    ]
+  };
+}
+
+function groupHoldStart(): Shape {
+  return {
+    kind: "Group",
+    children: [
+      { kind: "Rect", x: 120, y: 60, w: 20, h: 10, fill: "#f59e0b", stroke: "#111827", width: 1 }
+    ]
+  };
+}
+
+function groupHoldEnd(): Shape {
+  return {
+    kind: "Group",
+    children: [
+      { kind: "Rect", x: 140, y: 70, w: 20, h: 10, fill: "#a855f7", stroke: "#111827", width: 1 },
+      { kind: "Ellipse", x: 165, y: 70, w: 12, h: 12, fill: "#0ea5e9", stroke: "#111827", width: 1 }
+    ]
+  };
+}
+
 function fixtureScenes() {
   const top: Layer = {
     id: "l-top",
@@ -212,7 +251,19 @@ function fixtureScenes() {
     length: 3,
     keys: [key(0, tweenStart(), { tween: true }), key(2, tweenEnd())]
   };
-  return [{ id: "s0", name: "Scene 1", layers: [top, mid, hidden, tweened] }];
+  const grouped: Layer = {
+    id: "l-group",
+    name: "Group",
+    visible: true,
+    locked: false,
+    opacity: 1,
+    length: 3,
+    keys: [
+      key(0, [groupStart(), groupHoldStart()], { tween: true }),
+      key(2, [groupEnd(), groupHoldEnd()])
+    ]
+  };
+  return [{ id: "s0", name: "Scene 1", layers: [top, mid, hidden, tweened, grouped] }];
 }
 
 function flat(points: Array<{ x: number; y: number }>): number[] {
@@ -236,7 +287,7 @@ function pathCommands(shape: Extract<Shape, { kind: "Path" }>): Array<string | n
   return out;
 }
 
-function normalShape(shape: Shape): NormalShape | null {
+function normalShape(shape: Exclude<Shape, { kind: "Group" }>): NormalShape | null {
   if (shape.kind === "Stroke") {
     if (shape.points.length < 2) {
       return null;
@@ -280,6 +331,14 @@ function normalShape(shape: Shape): NormalShape | null {
   };
 }
 
+function normalShapes(shape: Shape): NormalShape[] {
+  if (shape.kind === "Group") {
+    return shape.children.flatMap(normalShapes);
+  }
+  const single = normalShape(shape);
+  return single ? [single] : [];
+}
+
 function radians(transform: Transform): number[] {
   return [
     transform.x,
@@ -293,7 +352,7 @@ function fromEvaluation(layers: EvalLayer[]): NormalLayer[] {
   return layers.map((layer) => ({
     opacity: layer.opacity,
     transform: radians(layer.transform),
-    shapes: layer.shapes.map(normalShape).filter((item): item is NormalShape => item !== null)
+    shapes: layer.shapes.flatMap(normalShapes)
   }));
 }
 
@@ -312,10 +371,16 @@ function fromSvg(svg: SVGSVGElement): NormalLayer[] {
     const opacity =
       Number(wrapper.getAttribute("opacity") ?? 1) * Number(inner.getAttribute("opacity") ?? 1);
     const shapes: NormalShape[] = [];
-    for (const group of Array.from(inner.children)) {
+    const readShape = (group: Element): void => {
+      if (group.hasAttribute("data-group")) {
+        for (const child of Array.from(group.children)) {
+          readShape(child);
+        }
+        return;
+      }
       const painted = group.querySelector("polyline, text, polygon, path, rect, ellipse");
       if (!painted) {
-        continue;
+        return;
       }
       const tag = painted.tagName.toLowerCase();
       const stroke = painted.getAttribute("stroke") ?? "";
@@ -325,7 +390,7 @@ function fromSvg(svg: SVGSVGElement): NormalLayer[] {
         if (points.length >= 4) {
           shapes.push({ kind: "Stroke", points, color: stroke, width });
         }
-        continue;
+        return;
       }
       if (tag === "text") {
         shapes.push({
@@ -337,12 +402,12 @@ function fromSvg(svg: SVGSVGElement): NormalLayer[] {
           color: painted.getAttribute("fill") ?? "",
           matrix: painted.hasAttribute("transform") ? numbers(painted.getAttribute("transform")) : [1, 0, 0, 1, 0, 0]
         });
-        continue;
+        return;
       }
       const paint: Paint = { fill: painted.getAttribute("fill") ?? "", stroke, width };
       if (tag === "polygon") {
         shapes.push({ kind: "Polygon", points: numbers(painted.getAttribute("points")), paint });
-        continue;
+        return;
       }
       if (tag === "path") {
         const tokens = (painted.getAttribute("d") ?? "").match(/[MCZ]|-?\d+(?:\.\d+)?/gi) ?? [];
@@ -350,7 +415,7 @@ function fromSvg(svg: SVGSVGElement): NormalLayer[] {
           /^[MCZ]$/i.test(token) ? token.toUpperCase() : Number(token)
         );
         shapes.push({ kind: "Path", commands, closed: commands.includes("Z"), paint });
-        continue;
+        return;
       }
       if (tag === "rect") {
         shapes.push({
@@ -363,7 +428,7 @@ function fromSvg(svg: SVGSVGElement): NormalLayer[] {
           ],
           paint
         });
-        continue;
+        return;
       }
       shapes.push({
         kind: "Ellipse",
@@ -375,6 +440,9 @@ function fromSvg(svg: SVGSVGElement): NormalLayer[] {
         ],
         paint
       });
+    };
+    for (const group of Array.from(inner.children)) {
+      readShape(group);
     }
     return { opacity, transform: [matrix[0], matrix[1], (matrix[2] * Math.PI) / 180, matrix[3]], shapes };
   }).reverse();
@@ -769,7 +837,7 @@ describe("editor and export renderer conformance", () => {
 
   test("hidden layers and layers past their length disappear in both", async () => {
     const { id, svg } = await mountEditor();
-    expect(fromSvg(svg)).toHaveLength(3);
+    expect(fromSvg(svg)).toHaveLength(4);
     const evaluated = await docEvaluate(id, "s0", 3, 3);
     expect(evaluated[0].layers.map((layer) => layer.id)).toEqual(["l-top"]);
     expect(traceAt(3)).toHaveLength(1);
@@ -801,5 +869,32 @@ describe("editor and export renderer conformance", () => {
     const painted = fromSvg(svg)[0].shapes.filter((shape) => shape.kind === "Stroke");
     expect(painted).toHaveLength(1);
     expect(traceAt(0)[0].shapes.filter((shape) => shape.kind === "Stroke")).toEqual(painted);
+  });
+
+  test("groups flatten to identical child geometry in both backends", async () => {
+    const { id, svg } = await mountEditor();
+    expect(fromSvg(svg)).toEqual(traceAt(0));
+    const evaluated = await docEvaluate(id, "s0", 0, 0);
+    expect(fromSvg(svg)[3]).toEqual(fromEvaluation(evaluated[0].layers)[3]);
+    expect(fromSvg(svg)[3].shapes).toHaveLength(3);
+  });
+
+  test("matching groups tween child by child while mismatched groups hold", async () => {
+    const { id } = await mountEditor();
+    const evaluated = await docEvaluate(id, "s0", 0, 2);
+    for (const frame of evaluated) {
+      expect(traceAt(frame.frame)).toEqual(fromEvaluation(frame.layers));
+    }
+    expect(evaluated[0].layers[3].shapes).toEqual([groupStart(), groupHoldStart()]);
+    expect(evaluated[2].layers[2].shapes).toEqual([groupEnd(), groupHoldEnd()]);
+    const middle = evaluated[1].layers[3].shapes;
+    expect(middle[0]).toEqual({
+      kind: "Group",
+      children: [
+        { kind: "Rect", x: 20, y: 15, w: 35, h: 25, fill: "#95639d", stroke: "#111827", width: 3 },
+        { kind: "Ellipse", x: 65, y: 20, w: 27, h: 18, fill: "#18b5a4", stroke: "#111827", width: 2 }
+      ]
+    });
+    expect(middle[1]).toEqual(groupHoldStart());
   });
 });

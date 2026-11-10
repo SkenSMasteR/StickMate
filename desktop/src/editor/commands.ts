@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { comboFromEvent } from "@/lib/shortcuts";
 import type { ShortcutOverrides } from "@/lib/shortcuts";
 import type { ConfirmOptions } from "@/lib/confirm";
+import { heldKey } from "@/lib/document";
 import type { Document, Layer, Scene } from "@/lib/document";
 import type { Actions, TabState, Tool } from "./workspace";
 
@@ -187,7 +188,7 @@ function parameterCommands(
     prompt(
       "frame.seek",
       t("command.seek"),
-      "ctrl+g",
+      null,
       [intArg("frame", t("palette.arg.frame"), 1, total, frame + 1)],
       (values) => actions.seek(Number(values.frame) - 1),
       !ready
@@ -490,6 +491,11 @@ export function buildCommands(
   openExport: () => void,
   context?: CommandContext
 ): Command[] {
+  const selected = context?.state.tab?.selected ?? [];
+  const heldShapes = context?.state.layer
+    ? heldKey(context.state.layer, context.state.frame)?.shapes ?? []
+    : [];
+  const singleShape = selected.length === 1 ? heldShapes[selected[0]] : undefined;
   const defaults: CommandDef[] = [
     { id: "tool.select", label: t("command.select"), keys: "v", run: () => actions.setTool("select") },
     { id: "tool.pencil", label: t("command.pencil"), keys: "p", run: () => actions.setTool("pencil") },
@@ -515,6 +521,8 @@ export function buildCommands(
     { id: "edit.deselect", label: t("command.deselect"), keys: "escape", run: () => actions.select(null) },
     { id: "edit.copy", label: t("command.copyShape"), keys: "ctrl+c", run: actions.copySelected },
     { id: "edit.paste", label: t("command.pasteShape"), keys: "ctrl+v", run: actions.pasteSelected },
+    { id: "edit.group", label: t("command.group"), keys: "ctrl+g", run: actions.groupSelected, disabled: selected.length < 2 },
+    { id: "edit.ungroup", label: t("command.ungroup"), keys: "ctrl+shift+g", run: actions.ungroupSelected, disabled: singleShape?.kind !== "Group" },
     { id: "frame.insert", label: t("command.insertFrame"), keys: "f5", run: actions.insertFrame },
     { id: "frame.keyframe", label: t("command.keyframe"), keys: "f6", run: () => actions.keyframe(false) },
     { id: "frame.blank", label: t("command.blankKeyframe"), keys: "shift+f6", run: () => actions.keyframe(true) },

@@ -142,6 +142,32 @@
     return out;
   }
 
+  function mixable(a, b) {
+    if (a.kind !== b.kind) {
+      return false;
+    }
+    if (a.kind === "Rect" || a.kind === "Ellipse" || a.kind === "Text") {
+      return true;
+    }
+    if (a.kind === "Polygon") {
+      return a.sides === b.sides;
+    }
+    if (a.kind === "Stroke") {
+      return a.points.length === b.points.length && a.points.length > 1;
+    }
+    if (a.kind === "Path") {
+      return a.closed === b.closed && a.nodes.length === b.nodes.length && a.nodes.length > 1;
+    }
+    if (a.kind === "Group") {
+      return (
+        a.children.length > 0 &&
+        a.children.length === b.children.length &&
+        a.children.every((child, index) => mixable(child, b.children[index]))
+      );
+    }
+    return false;
+  }
+
   function mixShape(a, b, t) {
     if (t <= 0) {
       return a;
@@ -151,6 +177,15 @@
     }
     if (a.kind !== b.kind) {
       return a;
+    }
+    if (a.kind === "Group") {
+      if (!mixable(a, b)) {
+        return a;
+      }
+      return {
+        kind: "Group",
+        children: a.children.map((child, index) => mixShape(child, b.children[index], t))
+      };
     }
     if (a.kind === "Rect" || a.kind === "Ellipse" || a.kind === "Polygon") {
       if (a.kind === "Polygon" && a.sides !== b.sides) {
@@ -280,6 +315,12 @@
   }
 
   function drawShape(ctx, shape) {
+    if (shape.kind === "Group") {
+      for (const child of shape.children) {
+        drawShape(ctx, child);
+      }
+      return;
+    }
     if (shape.kind === "Stroke") {
       if (shape.points.length < 2) {
         return;

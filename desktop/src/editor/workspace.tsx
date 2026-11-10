@@ -24,6 +24,7 @@ import {
   docErase,
   docEvaluate,
   docGet,
+  docGroupShapes,
   docInsertFrame,
   docKeyframe,
   docMoveLayer,
@@ -43,6 +44,7 @@ import {
   docSetTween,
   docTransformShapes,
   docUndo,
+  docUngroupShape,
   docRedo,
   heldKey,
   identityTransform,
@@ -199,6 +201,8 @@ export interface Actions {
   reorderSelected: (toFront: boolean) => void;
   nudgeSelected: (dx: number, dy: number) => void;
   alignSelected: (mode: AlignMode) => void;
+  groupSelected: () => void;
+  ungroupSelected: () => void;
   copySelected: () => Promise<void>;
   pasteSelected: () => Promise<void>;
   selectLayer: (layerId: string) => void;
@@ -557,6 +561,35 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       edit((d, s, l) =>
         docAlignShapes(d.id, s.id, l.id, frame, indices, mode, reference)
       );
+    },
+    groupSelected: () => {
+      const indices = tab?.selected ?? [];
+      if (indices.length < 2 || tab?.playing || layer?.locked) {
+        return;
+      }
+      const sorted = [...new Set(indices)].sort((a, b) => a - b);
+      void edit((d, s, l) => docGroupShapes(d.id, s.id, l.id, frame, sorted)).then((ok) => {
+        if (ok) {
+          setTab({ selected: [sorted[0]], pivot: null, selectedNode: null });
+        }
+      });
+    },
+    ungroupSelected: () => {
+      const indices = tab?.selected ?? [];
+      if (indices.length !== 1 || tab?.playing || !layer || layer.locked) {
+        return;
+      }
+      const index = indices[0];
+      const shape = heldKey(layer, frame)?.shapes[index];
+      if (shape?.kind !== "Group") {
+        return;
+      }
+      const count = shape.children.length;
+      void edit((d, s, l) => docUngroupShape(d.id, s.id, l.id, frame, index)).then((ok) => {
+        if (ok) {
+          setTab({ selected: frameRange(index, count), pivot: null, selectedNode: null });
+        }
+      });
     },
     copySelected: async () => {
       if (!doc || !scene || !layer || !tab || tab.playing || !tab.selected.length) {

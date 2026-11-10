@@ -122,11 +122,15 @@ function tick(): Promise<void> {
 describe("command model", () => {
   test("the five argument call keeps only zero argument commands", () => {
     const commands = buildCommands(stubActions(), t, {}, vi.fn(), vi.fn());
-    expect(commands.length).toBe(59);
+    expect(commands.length).toBe(61);
     expect(commands.every((item) => item.args === undefined)).toBe(true);
     expect(commands.find((item) => item.id === "view.palette")?.disabled).toBe(true);
     expect(commands.some((item) => item.id === "layer.rename")).toBe(false);
     expect(commands.some((item) => item.id === "align.left")).toBe(true);
+    expect(commands.find((item) => item.id === "edit.group")?.defaultKeys).toBe("ctrl+g");
+    expect(commands.find((item) => item.id === "edit.ungroup")?.defaultKeys).toBe(
+      "ctrl+shift+g"
+    );
   });
 
   test("the context call registers every parameterized action", () => {
@@ -180,7 +184,7 @@ describe("command model", () => {
     ]) {
       expect(ids, id).toContain(id);
     }
-    expect(commands.length).toBe(87);
+    expect(commands.length).toBe(89);
     for (const command of commands) {
       if (command.args) {
         expect(typeof command.runArgs, command.id).toBe("function");
@@ -204,7 +208,11 @@ describe("command model", () => {
     );
     expect(result.ok).toBe(true);
     expect(commands.find((item) => item.id === "view.palette")?.defaultKeys).toBe("ctrl+k");
-    expect(commands.find((item) => item.id === "frame.seek")?.defaultKeys).toBe("ctrl+g");
+    expect(commands.find((item) => item.id === "frame.seek")?.defaultKeys).toBeNull();
+    expect(commands.find((item) => item.id === "edit.group")?.defaultKeys).toBe("ctrl+g");
+    expect(commands.find((item) => item.id === "edit.ungroup")?.defaultKeys).toBe(
+      "ctrl+shift+g"
+    );
     expect(commands.find((item) => item.id === "layer.rename")?.defaultKeys).toBeNull();
   });
 
@@ -222,7 +230,7 @@ describe("command model", () => {
     expect(rename?.defaultKeys).toBeNull();
     const seek = commands.find((item) => item.id === "frame.seek");
     expect(seek?.keys).toBeNull();
-    expect(seek?.defaultKeys).toBe("ctrl+g");
+    expect(seek?.defaultKeys).toBeNull();
     expect(commands.find((item) => item.id === "view.palette")?.keys).toBe("ctrl+shift+p");
   });
 
@@ -325,6 +333,39 @@ describe("command model", () => {
     expect(actions.alignSelected).toHaveBeenCalledWith("distribute_h");
     byId("align.distributeV")?.run();
     expect(actions.alignSelected).toHaveBeenCalledWith("distribute_v");
+    byId("edit.group")?.run();
+    expect(actions.groupSelected).toHaveBeenCalledWith();
+    byId("edit.ungroup")?.run();
+    expect(actions.ungroupSelected).toHaveBeenCalledWith();
+  });
+
+  test("group and ungroup availability follows the selection", () => {
+    const context = makeContext(fixtureDoc());
+    const build = () =>
+      buildCommands(stubActions(), t, {}, vi.fn(), vi.fn(), context);
+    const state = (id: string) =>
+      build().find((item) => item.id === id)?.disabled;
+    expect(state("edit.group")).toBe(true);
+    expect(state("edit.ungroup")).toBe(true);
+    const tab = context.state.tab;
+    if (!tab) {
+      throw new Error("tab is missing");
+    }
+    tab.selected = [0, 1];
+    expect(state("edit.group")).toBe(false);
+    expect(state("edit.ungroup")).toBe(true);
+    tab.selected = [0];
+    context.state.layer?.keys[0].shapes.push({
+      kind: "Group",
+      children: [
+        { kind: "Rect", x: 0, y: 0, w: 10, h: 10, fill: "#000000", stroke: "#000000", width: 1 }
+      ]
+    });
+    expect(state("edit.group")).toBe(true);
+    expect(state("edit.ungroup")).toBe(false);
+    tab.selected = [];
+    expect(state("edit.group")).toBe(true);
+    expect(state("edit.ungroup")).toBe(true);
   });
 
   test("removing frames by count asks for confirmation first", async () => {

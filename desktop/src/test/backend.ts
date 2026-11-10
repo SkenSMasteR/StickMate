@@ -102,6 +102,15 @@ function insidePolygon(p: Point, vertices: Point[]): boolean {
 }
 
 function shapeHit(shape: Shape, p: Point, radius: number): boolean {
+  if (shape.kind === "Group") {
+    const box = shapeBounds(shape);
+    return (
+      p.x >= box.x - radius &&
+      p.x <= box.x + box.w + radius &&
+      p.y >= box.y - radius &&
+      p.y <= box.y + box.h + radius
+    );
+  }
   if (shape.kind === "Stroke") {
     const reach = radius + shape.width / 2;
     return (
@@ -185,6 +194,15 @@ function densify(path: Point[], spacing: number): Point[] {
 }
 
 function validateShape(shape: Shape): void {
+  if (shape.kind === "Group") {
+    if (shape.children.length === 0) {
+      throw new Error("group is empty");
+    }
+    for (const child of shape.children) {
+      validateShape(child);
+    }
+    return;
+  }
   if (shape.kind === "Polygon" && shape.sides < 3) {
     throw new Error("polygon needs at least 3 sides");
   }
@@ -225,6 +243,19 @@ function validateShape(shape: Shape): void {
   }
 }
 
+function paintFill(shape: Shape, color: string): Shape {
+  if (shape.kind === "Group") {
+    return {
+      kind: "Group",
+      children: shape.children.map((child) => paintFill(child, color))
+    };
+  }
+  if (shape.kind === "Stroke" || shape.kind === "Text") {
+    return shape;
+  }
+  return { ...shape, fill: color };
+}
+
 function cornersPath(
   corners: Point[],
   matrix: Affine,
@@ -247,6 +278,12 @@ export function transformShape(
   sy: number,
   rotation: number
 ): Shape {
+  if (shape.kind === "Group") {
+    return {
+      kind: "Group",
+      children: shape.children.map((child) => transformShape(child, matrix, sx, sy, rotation))
+    };
+  }
   if (shape.kind === "Stroke") {
     return {
       ...shape,
@@ -534,12 +571,44 @@ function mixAffine(a: Affine, b: Affine, t: number): Affine {
   };
 }
 
+function mixable(a: Shape, b: Shape): boolean {
+  if (a.kind !== b.kind) {
+    return false;
+  }
+  if (a.kind === "Rect" || a.kind === "Ellipse" || a.kind === "Text") {
+    return true;
+  }
+  if (a.kind === "Polygon" && b.kind === "Polygon") {
+    return a.sides === b.sides;
+  }
+  if (a.kind === "Stroke" && b.kind === "Stroke") {
+    return a.points.length === b.points.length && a.points.length > 1;
+  }
+  if (a.kind === "Path" && b.kind === "Path") {
+    return a.closed === b.closed && a.nodes.length === b.nodes.length && a.nodes.length > 1;
+  }
+  if (a.kind === "Group" && b.kind === "Group") {
+    return (
+      a.children.length > 0 &&
+      a.children.length === b.children.length &&
+      a.children.every((child, index) => mixable(child, b.children[index]))
+    );
+  }
+  return false;
+}
+
 function mixShape(a: Shape, b: Shape, t: number): Shape {
   if (t <= 0) {
     return structuredClone(a);
   }
   if (t >= 1) {
     return structuredClone(b);
+  }
+  if (a.kind === "Group" && b.kind === "Group" && mixable(a, b)) {
+    return {
+      kind: "Group",
+      children: a.children.map((child, index) => mixShape(child, b.children[index], t))
+    };
   }
   if (a.kind === "Rect" && b.kind === "Rect") {
     return {
@@ -1055,7 +1124,9 @@ mockIPC(
           const key = target.keys[keyAt(target, a.frame as number)];
           const kept: Shape[] = [];
           for (const shape of key.shapes) {
-            if (shape.kind === "Stroke") {
+            if (shape.kind === "Group") {
+              kept.push(shape);
+            } else if (shape.kind === "Stroke") {
               const reach = radius + shape.width / 2;
               let run: Point[] = [];
               for (const point of shape.points) {
@@ -1091,7 +1162,7 @@ mockIPC(
           key.shapes[index] =
             shape.kind === "Stroke" || shape.kind === "Text"
               ? { ...shape, color: a.color as string }
-              : { ...shape, fill: a.color as string };
+              : paintFill(shape, a.color as string);
         });
       case "doc_replace_shape": {
         const shape = a.shape as Shape;
@@ -1202,6 +1273,56 @@ mockIPC(
           }
         });
       }
+      case "doc_group_shapes": {
+        const indices = a.indices as number[];
+        const sorted = [...new Set(indices)].sort((x, y) => x - y);
+        if (sorted.length < 2) {
+          throw new Error("select at least two shapes");
+        }
+        return edit(a.id as string, (doc) => {
+          const target = layer(doc, a.sceneId as string, a.layerId as string);
+          writable(target);
+          const frame = a.frame as number;
+          const held = heldIndex(target, frame);
+          const source = held >= 0 ? structuredClone(target.keys[held].shapes) : [];
+          for (const shapeIndex of sorted) {
+            if (shapeIndex >= source.length) {
+              throw new Error("unknown shape");
+            }
+          }
+          const group: Shape = {
+            kind: "Group",
+            children: sorted.map((shapeIndex) => source[shapeIndex])
+          };
+          validateShape(group);
+          const key = target.keys[keyAt(target, frame)];
+          for (const shapeIndex of [...sorted].reverse()) {
+            key.shapes.splice(shapeIndex, 1);
+          }
+          key.shapes.splice(sorted[0], 0, group);
+        });
+      }
+      case "doc_ungroup_shape":
+        return edit(a.id as string, (doc) => {
+          const target = layer(doc, a.sceneId as string, a.layerId as string);
+          writable(target);
+          const frame = a.frame as number;
+          const held = heldIndex(target, frame);
+          const source = held >= 0 ? structuredClone(target.keys[held].shapes) : [];
+          const index = a.index as number;
+          const shape = source[index];
+          if (!shape) {
+            throw new Error("unknown shape");
+          }
+          if (shape.kind !== "Group") {
+            throw new Error("shape is not a group");
+          }
+          for (const child of shape.children) {
+            validateShape(child);
+          }
+          const key = target.keys[keyAt(target, frame)];
+          key.shapes.splice(index, 1, ...shape.children);
+        });
       case "doc_reorder_shapes": {
         const indices = a.indices as number[];
         if (indices.length === 0) {

@@ -55,7 +55,8 @@ export type Shape =
       fill: string;
       stroke: string;
       width: number;
-    };
+    }
+  | { kind: "Group"; children: Shape[] };
 
 export interface PathNode {
   point: Point;
@@ -206,6 +207,16 @@ export function shapeBounds(shape: Shape): Bounds {
   }
   if (shape.kind === "Text") {
     return pointsBounds(textCorners(shape), 0);
+  }
+  if (shape.kind === "Group") {
+    return (
+      unionBounds(shape.children, shape.children.map((_, index) => index)) ?? {
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0
+      }
+    );
   }
   return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
 }
@@ -707,6 +718,26 @@ export function docAlignShapes(
     mode,
     reference
   });
+}
+
+export function docGroupShapes(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  indices: number[]
+): Promise<Document> {
+  return invoke<Document>("doc_group_shapes", { id, sceneId, layerId, frame, indices });
+}
+
+export function docUngroupShape(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  index: number
+): Promise<Document> {
+  return invoke<Document>("doc_ungroup_shape", { id, sceneId, layerId, frame, index });
 }
 
 export function docReorderShapes(

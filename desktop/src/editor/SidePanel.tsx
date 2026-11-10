@@ -308,6 +308,10 @@ function ShapeFields({
     );
   }
 
+  if (shape.kind === "Group") {
+    return null;
+  }
+
   return (
     <>
       <NumberField
@@ -745,7 +749,10 @@ export default function SidePanel() {
       {selectedShape !== null && selectedIndex !== null && (
         <Section title={t("editor.shape")}>
           <p className="text-xs text-muted-foreground">
-            {t(`editor.shape.${selectedShape.kind}`)} {selectedIndex + 1}
+            {selectedShape.kind === "Group"
+              ? t("command.group")
+              : t(`editor.shape.${selectedShape.kind}`)}{" "}
+            {selectedIndex + 1}
           </p>
           <ShapeFields
             shape={selectedShape}

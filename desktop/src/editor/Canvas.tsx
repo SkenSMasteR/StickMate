@@ -155,12 +155,19 @@ function isWorthwhile(shape: Shape): boolean {
   if (shape.kind === "Path") {
     return shape.nodes.length >= 2;
   }
+  if (shape.kind === "Group") {
+    return shape.children.length > 0;
+  }
   return shape.w > 0.5 && shape.h > 0.5;
 }
 
 function sampleColor(shape: Shape): { stroke: string; fill: string } {
   if (shape.kind === "Stroke" || shape.kind === "Text") {
     return { stroke: shape.color, fill: shape.color };
+  }
+  if (shape.kind === "Group") {
+    const first = shape.children[0];
+    return first ? sampleColor(first) : { stroke: "#000000", fill: "#000000" };
   }
   return { stroke: shape.stroke, fill: shape.fill };
 }
@@ -371,6 +378,39 @@ function ShapeNode({
           strokeLinecap="round"
           strokeLinejoin="round"
         />
+        {outline}
+      </g>
+    );
+  }
+
+  if (shape.kind === "Group") {
+    return (
+      <g
+        data-group
+        onPointerDown={down}
+        style={{ cursor: interactive ? cursor : undefined }}
+      >
+        {interactive && (
+          <rect
+            x={box.x}
+            y={box.y}
+            width={box.w}
+            height={box.h}
+            fill="transparent"
+            stroke="transparent"
+            strokeWidth={12}
+          />
+        )}
+        {shape.children.map((child, index) => (
+          <ShapeNode
+            key={index}
+            shape={child}
+            interactive={false}
+            cursor={cursor}
+            selected={false}
+            onDown={() => undefined}
+          />
+        ))}
         {outline}
       </g>
     );
