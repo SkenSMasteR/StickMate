@@ -16,6 +16,14 @@ import { useI18n } from "@/i18n";
 import { sceneLength } from "@/lib/document";
 import { exportWeb, toExportOptions } from "@/lib/export";
 import type { ExportFormat, ExportRangeKind, ExportResult, ExportSettings } from "@/lib/export";
+import {
+  cancelAllExportJobs,
+  cancelExportJob,
+  enqueueExportJob,
+  exportQueueProgress,
+  startExportQueue,
+  useExportQueue
+} from "@/lib/export-queue";
 import { usePrefs } from "@/lib/prefs";
 import { useConfirm } from "@/lib/confirm";
 import {
@@ -59,6 +67,7 @@ export default function ExportDialog({
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ExportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const queue = useExportQueue();
 
   const docId = doc?.id;
   useEffect(() => {
@@ -78,6 +87,8 @@ export default function ExportDialog({
   const scene = doc.scenes.find((item) => item.id === sceneId) ?? doc.scenes[0];
   const length = sceneLength(scene);
   const presets = [...prefs.exportPresets].sort((a, b) => a.name.localeCompare(b.name));
+  const queuedCount = queue.jobs.filter((job) => job.status === "queued").length;
+  const progress = exportQueueProgress(queue.jobs);
 
   const currentSettings = (): ExportSettings => ({
     format,
@@ -174,6 +185,16 @@ export default function ExportDialog({
       toast.error(String(failure));
     }
     setBusy(false);
+  };
+
+  const enqueueCurrent = () => {
+    const job = enqueueExportJob(doc.id, currentSettings());
+    if (!job) {
+      setError(t("workspace.error.range"));
+      return;
+    }
+    setResult(null);
+    setError(null);
   };
 
   return (
@@ -355,6 +376,61 @@ export default function ExportDialog({
             </Button>
           </div>
         </div>
+        <div className="flex flex-col gap-2 border-t border-border pt-2">
+          <span className="text-xs text-muted-foreground">{t("export.queue")}</span>
+          {queue.running && (
+            <span className="text-xs text-muted-foreground">
+              {t("export.progress")}: {progress.done}/{progress.total}
+            </span>
+          )}
+          {queue.jobs.length > 0 && (
+            <ScrollArea className="h-28 border border-border">
+              {queue.jobs.map((job, index) => (
+                <div key={job.id} className="border-b border-border px-2 py-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-xs">
+                      {t("export.job")} {index + 1}: {job.name}
+                    </span>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {t(`export.status.${job.status}`)}
+                    </span>
+                    {job.status === "queued" && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 shrink-0 rounded-none px-2"
+                        aria-label={`${t("export.cancel")} ${job.name}`}
+                        onClick={() => cancelExportJob(job.id)}
+                      >
+                        {t("export.cancel")}
+                      </Button>
+                    )}
+                  </div>
+                  {job.error && <p className="break-all text-xs text-destructive">{job.error}</p>}
+                </div>
+              ))}
+            </ScrollArea>
+          )}
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              className="rounded-none"
+              disabled={queue.running || queuedCount === 0}
+              onClick={() => void startExportQueue()}
+            >
+              {t("export.startQueue")}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-none"
+              disabled={queuedCount === 0}
+              onClick={cancelAllExportJobs}
+            >
+              {t("export.cancelAll")}
+            </Button>
+          </div>
+        </div>
         {error && <p className="text-xs text-destructive">{error}</p>}
         {result && (
           <div className="flex flex-col gap-1 border border-border p-2 text-xs">
@@ -370,6 +446,14 @@ export default function ExportDialog({
         <DialogFooter className="gap-2 sm:space-x-0">
           <Button variant="outline" size="sm" className="rounded-none" onClick={onClose}>
             {t("export.close")}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="rounded-none"
+            onClick={enqueueCurrent}
+          >
+            {t("export.enqueue")}
           </Button>
           <Button size="sm" className="rounded-none" disabled={busy} onClick={() => void run()}>
             {busy ? t("export.busy") : t("export.run")}
