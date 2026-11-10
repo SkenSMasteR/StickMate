@@ -23,6 +23,7 @@ import {
   heldKey,
   linearEasing,
   sameEasing,
+  shapeGradient,
   unionBounds
 } from "@/lib/document";
 import type {
@@ -30,6 +31,8 @@ import type {
   AlignReference,
   Easing,
   EasingPresetId,
+  Gradient,
+  GradientStop,
   Point,
   Shape
 } from "@/lib/document";
@@ -95,6 +98,254 @@ function ColorField({
       <span className="w-20 shrink-0 text-muted-foreground">{label}</span>
       <Picker value={value} onChange={onChange} label={label} square />
     </div>
+  );
+}
+
+type FillShape = Extract<Shape, { fill: string }>;
+
+const fillTypes: Array<"solid" | "linear" | "radial"> = ["solid", "linear", "radial"];
+
+function gradientCss(gradient: Gradient): string {
+  const stops = gradient.stops
+    .map((stop) => `${stop.color} ${(stop.offset * 100).toFixed(0)}%`)
+    .join(", ");
+  return gradient.kind === "linear"
+    ? `linear-gradient(${gradient.angle + 90}deg, ${stops})`
+    : `radial-gradient(circle, ${stops})`;
+}
+
+function StopOffsetField({
+  label,
+  value,
+  min,
+  max,
+  onCommit
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (value: number) => void;
+}) {
+  const [text, setText] = useState(String(value));
+
+  useEffect(() => {
+    setText(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const parsed = Number(text);
+    if (!Number.isFinite(parsed) || text.trim() === "") {
+      setText(String(value));
+      return;
+    }
+    const bounded = Math.min(max, Math.max(min, parsed));
+    setText(String(bounded));
+    if (bounded !== value) {
+      onCommit(bounded);
+    }
+  };
+
+  return (
+    <input
+      type="number"
+      aria-label={label}
+      title={label}
+      value={text}
+      min={min}
+      max={max}
+      step={0.05}
+      onChange={(event) => setText(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          commit();
+          event.currentTarget.blur();
+        }
+        if (event.key === "Escape") {
+          setText(String(value));
+          event.currentTarget.blur();
+        }
+      }}
+      className="h-7 w-16 min-w-0 border border-border bg-transparent px-1 text-xs outline-none focus:border-ring"
+    />
+  );
+}
+
+function FillField({
+  shape,
+  index,
+  onReplace
+}: {
+  shape: FillShape;
+  index: number;
+  onReplace: (index: number, shape: Shape) => void;
+}) {
+  const { t } = useI18n();
+  const gradient = shapeGradient(shape);
+
+  const commit = (next: Gradient | null) => {
+    const fill = next === null ? gradient?.stops[0]?.color ?? shape.fill : shape.fill;
+    onReplace(index, { ...shape, fill, gradient: next });
+  };
+
+  const setStops = (stops: GradientStop[]) => {
+    if (gradient) {
+      commit({ ...gradient, stops });
+    }
+  };
+
+  const setKind = (kind: "solid" | "linear" | "radial") => {
+    if (kind === "solid") {
+      commit(null);
+      return;
+    }
+    const stops =
+      gradient?.stops ??
+      [
+        { offset: 0, color: shape.fill },
+        { offset: 1, color: "#000000" }
+      ];
+    commit(
+      kind === "linear"
+        ? { kind, angle: gradient?.kind === "linear" ? gradient.angle : 0, stops }
+        : { kind, stops }
+    );
+  };
+
+  const addStop = () => {
+    if (!gradient || gradient.stops.length >= 32) {
+      return;
+    }
+    let gap = 0;
+    let position = gradient.stops[gradient.stops.length - 1].offset;
+    let color = gradient.stops[gradient.stops.length - 1].color;
+    for (let index = 1; index < gradient.stops.length; index += 1) {
+      const previous = gradient.stops[index - 1];
+      const current = gradient.stops[index];
+      if (current.offset - previous.offset > gap) {
+        gap = current.offset - previous.offset;
+        position = (previous.offset + current.offset) / 2;
+        color = current.color;
+      }
+    }
+    setStops([...gradient.stops, { offset: position, color }].sort((a, b) => a.offset - b.offset));
+  };
+
+  const removeStop = (stopIndex: number) => {
+    if (!gradient || gradient.stops.length <= 2) {
+      return;
+    }
+    setStops(gradient.stops.filter((_, position) => position !== stopIndex));
+  };
+
+  const stopButton =
+    "flex h-6 w-6 shrink-0 items-center justify-center text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-40";
+
+  return (
+    <>
+      <div className="flex flex-col gap-1 text-xs">
+        <span className="text-muted-foreground">{t("editor.fillType")}</span>
+        <div className="flex gap-1">
+          {fillTypes.map((kind) => {
+            const active = kind === "solid" ? gradient === null : gradient?.kind === kind;
+            return (
+              <button
+                key={kind}
+                type="button"
+                aria-label={t(`editor.${kind}`)}
+                aria-pressed={active}
+                onClick={() => setKind(kind)}
+                className={cn(
+                  "h-7 border px-2 text-xs",
+                  active
+                    ? "border-border bg-accent text-accent-foreground"
+                    : "border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                )}
+              >
+                {t(`editor.${kind}`)}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {gradient === null ? (
+        <ColorField
+          label={t("editor.fill")}
+          value={shape.fill}
+          onChange={(fill) => onReplace(index, { ...shape, fill })}
+        />
+      ) : (
+        <>
+          {gradient.kind === "linear" && (
+            <NumberField
+              label={t("editor.gradientAngle")}
+              value={Math.round(gradient.angle * 100) / 100}
+              min={-360}
+              max={360}
+              step={15}
+              onCommit={(angle) => commit({ ...gradient, angle })}
+            />
+          )}
+          <div className="flex items-center gap-2 text-xs">
+            <span className="w-20 shrink-0 text-muted-foreground">{t("editor.gradientStops")}</span>
+            <div
+              className="h-7 w-full min-w-0 border border-border"
+              style={{ backgroundImage: gradientCss(gradient) }}
+            />
+          </div>
+          {gradient.stops.map((stop, stopIndex) => (
+            <div key={stopIndex} className="flex items-center gap-1">
+              <Picker
+                value={stop.color}
+                label={`${t("editor.gradientStops")} ${stopIndex + 1}`}
+                onChange={(color) =>
+                  setStops(
+                    gradient.stops.map((item, position) =>
+                      position === stopIndex ? { ...item, color } : item
+                    )
+                  )
+                }
+                square
+              />
+              <StopOffsetField
+                label={t("editor.stopOffset")}
+                value={stop.offset}
+                min={gradient.stops[stopIndex - 1]?.offset ?? 0}
+                max={gradient.stops[stopIndex + 1]?.offset ?? 1}
+                onCommit={(offset) =>
+                  setStops(
+                    gradient.stops.map((item, position) =>
+                      position === stopIndex ? { ...item, offset } : item
+                    )
+                  )
+                }
+              />
+              <button
+                type="button"
+                aria-label={t("editor.removeStop")}
+                title={t("editor.removeStop")}
+                disabled={gradient.stops.length <= 2}
+                onClick={() => removeStop(stopIndex)}
+                className={stopButton}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            aria-label={t("editor.addStop")}
+            title={t("editor.addStop")}
+            disabled={gradient.stops.length >= 32}
+            onClick={addStop}
+            className={stopButton}
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+        </>
+      )}
+    </>
   );
 }
 
@@ -286,11 +537,7 @@ function ShapeFields({
         >
           {t("editor.closed")}
         </button>
-        <ColorField
-          label={t("editor.fill")}
-          value={shape.fill}
-          onChange={(fill) => onPaint(index, fill)}
-        />
+        {shape.closed && <FillField shape={shape} index={index} onReplace={onReplace} />}
         <ColorField
           label={t("editor.stroke")}
           value={shape.stroke}
@@ -347,11 +594,7 @@ function ShapeFields({
           onCommit={(sides) => onReplace(index, { ...shape, sides })}
         />
       )}
-      <ColorField
-        label={t("editor.fill")}
-        value={shape.fill}
-        onChange={(fill) => onPaint(index, fill)}
-      />
+      <FillField shape={shape} index={index} onReplace={onReplace} />
       <ColorField
         label={t("editor.stroke")}
         value={shape.stroke}

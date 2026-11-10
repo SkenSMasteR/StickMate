@@ -5,14 +5,17 @@ import { toast } from "sonner";
 import { useI18n } from "@/i18n";
 import {
   affineFrom,
+  gradientBox,
+  gradientGeometry,
   heldKey,
   identityTransform,
   polygonVertices,
   shapeBounds,
+  shapeGradient,
   textWidth,
   unionBounds
 } from "@/lib/document";
-import type { Bounds, EvalLayer, PathNode, Point, Shape, Transform } from "@/lib/document";
+import type { Bounds, EvalLayer, Gradient, PathNode, Point, Shape, Transform } from "@/lib/document";
 import { usePrefs } from "@/lib/prefs";
 import { collectTargets, mapBounds, snapDelta, snapPoint } from "@/lib/snapping";
 import type { SnapLines, SnapTargets } from "@/lib/snapping";
@@ -251,20 +254,63 @@ function RulerStrip({
   );
 }
 
+function GradientDefs({
+  id,
+  gradient,
+  box
+}: {
+  id: string;
+  gradient: Gradient;
+  box: Bounds;
+}) {
+  const [x1, y1, x2, y2, r] = gradientGeometry(box, gradient);
+  const stops = gradient.stops.map((stop, index) => (
+    <stop key={index} offset={stop.offset} stopColor={stop.color} />
+  ));
+  return (
+    <defs>
+      {gradient.kind === "linear" ? (
+        <linearGradient
+          id={id}
+          gradientUnits="userSpaceOnUse"
+          x1={x1}
+          y1={y1}
+          x2={x2}
+          y2={y2}
+        >
+          {stops}
+        </linearGradient>
+      ) : (
+        <radialGradient id={id} gradientUnits="userSpaceOnUse" cx={x1} cy={y1} r={r}>
+          {stops}
+        </radialGradient>
+      )}
+    </defs>
+  );
+}
+
 function ShapeNode({
   shape,
+  uid,
   interactive,
   cursor,
   selected,
   onDown
 }: {
   shape: Shape;
+  uid: string;
   interactive: boolean;
   cursor: string;
   selected: boolean;
   onDown: (event: ReactPointerEvent) => void;
 }) {
   const box = shapeBounds(shape);
+  const gradient = shapeGradient(shape);
+  const gradientId = `stickmate-${uid}`;
+  const defs = gradient ? (
+    <GradientDefs id={gradientId} gradient={gradient} box={gradientBox(shape)} />
+  ) : null;
+  const fillOf = (fill: string) => (gradient ? `url(#${gradientId})` : fill);
   const down = (event: ReactPointerEvent) => {
     if (!interactive) {
       return;
@@ -343,12 +389,13 @@ function ShapeNode({
       .join(" ");
     return (
       <g onPointerDown={down} style={{ cursor: interactive ? cursor : undefined }}>
+        {defs}
         {interactive && (
           <polygon points={points} fill="transparent" stroke="transparent" strokeWidth={12} />
         )}
         <polygon
           points={points}
-          fill={shape.fill}
+          fill={fillOf(shape.fill)}
           stroke={shape.stroke}
           strokeWidth={shape.width}
           strokeLinejoin="round"
@@ -362,6 +409,7 @@ function ShapeNode({
     const d = pathData(shape.nodes, shape.closed);
     return (
       <g onPointerDown={down} style={{ cursor: interactive ? cursor : undefined }}>
+        {defs}
         {interactive && (
           <path
             d={d}
@@ -372,7 +420,7 @@ function ShapeNode({
         )}
         <path
           d={d}
-          fill={shape.closed ? shape.fill : "none"}
+          fill={shape.closed ? fillOf(shape.fill) : "none"}
           stroke={shape.stroke}
           strokeWidth={shape.width}
           strokeLinecap="round"
@@ -405,6 +453,7 @@ function ShapeNode({
           <ShapeNode
             key={index}
             shape={child}
+            uid={`${uid}-${index}`}
             interactive={false}
             cursor={cursor}
             selected={false}
@@ -435,6 +484,7 @@ function ShapeNode({
 
   return (
     <g onPointerDown={down} style={{ cursor: interactive ? cursor : undefined }}>
+      {defs}
       {interactive && (
         <Element
           {...geometry.props}
@@ -445,7 +495,7 @@ function ShapeNode({
       )}
       <Element
         {...geometry.props}
-        fill={shape.fill}
+        fill={fillOf(shape.fill)}
         stroke={shape.stroke}
         strokeWidth={shape.width}
       />
@@ -478,6 +528,7 @@ function LayerContent({
         <ShapeNode
           key={index}
           shape={shape}
+          uid={`${evaluated.id}-${index}`}
           interactive={interactive}
           cursor={cursor}
           selected={interactive && selected.includes(index)}
@@ -1298,6 +1349,7 @@ export default function Canvas() {
                     <ShapeNode
                       key={index}
                       shape={shape}
+                      uid={`sel-${index}`}
                       interactive={false}
                       cursor={shapeCursor}
                       selected={false}
@@ -1563,6 +1615,7 @@ export default function Canvas() {
           {shown && (
             <ShapeNode
               shape={shown}
+              uid="draft"
               interactive={false}
               cursor="crosshair"
               selected={false}
@@ -1608,6 +1661,7 @@ export default function Canvas() {
                   stroke: tab.stroke,
                   width: tab.strokeWidth
                 }}
+                uid="pen"
                 interactive={false}
                 cursor="crosshair"
                 selected={false}

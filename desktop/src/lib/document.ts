@@ -5,6 +5,15 @@ export interface Point {
   y: number;
 }
 
+export interface GradientStop {
+  offset: number;
+  color: string;
+}
+
+export type Gradient =
+  | { kind: "linear"; angle: number; stops: GradientStop[] }
+  | { kind: "radial"; stops: GradientStop[] };
+
 export type Shape =
   | { kind: "Stroke"; points: Point[]; color: string; width: number }
   | {
@@ -16,6 +25,7 @@ export type Shape =
       fill: string;
       stroke: string;
       width: number;
+      gradient?: Gradient | null;
     }
   | {
       kind: "Ellipse";
@@ -26,6 +36,7 @@ export type Shape =
       fill: string;
       stroke: string;
       width: number;
+      gradient?: Gradient | null;
     }
   | {
       kind: "Polygon";
@@ -37,6 +48,7 @@ export type Shape =
       fill: string;
       stroke: string;
       width: number;
+      gradient?: Gradient | null;
     }
   | {
       kind: "Text";
@@ -55,6 +67,7 @@ export type Shape =
       fill: string;
       stroke: string;
       width: number;
+      gradient?: Gradient | null;
     }
   | { kind: "Group"; children: Shape[] };
 
@@ -219,6 +232,66 @@ export function shapeBounds(shape: Shape): Bounds {
     );
   }
   return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
+}
+
+export function shapeGradient(shape: Shape): Gradient | null {
+  if (
+    shape.kind === "Rect" ||
+    shape.kind === "Ellipse" ||
+    shape.kind === "Polygon" ||
+    shape.kind === "Path"
+  ) {
+    return shape.gradient ?? null;
+  }
+  return null;
+}
+
+export function defaultGradient(kind: "linear" | "radial"): Gradient {
+  const stops = [
+    { offset: 0, color: "#ffffff" },
+    { offset: 1, color: "#000000" }
+  ];
+  return kind === "radial" ? { kind, stops } : { kind, angle: 0, stops };
+}
+
+export function gradientBox(shape: Shape): Bounds {
+  if (shape.kind === "Rect" || shape.kind === "Ellipse" || shape.kind === "Polygon") {
+    return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
+  }
+  if (shape.kind === "Path") {
+    const points: Point[] = [];
+    for (const node of shape.nodes) {
+      points.push(node.point);
+      if (node.handle_in) {
+        points.push(node.handle_in);
+      }
+      if (node.handle_out) {
+        points.push(node.handle_out);
+      }
+    }
+    const xs = points.map((point) => point.x);
+    const ys = points.map((point) => point.y);
+    const x = Math.min(...xs);
+    const y = Math.min(...ys);
+    return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+  }
+  return { x: 0, y: 0, w: 0, h: 0 };
+}
+
+export function gradientGeometry(
+  box: Bounds,
+  gradient: Gradient
+): [number, number, number, number, number] {
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  if (gradient.kind === "radial") {
+    return [cx, cy, cx, cy, Math.hypot(box.w / 2, box.h / 2)];
+  }
+  const rad = (gradient.angle * Math.PI) / 180;
+  const dx = Math.cos(rad);
+  const dy = Math.sin(rad);
+  const half = (Math.abs(dx) * box.w + Math.abs(dy) * box.h) / 2;
+  return [cx - dx * half, cy - dy * half, cx + dx * half, cy + dy * half, 0];
 }
 
 export function unionBounds(shapes: Shape[], indices: number[]): Bounds | null {

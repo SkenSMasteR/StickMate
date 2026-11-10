@@ -8,8 +8,11 @@ import {
   composeAffine,
   docEvaluate,
   docNew,
+  gradientBox,
+  gradientGeometry,
   linearEasing,
-  polygonVertices
+  polygonVertices,
+  shapeGradient
 } from "@/lib/document";
 import type { EvalLayer, Keyframe, Layer, Shape, Transform } from "@/lib/document";
 import source from "@/export/runtime.js?raw";
@@ -31,6 +34,75 @@ interface Paint {
   fill: string;
   stroke: string;
   width: number;
+}
+
+interface GradientStub {
+  gradientKind: "linear" | "radial";
+  coords: number[];
+  stops: Array<[number, string]>;
+  addColorStop(offset: number, color: string): void;
+}
+
+function gradientStub(kind: "linear" | "radial", args: number[]): GradientStub {
+  const stub: GradientStub = {
+    gradientKind: kind,
+    coords: kind === "linear" ? args.slice(0, 4) : [args[0], args[1], args[5]],
+    stops: [],
+    addColorStop(offset, color) {
+      stub.stops.push([offset, color]);
+    }
+  };
+  return stub;
+}
+
+function gradientToken(kind: string, coords: number[], stops: Array<[number, string]>): string {
+  const box = coords.map((value) => value.toFixed(6)).join(",");
+  const list = stops.map(([offset, color]) => `${offset.toFixed(6)}:${color}`).join(",");
+  return `gradient:${kind}:${box}:${list}`;
+}
+
+function shapePaintFill(shape: Extract<Shape, { fill: string }>): string {
+  const gradient = shapeGradient(shape);
+  if (!gradient) {
+    return shape.fill;
+  }
+  const [x1, y1, x2, y2, r] = gradientGeometry(gradientBox(shape), gradient);
+  return gradient.kind === "linear"
+    ? gradientToken("linear", [x1, y1, x2, y2], gradient.stops.map((stop) => [stop.offset, stop.color]))
+    : gradientToken("radial", [x1, y1, r], gradient.stops.map((stop) => [stop.offset, stop.color]));
+}
+
+function tracePaintFill(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  const stub = value as GradientStub;
+  return gradientToken(stub.gradientKind, stub.coords, stub.stops);
+}
+
+function svgPaintFill(svg: SVGSVGElement, attribute: string): string {
+  if (!attribute.startsWith("url(#")) {
+    return attribute;
+  }
+  const def = svg.ownerDocument?.getElementById(attribute.slice(5, -1));
+  if (!def) {
+    throw new Error(`missing gradient definition for ${attribute}`);
+  }
+  const stops = Array.from(def.children).map((stop) => [
+    Number(stop.getAttribute("offset")),
+    stop.getAttribute("stop-color") ?? ""
+  ] as [number, string]);
+  return def.tagName === "linearGradient"
+    ? gradientToken(
+        "linear",
+        ["x1", "y1", "x2", "y2"].map((name) => Number(def.getAttribute(name))),
+        stops
+      )
+    : gradientToken(
+        "radial",
+        ["cx", "cy", "r"].map((name) => Number(def.getAttribute(name))),
+        stops
+      );
 }
 
 type NormalShape =
@@ -73,9 +145,44 @@ function fixtureShapes(): Shape[] {
       color: "#ef4444",
       width: 3
     },
-    { kind: "Rect", x: 40, y: 10, w: 30, h: 20, fill: "#3b82f6", stroke: "#111827", width: 2 },
+    {
+      kind: "Rect",
+      x: 40,
+      y: 10,
+      w: 30,
+      h: 20,
+      fill: "#3b82f6",
+      stroke: "#111827",
+      width: 2,
+      gradient: {
+        kind: "linear",
+        angle: 45,
+        stops: [
+          { offset: 0, color: "#ff0000" },
+          { offset: 0.5, color: "#00ff00" },
+          { offset: 1, color: "#0000ff" }
+        ]
+      }
+    },
     { kind: "Ellipse", x: 80, y: 12, w: 24, h: 16, fill: "#22c55e", stroke: "#111827", width: 1.5 },
-    { kind: "Polygon", x: 110, y: 8, w: 28, h: 28, sides: 5, fill: "#f59e0b", stroke: "#111827", width: 2 },
+    {
+      kind: "Polygon",
+      x: 110,
+      y: 8,
+      w: 28,
+      h: 28,
+      sides: 5,
+      fill: "#f59e0b",
+      stroke: "#111827",
+      width: 2,
+      gradient: {
+        kind: "radial",
+        stops: [
+          { offset: 0, color: "#ffffff" },
+          { offset: 1, color: "#111827" }
+        ]
+      }
+    },
     {
       kind: "Text", x: 12, y: 60, text: "StickMate", size: 14, family: "sans-serif", color: "#111827",
       matrix: composeAffine(
@@ -89,6 +196,14 @@ function fixtureShapes(): Shape[] {
       fill: "#a855f7",
       stroke: "#111827",
       width: 2,
+      gradient: {
+        kind: "linear",
+        angle: -20,
+        stops: [
+          { offset: 0, color: "#0ea5e9" },
+          { offset: 1, color: "#f43f5e" }
+        ]
+      },
       nodes: [
         { point: { x: 150, y: 20 }, handle_in: null, handle_out: { x: 160, y: 10 } },
         { point: { x: 180, y: 30 }, handle_in: { x: 175, y: 20 }, handle_out: null },
@@ -112,8 +227,41 @@ function fixtureShapes(): Shape[] {
 
 function tweenStart(): Shape[] {
   return [
-    { kind: "Rect", x: 10, y: 10, w: 20, h: 20, fill: "#000000", stroke: "#ffffff", width: 2 },
-    { kind: "Ellipse", x: 40, y: 10, w: 20, h: 20, fill: "#22c55e", stroke: "#111827", width: 1 },
+    {
+      kind: "Rect",
+      x: 10,
+      y: 10,
+      w: 20,
+      h: 20,
+      fill: "#000000",
+      stroke: "#ffffff",
+      width: 2,
+      gradient: {
+        kind: "linear",
+        angle: 0,
+        stops: [
+          { offset: 0, color: "#ff0000" },
+          { offset: 1, color: "#000000" }
+        ]
+      }
+    },
+    {
+      kind: "Ellipse",
+      x: 40,
+      y: 10,
+      w: 20,
+      h: 20,
+      fill: "#22c55e",
+      stroke: "#111827",
+      width: 1,
+      gradient: {
+        kind: "radial",
+        stops: [
+          { offset: 0, color: "#ffffff" },
+          { offset: 1, color: "#22c55e" }
+        ]
+      }
+    },
     { kind: "Polygon", x: 70, y: 10, w: 24, h: 24, sides: 5, fill: "#f59e0b", stroke: "#111827", width: 2 },
     {
       kind: "Path",
@@ -141,7 +289,24 @@ function tweenStart(): Shape[] {
 
 function tweenEnd(): Shape[] {
   return [
-    { kind: "Rect", x: 30, y: 18, w: 40, h: 30, fill: "#ffffff", stroke: "none", width: 6 },
+    {
+      kind: "Rect",
+      x: 30,
+      y: 18,
+      w: 40,
+      h: 30,
+      fill: "#ffffff",
+      stroke: "none",
+      width: 6,
+      gradient: {
+        kind: "linear",
+        angle: 90,
+        stops: [
+          { offset: 0, color: "#0000ff" },
+          { offset: 1, color: "#ffffff" }
+        ]
+      }
+    },
     { kind: "Rect", x: 90, y: 20, w: 20, h: 20, fill: "#10b981", stroke: "#111827", width: 1 },
     { kind: "Polygon", x: 70, y: 10, w: 24, h: 24, sides: 3, fill: "#0ea5e9", stroke: "#111827", width: 2 },
     {
@@ -172,7 +337,24 @@ function groupStart(): Shape {
   return {
     kind: "Group",
     children: [
-      { kind: "Rect", x: 10, y: 10, w: 30, h: 20, fill: "#3b82f6", stroke: "#111827", width: 2 },
+      {
+        kind: "Rect",
+        x: 10,
+        y: 10,
+        w: 30,
+        h: 20,
+        fill: "#3b82f6",
+        stroke: "#111827",
+        width: 2,
+        gradient: {
+          kind: "linear",
+          angle: 0,
+          stops: [
+            { offset: 0, color: "#ff0000" },
+            { offset: 1, color: "#000000" }
+          ]
+        }
+      },
       { kind: "Ellipse", x: 50, y: 15, w: 24, h: 16, fill: "#22c55e", stroke: "#111827", width: 1.5 }
     ]
   };
@@ -182,7 +364,24 @@ function groupEnd(): Shape {
   return {
     kind: "Group",
     children: [
-      { kind: "Rect", x: 30, y: 20, w: 40, h: 30, fill: "#ef4444", stroke: "#111827", width: 4 },
+      {
+        kind: "Rect",
+        x: 30,
+        y: 20,
+        w: 40,
+        h: 30,
+        fill: "#ef4444",
+        stroke: "#111827",
+        width: 4,
+        gradient: {
+          kind: "linear",
+          angle: 90,
+          stops: [
+            { offset: 0, color: "#0000ff" },
+            { offset: 1, color: "#ffffff" }
+          ]
+        }
+      },
       { kind: "Ellipse", x: 80, y: 25, w: 30, h: 20, fill: "#0ea5e9", stroke: "#111827", width: 2.5 }
     ]
   };
@@ -310,10 +509,14 @@ function normalShape(shape: Exclude<Shape, { kind: "Group" }>): NormalShape | nu
       kind: "Path",
       commands: pathCommands(shape),
       closed: shape.closed,
-      paint: { fill: shape.closed ? shape.fill : "none", stroke: shape.stroke, width: shape.width }
+      paint: {
+        fill: shape.closed ? shapePaintFill(shape) : "none",
+        stroke: shape.stroke,
+        width: shape.width
+      }
     };
   }
-  const paint: Paint = { fill: shape.fill, stroke: shape.stroke, width: shape.width };
+  const paint: Paint = { fill: shapePaintFill(shape), stroke: shape.stroke, width: shape.width };
   if (shape.kind === "Rect") {
     return { kind: "Rect", box: [shape.x, shape.y, shape.w, shape.h], paint };
   }
@@ -404,7 +607,11 @@ function fromSvg(svg: SVGSVGElement): NormalLayer[] {
         });
         return;
       }
-      const paint: Paint = { fill: painted.getAttribute("fill") ?? "", stroke, width };
+      const paint: Paint = {
+        fill: svgPaintFill(svg, painted.getAttribute("fill") ?? ""),
+        stroke,
+        width
+      };
       if (tag === "polygon") {
         shapes.push({ kind: "Polygon", points: numbers(painted.getAttribute("points")), paint });
         return;
@@ -453,7 +660,7 @@ type Entry = unknown[];
 function fromTrace(log: Entry[]): { background: string | null; layers: NormalLayer[] } {
   const layers: NormalLayer[] = [];
   let background: string | null = null;
-  let fill = "";
+  let fill: unknown = "";
   let stroke = "";
   let width = 0;
   let font = "";
@@ -468,7 +675,7 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
       ops = [];
       return;
     }
-    const paint: Paint = { fill, stroke, width };
+    const paint: Paint = { fill: tracePaintFill(fill), stroke, width };
     const first = ops[0];
     const closed = ops.some((op) => op.name === "closePath");
     const curves = ops.filter((op) => op.name === "bezierCurveTo");
@@ -489,7 +696,7 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
         kind: "Path",
         commands,
         closed,
-        paint: { ...paint, fill: closed ? fill : "none" }
+        paint: { ...paint, fill: closed ? tracePaintFill(fill) : "none" }
       });
     } else if (closed) {
       current.shapes.push({
@@ -558,7 +765,7 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
       continue;
     }
     if (name === "set:fillStyle") {
-      fill = String(entry[2]);
+      fill = entry[2];
       continue;
     }
     if (name === "set:strokeStyle") {
@@ -594,7 +801,7 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
           text: String(entry[2]),
           size,
           family: font.slice(font.indexOf("px ") + 3),
-          color: fill,
+          color: tracePaintFill(fill),
           matrix: textMatrix
         });
       }
@@ -668,6 +875,16 @@ function recorder(index: number): CanvasRenderingContext2D {
       }
     });
   }
+  target.createLinearGradient = (x1: number, y1: number, x2: number, y2: number) =>
+    gradientStub("linear", [x1, y1, x2, y2]);
+  target.createRadialGradient = (
+    x1: number,
+    y1: number,
+    r1: number,
+    x2: number,
+    y2: number,
+    r2: number
+  ) => gradientStub("radial", [x1, y1, r1, x2, y2, r2]);
   return target as unknown as CanvasRenderingContext2D;
 }
 
@@ -797,7 +1014,15 @@ describe("editor and export renderer conformance", () => {
       h: 25,
       fill: "#808080",
       stroke: "#ffffff",
-      width: 4
+      width: 4,
+      gradient: {
+        kind: "linear",
+        angle: 45,
+        stops: [
+          { offset: 0, color: "#800080" },
+          { offset: 1, color: "#808080" }
+        ]
+      }
     });
     expect(middle[1]).toMatchObject({ kind: "Ellipse", x: 40, y: 10 });
     expect(middle[2]).toMatchObject({ kind: "Polygon", sides: 5 });
@@ -879,6 +1104,25 @@ describe("editor and export renderer conformance", () => {
     expect(fromSvg(svg)[3].shapes).toHaveLength(3);
   });
 
+  test("gradient fills reach both renderers as the same paint", async () => {
+    const { id, svg } = await mountEditor();
+    const evaluated = await docEvaluate(id, "s0", 0, 0);
+    const expected = fromEvaluation(evaluated[0].layers);
+    const painted = expected[0].shapes.filter(
+      (shape) => "paint" in shape && shape.paint.fill.startsWith("gradient:")
+    );
+    expect(painted.map((shape) => shape.kind)).toEqual(["Rect", "Polygon", "Path"]);
+    const defs = Array.from(svg.querySelectorAll("[gradientUnits]"));
+    expect(defs.map((def) => def.getAttribute("gradientUnits"))).toEqual(
+      expected.flatMap((layer) =>
+        layer.shapes.filter((shape) => "paint" in shape && shape.paint.fill.startsWith("gradient:"))
+      ).map(() => "userSpaceOnUse")
+    );
+    expect(defs.length).toBeGreaterThan(3);
+    expect(fromSvg(svg)).toEqual(expected);
+    expect(traceAt(0)).toEqual(expected);
+  });
+
   test("matching groups tween child by child while mismatched groups hold", async () => {
     const { id } = await mountEditor();
     const evaluated = await docEvaluate(id, "s0", 0, 2);
@@ -891,8 +1135,25 @@ describe("editor and export renderer conformance", () => {
     expect(middle[0]).toEqual({
       kind: "Group",
       children: [
-        { kind: "Rect", x: 20, y: 15, w: 35, h: 25, fill: "#95639d", stroke: "#111827", width: 3 },
-        { kind: "Ellipse", x: 65, y: 20, w: 27, h: 18, fill: "#18b5a4", stroke: "#111827", width: 2 }
+        {
+          kind: "Rect",
+          x: 20,
+          y: 15,
+          w: 35,
+          h: 25,
+          fill: "#95639d",
+          stroke: "#111827",
+          width: 3,
+          gradient: {
+            kind: "linear",
+            angle: 45,
+            stops: [
+              { offset: 0, color: "#800080" },
+              { offset: 1, color: "#808080" }
+            ]
+          }
+        },
+        { kind: "Ellipse", x: 65, y: 20, w: 27, h: 18, fill: "#18b5a4", stroke: "#111827", width: 2, gradient: null }
       ]
     });
     expect(middle[1]).toEqual(groupHoldStart());

@@ -142,21 +142,116 @@
     return out;
   }
 
+  function gradientOf(shape) {
+    return shape.gradient || null;
+  }
+
+  function mixStops(a, b, t) {
+    return a.map((stop, index) => ({
+      offset: mix(stop.offset, b[index].offset, t),
+      color: mixColor(stop.color, b[index].color, t)
+    }));
+  }
+
+  function mixGradient(a, b, t) {
+    if (a && b && a.kind === b.kind && a.stops.length === b.stops.length) {
+      const stops = mixStops(a.stops, b.stops, t);
+      return a.kind === "linear"
+        ? { kind: "linear", angle: mix(a.angle, b.angle, t), stops: stops }
+        : { kind: "radial", stops: stops };
+    }
+    return a || null;
+  }
+
+  function gradientsMixable(a, b) {
+    if (!a && !b) {
+      return true;
+    }
+    return !!a && !!b && a.kind === b.kind && a.stops.length === b.stops.length;
+  }
+
+  function gradientBox(shape) {
+    if (shape.kind === "Path") {
+      var xs = [];
+      var ys = [];
+      for (var index = 0; index < shape.nodes.length; index += 1) {
+        var node = shape.nodes[index];
+        xs.push(node.point.x);
+        ys.push(node.point.y);
+        if (node.handle_in) {
+          xs.push(node.handle_in.x);
+          ys.push(node.handle_in.y);
+        }
+        if (node.handle_out) {
+          xs.push(node.handle_out.x);
+          ys.push(node.handle_out.y);
+        }
+      }
+      var left = Math.min.apply(null, xs);
+      var top = Math.min.apply(null, ys);
+      return {
+        x: left,
+        y: top,
+        w: Math.max.apply(null, xs) - left,
+        h: Math.max.apply(null, ys) - top
+      };
+    }
+    return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
+  }
+
+  function gradientGeometry(box, gradient) {
+    var cx = box.x + box.w / 2;
+    var cy = box.y + box.h / 2;
+    if (gradient.kind === "radial") {
+      return [cx, cy, cx, cy, Math.hypot(box.w / 2, box.h / 2)];
+    }
+    var rad = (gradient.angle * Math.PI) / 180;
+    var dx = Math.cos(rad);
+    var dy = Math.sin(rad);
+    var half = (Math.abs(dx) * box.w + Math.abs(dy) * box.h) / 2;
+    return [cx - dx * half, cy - dy * half, cx + dx * half, cy + dy * half, 0];
+  }
+
+  function fillStyle(ctx, shape) {
+    var gradient = gradientOf(shape);
+    if (!gradient) {
+      return shape.fill;
+    }
+    var parts = gradientGeometry(gradientBox(shape), gradient);
+    var paint =
+      gradient.kind === "linear"
+        ? ctx.createLinearGradient(parts[0], parts[1], parts[2], parts[3])
+        : ctx.createRadialGradient(parts[0], parts[1], 0, parts[2], parts[3], parts[4]);
+    for (var index = 0; index < gradient.stops.length; index += 1) {
+      var stop = gradient.stops[index];
+      paint.addColorStop(stop.offset, stop.color);
+    }
+    return paint;
+  }
+
   function mixable(a, b) {
     if (a.kind !== b.kind) {
       return false;
     }
-    if (a.kind === "Rect" || a.kind === "Ellipse" || a.kind === "Text") {
+    if (a.kind === "Rect" || a.kind === "Ellipse") {
+      return gradientsMixable(gradientOf(a), gradientOf(b));
+    }
+    if (a.kind === "Text") {
       return true;
     }
     if (a.kind === "Polygon") {
-      return a.sides === b.sides;
+      return a.sides === b.sides && gradientsMixable(gradientOf(a), gradientOf(b));
     }
     if (a.kind === "Stroke") {
       return a.points.length === b.points.length && a.points.length > 1;
     }
     if (a.kind === "Path") {
-      return a.closed === b.closed && a.nodes.length === b.nodes.length && a.nodes.length > 1;
+      return (
+        a.closed === b.closed &&
+        a.nodes.length === b.nodes.length &&
+        a.nodes.length > 1 &&
+        gradientsMixable(gradientOf(a), gradientOf(b))
+      );
     }
     if (a.kind === "Group") {
       return (
@@ -198,7 +293,8 @@
         h: mix(a.h, b.h, t),
         fill: mixColor(a.fill, b.fill, t),
         stroke: mixColor(a.stroke, b.stroke, t),
-        width: mix(a.width, b.width, t)
+        width: mix(a.width, b.width, t),
+        gradient: mixGradient(gradientOf(a), gradientOf(b), t)
       };
       if (a.kind === "Polygon") {
         box.sides = a.sides;
@@ -243,7 +339,8 @@
         closed: a.closed,
         fill: mixColor(a.fill, b.fill, t),
         stroke: mixColor(a.stroke, b.stroke, t),
-        width: mix(a.width, b.width, t)
+        width: mix(a.width, b.width, t),
+        gradient: mixGradient(gradientOf(a), gradientOf(b), t)
       };
     }
     if (a.kind === "Text") {
@@ -356,7 +453,7 @@
         return;
       }
       if (shape.closed) {
-        ctx.fillStyle = shape.fill;
+        ctx.fillStyle = fillStyle(ctx, shape);
       }
       ctx.strokeStyle = shape.stroke;
       ctx.lineWidth = shape.width;
@@ -379,7 +476,7 @@
       ctx.stroke();
       return;
     }
-    ctx.fillStyle = shape.fill;
+    ctx.fillStyle = fillStyle(ctx, shape);
     ctx.strokeStyle = shape.stroke;
     ctx.lineWidth = shape.width;
     ctx.lineCap = "butt";

@@ -9,6 +9,7 @@ import {
   linearEasing,
   polygonVertices,
   shapeBounds,
+  shapeGradient,
   textCorners,
   unionBounds
 } from "@/lib/document";
@@ -21,6 +22,8 @@ import type {
   Easing,
   EvalFrame,
   EvalLayer,
+  Gradient,
+  GradientStop,
   Keyframe,
   Layer,
   PathNode,
@@ -203,6 +206,10 @@ function validateShape(shape: Shape): void {
     }
     return;
   }
+  const gradient = shapeGradient(shape);
+  if (gradient) {
+    validateGradient(gradient);
+  }
   if (shape.kind === "Polygon" && shape.sides < 3) {
     throw new Error("polygon needs at least 3 sides");
   }
@@ -253,7 +260,7 @@ function paintFill(shape: Shape, color: string): Shape {
   if (shape.kind === "Stroke" || shape.kind === "Text") {
     return shape;
   }
-  return { ...shape, fill: color };
+  return { ...shape, fill: color, gradient: null };
 }
 
 function cornersPath(
@@ -261,14 +268,49 @@ function cornersPath(
   matrix: Affine,
   fill: string,
   stroke: string,
-  width: number
+  width: number,
+  gradient: Gradient | null
 ): Shape {
   const nodes: PathNode[] = corners.map((point) => ({
     point: applyAffine(matrix, point),
     handle_in: null,
     handle_out: null
   }));
-  return { kind: "Path", nodes, closed: true, fill, stroke, width };
+  return { kind: "Path", nodes, closed: true, fill, stroke, width, gradient };
+}
+
+function rotatedGradient(gradient: Gradient | null | undefined, rotation: number): Gradient | null {
+  if (!gradient) {
+    return null;
+  }
+  return gradient.kind === "linear"
+    ? { kind: "linear", angle: gradient.angle + rotation, stops: gradient.stops }
+    : gradient;
+}
+
+function validateGradient(gradient: Gradient): void {
+  if (gradient.stops.length < 2) {
+    throw new Error("gradient needs at least 2 stops");
+  }
+  if (gradient.stops.length > 32) {
+    throw new Error("gradient has too many stops");
+  }
+  if (gradient.kind === "linear" && !Number.isFinite(gradient.angle)) {
+    throw new Error("gradient angle must be finite");
+  }
+  let previous = 0;
+  gradient.stops.forEach((stop, index) => {
+    if (!Number.isFinite(stop.offset) || stop.offset < 0 || stop.offset > 1) {
+      throw new Error("gradient stop offset must be between 0 and 1");
+    }
+    if (index > 0 && stop.offset < previous) {
+      throw new Error("gradient stops must be in order");
+    }
+    if (stop.color.length > 1024) {
+      throw new Error("gradient stop color is too long");
+    }
+    previous = stop.offset;
+  });
 }
 
 export function transformShape(
@@ -331,7 +373,8 @@ export function transformShape(
       matrix,
       shape.fill,
       shape.stroke,
-      shape.width
+      shape.width,
+      rotatedGradient(shape.gradient, rotation)
     );
   }
   if (shape.kind === "Polygon" && rotation !== 0) {
@@ -340,7 +383,8 @@ export function transformShape(
       matrix,
       shape.fill,
       shape.stroke,
-      shape.width
+      shape.width,
+      rotatedGradient(shape.gradient, rotation)
     );
   }
   const q = applyAffine(matrix, { x: shape.x, y: shape.y });
@@ -571,21 +615,52 @@ function mixAffine(a: Affine, b: Affine, t: number): Affine {
   };
 }
 
+function gradientsMixable(a: Gradient | null, b: Gradient | null): boolean {
+  if (!a && !b) {
+    return true;
+  }
+  return !!a && !!b && a.kind === b.kind && a.stops.length === b.stops.length;
+}
+
+function mixStops(a: GradientStop[], b: GradientStop[], t: number): GradientStop[] {
+  return a.map((stop, index) => ({
+    offset: mix(stop.offset, b[index].offset, t),
+    color: mixColor(stop.color, b[index].color, t)
+  }));
+}
+
+function mixGradient(a: Gradient | null, b: Gradient | null, t: number): Gradient | null {
+  if (a && b && a.kind === b.kind && a.stops.length === b.stops.length) {
+    const stops = mixStops(a.stops, b.stops, t);
+    if (a.kind === "linear" && b.kind === "linear") {
+      return { kind: "linear", angle: mix(a.angle, b.angle, t), stops };
+    }
+    return { kind: "radial", stops };
+  }
+  return a ? structuredClone(a) : null;
+}
+
 function mixable(a: Shape, b: Shape): boolean {
   if (a.kind !== b.kind) {
     return false;
   }
-  if (a.kind === "Rect" || a.kind === "Ellipse" || a.kind === "Text") {
+  const fills = gradientsMixable(shapeGradient(a), shapeGradient(b));
+  if (a.kind === "Rect" || a.kind === "Ellipse") {
+    return fills;
+  }
+  if (a.kind === "Text") {
     return true;
   }
   if (a.kind === "Polygon" && b.kind === "Polygon") {
-    return a.sides === b.sides;
+    return a.sides === b.sides && fills;
   }
   if (a.kind === "Stroke" && b.kind === "Stroke") {
     return a.points.length === b.points.length && a.points.length > 1;
   }
   if (a.kind === "Path" && b.kind === "Path") {
-    return a.closed === b.closed && a.nodes.length === b.nodes.length && a.nodes.length > 1;
+    return (
+      a.closed === b.closed && a.nodes.length === b.nodes.length && a.nodes.length > 1 && fills
+    );
   }
   if (a.kind === "Group" && b.kind === "Group") {
     return (
@@ -619,7 +694,8 @@ function mixShape(a: Shape, b: Shape, t: number): Shape {
       h: mix(a.h, b.h, t),
       fill: mixColor(a.fill, b.fill, t),
       stroke: mixColor(a.stroke, b.stroke, t),
-      width: mix(a.width, b.width, t)
+      width: mix(a.width, b.width, t),
+      gradient: mixGradient(a.gradient ?? null, b.gradient ?? null, t)
     };
   }
   if (a.kind === "Ellipse" && b.kind === "Ellipse") {
@@ -631,7 +707,8 @@ function mixShape(a: Shape, b: Shape, t: number): Shape {
       h: mix(a.h, b.h, t),
       fill: mixColor(a.fill, b.fill, t),
       stroke: mixColor(a.stroke, b.stroke, t),
-      width: mix(a.width, b.width, t)
+      width: mix(a.width, b.width, t),
+      gradient: mixGradient(a.gradient ?? null, b.gradient ?? null, t)
     };
   }
   if (a.kind === "Polygon" && b.kind === "Polygon" && a.sides === b.sides) {
@@ -644,7 +721,8 @@ function mixShape(a: Shape, b: Shape, t: number): Shape {
       h: mix(a.h, b.h, t),
       fill: mixColor(a.fill, b.fill, t),
       stroke: mixColor(a.stroke, b.stroke, t),
-      width: mix(a.width, b.width, t)
+      width: mix(a.width, b.width, t),
+      gradient: mixGradient(a.gradient ?? null, b.gradient ?? null, t)
     };
   }
   if (
@@ -686,7 +764,8 @@ function mixShape(a: Shape, b: Shape, t: number): Shape {
       closed: a.closed,
       fill: mixColor(a.fill, b.fill, t),
       stroke: mixColor(a.stroke, b.stroke, t),
-      width: mix(a.width, b.width, t)
+      width: mix(a.width, b.width, t),
+      gradient: mixGradient(a.gradient ?? null, b.gradient ?? null, t)
     };
   }
   if (a.kind === "Text" && b.kind === "Text") {
