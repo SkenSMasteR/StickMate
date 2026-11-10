@@ -448,6 +448,9 @@ mod tests {
             size: 12.0,
             family: "Segoe UI".to_string(),
             color: "#000000".to_string(),
+            spacing: 0.0,
+            leading: crate::document::TEXT_LEADING,
+            align: crate::document::TextAlign::Left,
             matrix: None,
         }];
         assert_eq!(

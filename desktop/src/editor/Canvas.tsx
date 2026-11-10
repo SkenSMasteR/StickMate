@@ -13,7 +13,9 @@ import {
   polygonVertices,
   shapeBounds,
   shapeGradient,
-  textWidth,
+  TEXT_LEADING,
+  textLayout,
+  textLinePositions,
   unionBounds
 } from "@/lib/document";
 import type {
@@ -372,10 +374,11 @@ function ShapeNode({
   if (shape.kind === "Text") {
     const m = shape.matrix;
     const transform = m ? `matrix(${m.a} ${m.b} ${m.c} ${m.d} ${m.e} ${m.f})` : undefined;
+    const layout = textLayout(shape);
     return (
       <g onPointerDown={down} style={{ cursor: interactive ? cursor : undefined }}>
         {interactive && (
-          <rect x={shape.x} y={shape.y} width={textWidth(shape.text, shape.size)} height={shape.size} fill="transparent" transform={transform} />
+          <rect x={shape.x} y={shape.y} width={layout.block} height={layout.height} fill="transparent" transform={transform} />
         )}
         <text
           transform={transform}
@@ -385,9 +388,14 @@ function ShapeNode({
           fontFamily={shape.family}
           fontSize={shape.size}
           fill={shape.color}
+          letterSpacing={layout.spacing}
           style={{ whiteSpace: "pre" }}
         >
-          {shape.text}
+          {textLinePositions(shape).map((line, index) => (
+            <tspan key={index} x={line.x} y={line.y}>
+              {line.text}
+            </tspan>
+          ))}
         </text>
         {outline}
       </g>
@@ -1069,7 +1077,10 @@ export default function Canvas() {
         text: t("editor.textDefault"),
         size: tab.fontSize,
         family: tab.fontFamily,
-        color: tab.stroke
+        color: tab.stroke,
+        spacing: 0,
+        leading: TEXT_LEADING,
+        align: "left"
       });
       actions.select(count);
       return;

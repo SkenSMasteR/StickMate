@@ -11,6 +11,7 @@ import {
   polygonVertices,
   shapeBounds,
   shapeGradient,
+  TEXT_LEADING,
   textCorners,
   unionBounds
 } from "@/lib/document";
@@ -264,6 +265,26 @@ function validateShape(shape: Shape): void {
     if (!Number.isFinite(shape.size) || shape.size <= 0) {
       throw new Error("text size must be positive");
     }
+    if (
+      shape.spacing !== undefined &&
+      (!Number.isFinite(shape.spacing) || shape.spacing < -500 || shape.spacing > 500)
+    ) {
+      throw new Error("text spacing must be between -500 and 500");
+    }
+    if (
+      shape.leading !== undefined &&
+      (!Number.isFinite(shape.leading) || shape.leading < 0.2 || shape.leading > 10)
+    ) {
+      throw new Error("text line spacing must be between 0.2 and 10");
+    }
+    if (
+      shape.align !== undefined &&
+      shape.align !== "left" &&
+      shape.align !== "center" &&
+      shape.align !== "right"
+    ) {
+      throw new Error("unknown text alignment");
+    }
     if (!Number.isFinite(shape.x) || !Number.isFinite(shape.y)) {
       throw new Error("text coordinates must be finite");
     }
@@ -389,7 +410,13 @@ export function transformShape(
   if (shape.kind === "Text") {
     if (!shape.matrix && rotation === 0 && sx === sy) {
       const q = applyAffine(matrix, { x: shape.x, y: shape.y });
-      return { ...shape, x: q.x, y: q.y, size: shape.size * sx };
+      return {
+        ...shape,
+        x: q.x,
+        y: q.y,
+        size: shape.size * sx,
+        spacing: (shape.spacing ?? 0) * sx
+      };
     }
     return { ...shape, matrix: shape.matrix ? composeAffine(matrix, shape.matrix) : matrix };
   }
@@ -824,6 +851,9 @@ function mixShape(a: Shape, b: Shape, t: number): Shape {
       size: mix(a.size, b.size, t),
       family: a.family,
       color: mixColor(a.color, b.color, t),
+      spacing: mix(a.spacing ?? 0, b.spacing ?? 0, t),
+      leading: mix(a.leading ?? TEXT_LEADING, b.leading ?? TEXT_LEADING, t),
+      align: a.align ?? "left",
       matrix:
         a.matrix && b.matrix
           ? mixAffine(a.matrix, b.matrix, t)

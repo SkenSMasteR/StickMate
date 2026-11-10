@@ -352,6 +352,9 @@
         size: mix(a.size, b.size, t),
         family: a.family,
         color: mixColor(a.color, b.color, t),
+        spacing: mix(a.spacing || 0, b.spacing || 0, t),
+        leading: mix(a.leading || TEXT_LEADING, b.leading || TEXT_LEADING, t),
+        align: a.align || "left",
         matrix:
           a.matrix && b.matrix
             ? mixAffine(a.matrix, b.matrix, t)
@@ -431,6 +434,44 @@
     return points;
   }
 
+  const TEXT_ADVANCE = 0.6;
+  const TEXT_LEADING = 1.2;
+
+  function textLineWidth(line, size, spacing) {
+    const count = [...line].length;
+    if (count === 0) {
+      return 0;
+    }
+    return Math.max(0, count * size * TEXT_ADVANCE + spacing * (count - 1));
+  }
+
+  function textBlockWidth(text, size, spacing) {
+    return Math.max(...text.split("\n").map((line) => textLineWidth(line, size, spacing)), 0);
+  }
+
+  function textLineOffset(width, block, align) {
+    if (align === "center") {
+      return (block - width) / 2;
+    }
+    if (align === "right") {
+      return block - width;
+    }
+    return 0;
+  }
+
+  function textLines(shape) {
+    const spacing = shape.spacing || 0;
+    const leading = shape.leading || TEXT_LEADING;
+    const align = shape.align || "left";
+    const block = textBlockWidth(shape.text, shape.size, spacing);
+    const lineHeight = shape.size * leading;
+    return shape.text.split("\n").map((text, index) => ({
+      text,
+      x: shape.x + textLineOffset(textLineWidth(text, shape.size, spacing), block, align),
+      y: shape.y + index * lineHeight
+    }));
+  }
+
   function drawShape(ctx, shape) {
     if (shape.kind === "Group") {
       for (const child of shape.children) {
@@ -463,7 +504,10 @@
       ctx.fillStyle = shape.color;
       ctx.font = shape.size + "px " + shape.family;
       ctx.textBaseline = "hanging";
-      ctx.fillText(shape.text, shape.x, shape.y);
+      ctx.letterSpacing = (shape.spacing || 0) + "px";
+      for (const line of textLines(shape)) {
+        ctx.fillText(line.text, line.x, line.y);
+      }
       ctx.restore();
       return;
     }

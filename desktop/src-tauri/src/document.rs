@@ -266,6 +266,12 @@ pub enum Shape {
         size: f64,
         family: String,
         color: String,
+        #[serde(default)]
+        spacing: f64,
+        #[serde(default = "default_leading")]
+        leading: f64,
+        #[serde(default)]
+        align: TextAlign,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         matrix: Option<Affine>,
     },
@@ -284,9 +290,42 @@ pub enum Shape {
 }
 
 pub const TEXT_ADVANCE: f64 = 0.6;
+pub const TEXT_LEADING: f64 = 1.2;
 
-pub fn text_width(text: &str, size: f64) -> f64 {
-    text.chars().count() as f64 * size * TEXT_ADVANCE
+fn default_leading() -> f64 {
+    TEXT_LEADING
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+pub fn text_lines(text: &str) -> Vec<&str> {
+    text.split('\n').collect()
+}
+
+pub fn text_line_width(line: &str, size: f64, spacing: f64) -> f64 {
+    let count = line.chars().count() as f64;
+    if count == 0.0 {
+        return 0.0;
+    }
+    (count * size * TEXT_ADVANCE + spacing * (count - 1.0)).max(0.0)
+}
+
+pub fn text_block_height(lines: usize, size: f64, leading: f64) -> f64 {
+    size + size * leading * lines.saturating_sub(1) as f64
+}
+
+pub fn text_block_width(text: &str, size: f64, spacing: f64) -> f64 {
+    text_lines(text)
+        .iter()
+        .map(|line| text_line_width(line, size, spacing))
+        .fold(0.0, f64::max)
 }
 
 pub fn polygon_vertices(x: f64, y: f64, w: f64, h: f64, sides: u32) -> Vec<Point> {
@@ -350,13 +389,28 @@ fn compose_affine(outer: &Affine, inner: &Affine) -> Affine {
     }
 }
 
-fn text_corners(x: f64, y: f64, text: &str, size: f64, matrix: &Option<Affine>) -> Vec<Point> {
-    let w = text_width(text, size);
+fn text_corners(
+    x: f64,
+    y: f64,
+    text: &str,
+    size: f64,
+    spacing: f64,
+    leading: f64,
+    matrix: &Option<Affine>,
+) -> Vec<Point> {
+    let w = text_block_width(text, size, spacing);
+    let h = text_block_height(text_lines(text).len(), size, leading);
     [
         Point { x, y },
-        Point { x: x + w, y },
-        Point { x: x + w, y: y + size },
-        Point { x, y: y + size },
+        Point {
+            x: x + w,
+            y,
+        },
+        Point {
+            x: x + w,
+            y: y + h,
+        },
+        Point { x, y: y + h },
     ]
     .into_iter()
     .map(|point| matrix.as_ref().map_or_else(|| point.clone(), |m| apply_affine(m, &point)))
@@ -403,8 +457,18 @@ pub fn shape_bounds(shape: &Shape) -> Bounds {
             ..
         } => points_bounds(&flatten_path(nodes, *closed), *width),
         Shape::Text {
-            x, y, text, size, matrix, ..
-        } => points_bounds(&text_corners(*x, *y, text, *size, matrix), 0.0),
+            x,
+            y,
+            text,
+            size,
+            spacing,
+            leading,
+            matrix,
+            ..
+        } => points_bounds(
+            &text_corners(*x, *y, text, *size, *spacing, *leading, matrix),
+            0.0,
+        ),
         Shape::Rect { x, y, w, h, .. }
         | Shape::Ellipse { x, y, w, h, .. }
         | Shape::Polygon { x, y, w, h, .. } => Bounds {
@@ -496,6 +560,9 @@ pub(crate) fn transform_shape(
             size,
             family,
             color,
+            spacing,
+            leading,
+            align,
             matrix: local,
         } => {
             let simple = local.is_none() && rotation == 0.0 && sx == sy;
@@ -511,6 +578,9 @@ pub(crate) fn transform_shape(
                 size: if simple { size * sx } else { *size },
                 family: family.clone(),
                 color: color.clone(),
+                spacing: if simple { spacing * sx } else { *spacing },
+                leading: *leading,
+                align: *align,
                 matrix: if simple {
                     None
                 } else {
@@ -929,9 +999,16 @@ fn shape_hit(shape: &Shape, p: &Point, radius: f64) -> bool {
                 })
         }
         Shape::Text {
-            x, y, text, size, matrix, ..
+            x,
+            y,
+            text,
+            size,
+            spacing,
+            leading,
+            matrix,
+            ..
         } => {
-            let vertices = text_corners(*x, *y, text, *size, matrix);
+            let vertices = text_corners(*x, *y, text, *size, *spacing, *leading, matrix);
             inside_polygon(p, &vertices)
                 || vertices.iter().enumerate().any(|(index, a)| {
                     near_segment(p, a, &vertices[(index + 1) % vertices.len()], radius)
@@ -996,12 +1073,27 @@ pub(crate) fn validate(shape: &Shape) -> Result<(), String> {
         Shape::Polygon { sides, .. } if *sides < 3 => {
             Err("polygon needs at least 3 sides".to_string())
         }
-        Shape::Text { x, y, text, size, matrix, .. } => {
+        Shape::Text {
+            x,
+            y,
+            text,
+            size,
+            spacing,
+            leading,
+            matrix,
+            ..
+        } => {
             if text.trim().is_empty() {
                 return Err("text is empty".to_string());
             }
             if !size.is_finite() || *size <= 0.0 {
                 return Err("text size must be positive".to_string());
+            }
+            if !spacing.is_finite() || *spacing < -500.0 || *spacing > 500.0 {
+                return Err("text spacing must be between -500 and 500".to_string());
+            }
+            if !leading.is_finite() || *leading < 0.2 || *leading > 10.0 {
+                return Err("text line spacing must be between 0.2 and 10".to_string());
             }
             if !x.is_finite() || !y.is_finite() {
                 return Err("text coordinates must be finite".to_string());
@@ -1696,6 +1788,9 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
                 size,
                 family,
                 color,
+                spacing,
+                leading,
+                align,
                 matrix,
             },
             Shape::Text {
@@ -1705,6 +1800,9 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
                 size: bsize,
                 family: _,
                 color: bcolor,
+                spacing: bspacing,
+                leading: bleading,
+                align: _,
                 matrix: bmatrix,
             },
         ) => Shape::Text {
@@ -1714,6 +1812,9 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
             size: mix(*size, *bsize, t),
             family: family.clone(),
             color: mix_color(color, bcolor, t),
+            spacing: mix(*spacing, *bspacing, t),
+            leading: mix(*leading, *bleading, t),
+            align: *align,
             matrix: match (matrix, bmatrix) {
                 (Some(left), Some(right)) => Some(mix_affine(left, right, t)),
                 (Some(left), None) | (None, Some(left)) => Some(left.clone()),
@@ -4063,6 +4164,9 @@ mod tests {
             size: 20.0,
             family: "sans-serif".to_string(),
             color: "#000000".to_string(),
+            spacing: 2.0,
+            leading: 1.5,
+            align: TextAlign::Left,
             matrix: Some(Affine {
                 a: 1.0,
                 b: 0.0,
@@ -4079,6 +4183,9 @@ mod tests {
             size: 40.0,
             family: "monospace".to_string(),
             color: "#ffffff".to_string(),
+            spacing: 6.0,
+            leading: 1.0,
+            align: TextAlign::Right,
             matrix: Some(Affine {
                 a: 2.0,
                 b: 0.0,
@@ -4099,6 +4206,9 @@ mod tests {
             size,
             family,
             color,
+            spacing,
+            leading,
+            align,
             matrix,
         } = middle
         else {
@@ -4108,6 +4218,8 @@ mod tests {
         assert_eq!(text, "In");
         assert_eq!(family, "sans-serif");
         assert_eq!(color, "#808080");
+        assert_eq!((spacing, leading), (4.0, 1.25));
+        assert_eq!(align, TextAlign::Left);
         assert_eq!(
             matrix,
             Some(Affine {
@@ -5027,6 +5139,9 @@ mod tests {
             size,
             family: "Segoe UI".to_string(),
             color: "#000000".to_string(),
+            spacing: 0.0,
+            leading: TEXT_LEADING,
+            align: TextAlign::Left,
             matrix: None,
         }
     }
@@ -5110,13 +5225,93 @@ mod tests {
     }
 
     #[test]
-    fn polygon_vertices_start_at_top_and_text_width_uses_advance() {
+    fn polygon_vertices_start_at_top_and_text_metrics_use_advance() {
         let vertices = polygon_vertices(0.0, 0.0, 100.0, 100.0, 3);
         assert_eq!(vertices.len(), 3);
         assert!((vertices[0].x - 50.0).abs() < 1e-9);
         assert!(vertices[0].y.abs() < 1e-9);
         assert!(vertices[1].x > vertices[2].x);
-        assert_eq!(text_width("AB", 10.0), 12.0);
+        assert_eq!(text_block_width("AB", 10.0, 0.0), 12.0);
+        assert_eq!(text_block_width("AB", 10.0, 3.0), 15.0);
+        assert_eq!(text_block_width("A\nABC", 10.0, 0.0), 18.0);
+        assert_eq!(text_line_width("AB", 10.0, 3.0), 15.0);
+        assert_eq!(text_block_height(3, 10.0, 1.2), 34.0);
+    }
+
+    fn paragraph(value: &str, spacing: f64, leading: f64, align: TextAlign) -> Shape {
+        Shape::Text {
+            x: 300.0,
+            y: 10.0,
+            text: value.to_string(),
+            size: 10.0,
+            family: "Segoe UI".to_string(),
+            color: "#000000".to_string(),
+            spacing,
+            leading,
+            align,
+            matrix: None,
+        }
+    }
+
+    #[test]
+    fn text_paragraphs_default_keep_size_and_reject_extremes() {
+        let json = r##"{"kind":"Text","x":10.0,"y":20.0,"text":"hi","size":10.0,"family":"sans-serif","color":"#000000"}"##;
+        let legacy: Shape = serde_json::from_str(json).expect("legacy text");
+        let Shape::Text {
+            spacing,
+            leading,
+            align,
+            ..
+        } = legacy
+        else {
+            panic!("expected text");
+        };
+        assert_eq!((spacing, leading), (0.0, TEXT_LEADING));
+        assert_eq!(align, TextAlign::Left);
+
+        let block = paragraph("A\nBCDE", 2.0, 2.0, TextAlign::Right);
+        assert_eq!(
+            shape_bounds(&block),
+            Bounds {
+                x: 300.0,
+                y: 10.0,
+                w: 30.0,
+                h: 30.0
+            }
+        );
+        let restored: Shape =
+            serde_json::from_str(&serde_json::to_string(&block).expect("json")).expect("shape");
+        assert_eq!(restored, block);
+
+        let fixture = Fixture::new("text-paragraph");
+        let id = &fixture.doc.id;
+        assert_eq!(
+            fixture
+                .store
+                .draw(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    paragraph("A", 900.0, 1.0, TextAlign::Left)
+                )
+                .expect_err("spacing"),
+            "text spacing must be between -500 and 500"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .draw(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    paragraph("A", 0.0, 20.0, TextAlign::Left)
+                )
+                .expect_err("leading"),
+            "text line spacing must be between 0.2 and 10"
+        );
+        assert!(fixture.target(&fixture.doc).keys[0].shapes.is_empty());
     }
 
     #[test]
@@ -5920,13 +6115,13 @@ mod tests {
         let moved = fixture.store.transform_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0], pivot.clone(), 5.0, 6.0, 2.0, 2.0, 0.0).unwrap();
         let third = affine_from(&pivot, 5.0, 6.0, 2.0, 2.0, 0.0);
         let shape = &fixture.target(&moved).keys[0].shapes[0];
-        let Shape::Text { x, y, text, size, family, matrix: Some(matrix), .. } = shape else {
+        let Shape::Text { x, y, text, size, family, spacing, leading, matrix: Some(matrix), .. } = shape else {
             panic!("expected editable transformed text");
         };
         assert_eq!((*x, *y, *size), (300.0, 10.0, 12.0));
         assert_eq!(text, "A𐐀");
         assert_eq!(family, "Segoe UI");
-        for point in text_corners(*x, *y, text, *size, &None) {
+        for point in text_corners(*x, *y, text, *size, *spacing, *leading, &None) {
             let expected = apply_affine(&third, &apply_affine(&second, &apply_affine(&first, &point)));
             let actual = apply_affine(matrix, &point);
             close(actual.x, expected.x);
@@ -6482,6 +6677,9 @@ mod tests {
                     size: 20.0,
                     family: "Segoe UI".to_string(),
                     color: "#000000".to_string(),
+                    spacing: 0.0,
+                    leading: TEXT_LEADING,
+                    align: TextAlign::Center,
                     matrix: Some(affine_from(&Point { x: 110.0, y: 60.0 }, 0.0, 0.0, 1.0, 1.0, 30.0)),
                 },
             )
@@ -6790,6 +6988,9 @@ mod tests {
                     size: 12.0,
                     family: "Segoe UI".to_string(),
                     color: "#000000".to_string(),
+                    spacing: 0.0,
+                    leading: TEXT_LEADING,
+                    align: TextAlign::Left,
                     matrix: None,
                 },
             )
@@ -7172,6 +7373,9 @@ mod tests {
                     size: 12.0,
                     family: "Segoe UI".to_string(),
                     color: "#000000".to_string(),
+                    spacing: 0.0,
+                    leading: TEXT_LEADING,
+                    align: TextAlign::Left,
                     matrix: None,
                 });
                 Ok(())

@@ -333,6 +333,12 @@ function validateShape(shape: Shape): void {
     if (shape.size <= 0) {
       throw new Error("text size must be positive");
     }
+    if (shape.spacing !== undefined && !(shape.spacing >= -500 && shape.spacing <= 500)) {
+      throw new Error("text spacing must be between -500 and 500");
+    }
+    if (shape.leading !== undefined && !(shape.leading >= 0.2 && shape.leading <= 10)) {
+      throw new Error("text line spacing must be between 0.2 and 10");
+    }
     return;
   }
   if (shape.kind === "Path") {

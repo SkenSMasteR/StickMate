@@ -13,7 +13,8 @@ import {
   gradientGeometry,
   linearEasing,
   polygonVertices,
-  shapeGradient
+  shapeGradient,
+  textLinePositions
 } from "@/lib/document";
 import type { Blend, EvalLayer, Keyframe, Layer, Shape, Transform } from "@/lib/document";
 import source from "@/export/runtime.js?raw";
@@ -108,7 +109,16 @@ function svgPaintFill(svg: SVGSVGElement, attribute: string): string {
 
 type NormalShape =
   | { kind: "Stroke"; points: number[]; color: string; width: number }
-  | { kind: "Text"; at: number[]; text: string; size: number; family: string; color: string; matrix: number[] }
+  | {
+      kind: "Text";
+      text: string;
+      size: number;
+      family: string;
+      color: string;
+      spacing: number;
+      matrix: number[];
+      lines: Array<{ text: string; at: number[] }>;
+    }
   | { kind: "Rect"; box: number[]; paint: Paint }
   | { kind: "Ellipse"; box: number[]; paint: Paint }
   | { kind: "Polygon"; points: number[]; paint: Paint }
@@ -230,7 +240,15 @@ function fixtureShapes(): Shape[] {
         { point: { x: 70, y: 85 }, handle_in: { x: 55, y: 70 }, handle_out: null }
       ]
     },
-    { kind: "Stroke", points: [{ x: 90, y: 90 }], color: "#ef4444", width: 3 }
+    { kind: "Stroke", points: [{ x: 90, y: 90 }], color: "#ef4444", width: 3 },
+    {
+      kind: "Text", x: 12, y: 66, text: "Para\ngraph", size: 8, family: "serif", color: "#0ea5e9",
+      spacing: 2.5, leading: 2, align: "center", matrix: null
+    },
+    {
+      kind: "Text", x: 96, y: 66, text: "wide line\nrow", size: 8, family: "monospace", color: "#111827",
+      spacing: -1, leading: 1.5, align: "right", matrix: null
+    }
   ];
 }
 
@@ -523,11 +541,15 @@ function normalShape(shape: Exclude<Shape, { kind: "Group" }>): NormalShape | nu
   if (shape.kind === "Text") {
     return {
       kind: "Text",
-      at: [shape.x, shape.y],
       text: shape.text,
       size: shape.size,
       family: shape.family,
       color: shape.color,
+      spacing: shape.spacing ?? 0,
+      lines: textLinePositions(shape).map((line) => ({
+        text: line.text,
+        at: [line.x, line.y]
+      })),
       matrix: shape.matrix ? [shape.matrix.a, shape.matrix.b, shape.matrix.c, shape.matrix.d, shape.matrix.e, shape.matrix.f] : [1, 0, 0, 1, 0, 0]
     };
   }
@@ -630,13 +652,19 @@ function fromSvg(svg: SVGSVGElement): NormalLayer[] {
         return;
       }
       if (tag === "text") {
+        const spans = Array.from(painted.querySelectorAll("tspan"));
+        const lines = spans.map((span) => ({
+          text: span.textContent ?? "",
+          at: [Number(span.getAttribute("x")), Number(span.getAttribute("y"))]
+        }));
         shapes.push({
           kind: "Text",
-          at: [Number(painted.getAttribute("x")), Number(painted.getAttribute("y"))],
-          text: painted.textContent ?? "",
+          text: lines.map((line) => line.text).join("\n"),
           size: Number(painted.getAttribute("font-size")),
           family: painted.getAttribute("font-family") ?? "",
           color: painted.getAttribute("fill") ?? "",
+          spacing: Number(painted.getAttribute("letter-spacing")),
+          lines,
           matrix: painted.hasAttribute("transform") ? numbers(painted.getAttribute("transform")) : [1, 0, 0, 1, 0, 0]
         });
         return;
@@ -739,6 +767,9 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
   let cleared: "layer" | "mask" | null = null;
   let textMatrix = [1, 0, 0, 1, 0, 0];
   const matrixStack: number[][] = [];
+  let textSpacing = 0;
+  let pendingLines: Array<{ text: string; at: number[] }> = [];
+  let capturedText: { size: number; family: string; color: string; spacing: number; matrix: number[] } | null = null;
 
   const finish = () => {
     if (!current || ops.length === 0) {
@@ -882,6 +913,10 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
       font = String(entry[2]);
       continue;
     }
+    if (name === "set:letterSpacing") {
+      textSpacing = parseFloat(String(entry[2]));
+      continue;
+    }
     if (name === "save") {
       matrixStack.push(textMatrix);
       continue;
@@ -892,21 +927,29 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
     }
     if (name === "restore") {
       textMatrix = matrixStack.pop()!;
+      if (capturedText) {
+        current?.shapes.push({
+          kind: "Text",
+          ...capturedText,
+          text: pendingLines.map((line) => line.text).join("\n"),
+          lines: pendingLines
+        });
+        capturedText = null;
+        pendingLines = [];
+      }
       continue;
     }
     if (name === "fillText") {
-      if (current) {
-        const size = Number(font.split("px")[0]);
-        current.shapes.push({
-          kind: "Text",
-          at: [args[1], args[2]],
-          text: String(entry[2]),
-          size,
+      if (current && !capturedText) {
+        capturedText = {
+          size: Number(font.split("px")[0]),
           family: font.slice(font.indexOf("px ") + 3),
           color: tracePaintFill(fill),
+          spacing: textSpacing,
           matrix: textMatrix
-        });
+        };
       }
+      pendingLines.push({ text: String(entry[2]), at: [args[1], args[2]] });
       continue;
     }
     if (name === "beginPath") {
@@ -968,7 +1011,8 @@ function recorder(index: number): CanvasRenderingContext2D {
     "globalCompositeOperation",
     "filter",
     "font",
-    "textBaseline"
+    "textBaseline",
+    "letterSpacing"
   ]) {
     let value: unknown = null;
     Object.defineProperty(target, name, {
@@ -1092,7 +1136,47 @@ describe("editor and export renderer conformance", () => {
   test("every shape kind survives the round trip", async () => {
     const { svg } = await mountEditor();
     const kinds = fromSvg(svg)[0].shapes.map((shape) => shape.kind);
-    expect(kinds).toEqual(["Stroke", "Rect", "Ellipse", "Polygon", "Text", "Path", "Path"]);
+    expect(kinds).toEqual([
+      "Stroke",
+      "Rect",
+      "Ellipse",
+      "Polygon",
+      "Text",
+      "Path",
+      "Path",
+      "Text",
+      "Text"
+    ]);
+  });
+
+  test("paragraph text positions every line by spacing, align and leading", async () => {
+    const { id, svg } = await mountEditor();
+    const svgTexts = fromSvg(svg)[0].shapes.filter(
+      (shape): shape is Extract<NormalShape, { kind: "Text" }> => shape.kind === "Text"
+    );
+    const traceTexts = traceAt(0)[0].shapes.filter(
+      (shape): shape is Extract<NormalShape, { kind: "Text" }> => shape.kind === "Text"
+    );
+    const [legacy, centered, rightAligned] = svgTexts;
+    expect(legacy.lines).toHaveLength(1);
+    expect(legacy.spacing).toBe(0);
+    expect(centered.spacing).toBe(2.5);
+    expect(centered.lines.map((line) => line.text)).toEqual(["Para", "graph"]);
+    expect(rightAligned.lines.map((line) => line.text)).toEqual(["wide line", "row"]);
+    const first = centered.lines[0].at;
+    const second = centered.lines[1].at;
+    expect(first[1]).toBeCloseTo(66, 6);
+    expect(second[1] - first[1]).toBeCloseTo(16, 6);
+    expect(second[0] - first[0]).toBeCloseTo(-3.65, 6);
+    const short = rightAligned.lines[1].at;
+    expect(short[0] - rightAligned.lines[0].at[0]).toBeCloseTo(22.8, 6);
+    expect(short[1] - rightAligned.lines[0].at[1]).toBeCloseTo(12, 6);
+    expect(traceTexts).toEqual(svgTexts);
+    const evaluated = await docEvaluate(id, "s0", 0, 0);
+    const engineTexts = fromEvaluation(evaluated[0].layers)[0].shapes.filter(
+      (shape): shape is Extract<NormalShape, { kind: "Text" }> => shape.kind === "Text"
+    );
+    expect(engineTexts).toEqual(svgTexts);
   });
 
   test("tweens evaluate identically on every frame", async () => {

@@ -99,12 +99,21 @@ fn check_shape(shape: &Shape) -> Result<(), String> {
             size,
             family,
             color,
+            spacing,
+            leading,
             matrix,
+            ..
         } => {
             x.is_finite()
                 && y.is_finite()
                 && size.is_finite()
                 && *size > 0.0
+                && spacing.is_finite()
+                && *spacing >= -500.0
+                && *spacing <= 500.0
+                && leading.is_finite()
+                && *leading >= 0.2
+                && *leading <= 10.0
                 && !text.trim().is_empty()
                 && text.len() <= 1_000_000
                 && paint(family)

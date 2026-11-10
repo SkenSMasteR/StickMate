@@ -58,6 +58,9 @@ export type Shape =
       size: number;
       family: string;
       color: string;
+      spacing?: number;
+      leading?: number;
+      align?: TextAlign;
       matrix?: Affine | null;
     }
   | {
@@ -106,9 +109,73 @@ export function flattenPath(nodes: PathNode[], closed: boolean): Point[] {
 }
 
 export const TEXT_ADVANCE = 0.6;
+export const TEXT_LEADING = 1.2;
 
-export function textWidth(text: string, size: number): number {
-  return [...text].length * size * TEXT_ADVANCE;
+export type TextAlign = "left" | "center" | "right";
+
+export function textLineWidth(line: string, size: number, spacing: number): number {
+  const count = [...line].length;
+  if (count === 0) {
+    return 0;
+  }
+  return Math.max(0, count * size * TEXT_ADVANCE + spacing * (count - 1));
+}
+
+export function textLines(text: string): string[] {
+  return text.split("\n");
+}
+
+export function textBlockWidth(text: string, size: number, spacing: number): number {
+  return Math.max(...textLines(text).map((line) => textLineWidth(line, size, spacing)), 0);
+}
+
+export function textBlockHeight(lines: number, size: number, leading: number): number {
+  return size + size * leading * Math.max(0, lines - 1);
+}
+
+export function textLineOffset(width: number, block: number, align: TextAlign): number {
+  if (align === "center") {
+    return (block - width) / 2;
+  }
+  if (align === "right") {
+    return block - width;
+  }
+  return 0;
+}
+
+export interface TextLayout {
+  lines: string[];
+  spacing: number;
+  leading: number;
+  align: TextAlign;
+  block: number;
+  height: number;
+  lineHeight: number;
+}
+
+export function textLayout(shape: Extract<Shape, { kind: "Text" }>): TextLayout {
+  const spacing = shape.spacing ?? 0;
+  const leading = shape.leading ?? TEXT_LEADING;
+  const align = shape.align ?? "left";
+  const lines = textLines(shape.text);
+  return {
+    lines,
+    spacing,
+    leading,
+    align,
+    block: textBlockWidth(shape.text, shape.size, spacing),
+    height: textBlockHeight(lines.length, shape.size, leading),
+    lineHeight: shape.size * leading
+  };
+}
+
+export function textLinePositions(shape: Extract<Shape, { kind: "Text" }>): Array<{ text: string; x: number; y: number }> {
+  const layout = textLayout(shape);
+  return layout.lines.map((line, index) => ({
+    text: line,
+    x: shape.x + textLineOffset(textLineWidth(line, shape.size, layout.spacing), layout.block, layout.align),
+    y: shape.y + index * layout.lineHeight
+  }));
 }
 
 export function polygonVertices(
@@ -180,13 +247,13 @@ export function composeAffine(outer: Affine, inner: Affine): Affine {
 }
 
 export function textCorners(shape: Extract<Shape, { kind: "Text" }>): Point[] {
-  const { x, y, size, matrix } = shape;
-  const w = textWidth(shape.text, size);
+  const { x, y, matrix } = shape;
+  const layout = textLayout(shape);
   return [
     { x, y },
-    { x: x + w, y },
-    { x: x + w, y: y + size },
-    { x, y: y + size }
+    { x: x + layout.block, y },
+    { x: x + layout.block, y: y + layout.height },
+    { x, y: y + layout.height }
   ].map((point) => matrix ? applyAffine(matrix, point) : point);
 }
 

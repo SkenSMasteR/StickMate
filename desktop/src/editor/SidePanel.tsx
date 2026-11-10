@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
+  AlignCenter,
   AlignCenterHorizontal,
   AlignCenterVertical,
   AlignEndHorizontal,
   AlignEndVertical,
   AlignHorizontalDistributeCenter,
+  AlignLeft,
+  AlignRight,
   AlignStartHorizontal,
   AlignStartVertical,
   AlignVerticalDistributeCenter,
@@ -27,6 +30,7 @@ import {
   linearEasing,
   sameEasing,
   shapeGradient,
+  textLayout,
   unionBounds
 } from "@/lib/document";
 import type {
@@ -39,7 +43,8 @@ import type {
   Gradient,
   GradientStop,
   Point,
-  Shape
+  Shape,
+  TextAlign
 } from "@/lib/document";
 import { cn } from "@/lib/utils";
 import Picker from "@/components/color-field";
@@ -395,6 +400,86 @@ function LabelField({
   );
 }
 
+function MultilineField({
+  label,
+  value,
+  onCommit
+}: {
+  label: string;
+  value: string;
+  onCommit: (value: string) => void;
+}) {
+  const [text, setText] = useState(value);
+
+  useEffect(() => {
+    setText(value);
+  }, [value]);
+
+  return (
+    <label className="flex items-start gap-2 text-xs">
+      <span className="w-20 shrink-0 pt-1 text-muted-foreground">{label}</span>
+      <textarea
+        value={text}
+        rows={3}
+        spellCheck={false}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={() => {
+          if (text.trim() !== "") {
+            onCommit(text.replace(/\r\n?/g, "\n"));
+          }
+        }}
+        className="min-h-0 w-full resize-none border border-border bg-transparent px-1 py-1 text-xs outline-none focus:border-ring"
+      />
+    </label>
+  );
+}
+
+const alignments: Array<{ mode: TextAlign; key: string }> = [
+  { mode: "left", key: "editor.alignLeft" },
+  { mode: "center", key: "editor.alignCenter" },
+  { mode: "right", key: "editor.alignRight" }
+];
+
+function ParagraphField({
+  label,
+  value,
+  onChange
+}: {
+  label: string;
+  value: TextAlign;
+  onChange: (align: TextAlign) => void;
+}) {
+  const { t } = useI18n();
+  const icons = { left: AlignLeft, center: AlignCenter, right: AlignRight };
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="w-20 shrink-0 text-muted-foreground">{label}</span>
+      <div className="flex gap-1">
+        {alignments.map(({ mode, key }) => {
+          const Icon = icons[mode];
+          return (
+            <button
+              key={mode}
+              type="button"
+              aria-label={t(key)}
+              aria-pressed={value === mode}
+              onClick={() => onChange(mode)}
+              className={cn(
+                "h-7 w-7 border border-border",
+                value === mode
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              )}
+            >
+              <Icon className="h-4 w-4" />
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function BlendField({
   label,
   value,
@@ -591,12 +676,12 @@ function ShapeFields({
   const rounded = (value: number) => Number(value.toFixed(2));
 
   if (shape.kind === "Text") {
+    const layout = textLayout(shape);
     return (
       <>
-        <LabelField
+        <MultilineField
           label={t("editor.textContent")}
           value={shape.text}
-          required
           onCommit={(text) => onReplace(index, { ...shape, text })}
         />
         <NumberField
@@ -611,6 +696,27 @@ function ShapeFields({
           value={shape.family}
           required
           onCommit={(family) => onReplace(index, { ...shape, family })}
+        />
+        <NumberField
+          label={t("editor.letterSpacing")}
+          value={rounded(layout.spacing)}
+          min={-500}
+          max={500}
+          step={0.5}
+          onCommit={(spacing) => onReplace(index, { ...shape, spacing })}
+        />
+        <NumberField
+          label={t("editor.lineSpacing")}
+          value={rounded(layout.leading)}
+          min={0.2}
+          max={10}
+          step={0.1}
+          onCommit={(leading) => onReplace(index, { ...shape, leading })}
+        />
+        <ParagraphField
+          label={t("editor.paragraph")}
+          value={layout.align}
+          onChange={(align) => onReplace(index, { ...shape, align })}
         />
         <ColorField
           label={t("editor.stroke")}

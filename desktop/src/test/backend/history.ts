@@ -105,7 +105,13 @@ function diffShapes(prev: Shape[], next: Shape[]): string | null {
       if (before.color !== after.color) {
         return "paint_shape";
       }
-      return before.text !== after.text ? "replace_shape" : "move_shapes";
+      const words =
+        before.text !== after.text ||
+        before.family !== after.family ||
+        before.spacing !== after.spacing ||
+        before.leading !== after.leading ||
+        before.align !== after.align;
+      return words ? "replace_shape" : "move_shapes";
     }
     if (
       (before.kind === "Rect" && after.kind === "Rect") ||
