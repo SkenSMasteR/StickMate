@@ -42,6 +42,121 @@ pub struct Point {
     pub y: f64,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GradientStop {
+    pub offset: f64,
+    pub color: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase", rename_all_fields = "camelCase")]
+pub enum Gradient {
+    Linear { angle: f64, stops: Vec<GradientStop> },
+    Radial { stops: Vec<GradientStop> },
+}
+
+impl Gradient {
+    pub fn stops(&self) -> &[GradientStop] {
+        match self {
+            Gradient::Linear { stops, .. } | Gradient::Radial { stops, .. } => stops,
+        }
+    }
+}
+
+pub(crate) fn validate_gradient(gradient: &Gradient) -> Result<(), String> {
+    let stops = gradient.stops();
+    if stops.len() < 2 {
+        return Err("gradient needs at least 2 stops".to_string());
+    }
+    if stops.len() > 32 {
+        return Err("gradient has too many stops".to_string());
+    }
+    if matches!(gradient, Gradient::Linear { angle, .. } if !angle.is_finite()) {
+        return Err("gradient angle must be finite".to_string());
+    }
+    let mut previous = 0.0;
+    for (index, stop) in stops.iter().enumerate() {
+        if !stop.offset.is_finite() || !(0.0..=1.0).contains(&stop.offset) {
+            return Err("gradient stop offset must be between 0 and 1".to_string());
+        }
+        if index > 0 && stop.offset < previous {
+            return Err("gradient stops must be in order".to_string());
+        }
+        if stop.color.len() > 1024 {
+            return Err("gradient stop color is too long".to_string());
+        }
+        previous = stop.offset;
+    }
+    Ok(())
+}
+
+fn gradients_mixable(a: Option<&Gradient>, b: Option<&Gradient>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            std::mem::discriminant(left) == std::mem::discriminant(right)
+                && left.stops().len() == right.stops().len()
+        }
+        _ => false,
+    }
+}
+
+fn mix_stops(a: &[GradientStop], b: &[GradientStop], t: f64) -> Vec<GradientStop> {
+    a.iter()
+        .zip(b)
+        .map(|(left, right)| GradientStop {
+            offset: mix(left.offset, right.offset, t),
+            color: mix_color(&left.color, &right.color, t),
+        })
+        .collect()
+}
+
+fn mix_gradient(a: &Option<Gradient>, b: &Option<Gradient>, t: f64) -> Option<Gradient> {
+    match (a, b) {
+        (
+            Some(Gradient::Linear {
+                angle,
+                stops: left,
+            }),
+            Some(Gradient::Linear {
+                angle: other_angle,
+                stops: right,
+            }),
+        ) if left.len() == right.len() => Some(Gradient::Linear {
+            angle: mix(*angle, *other_angle, t),
+            stops: mix_stops(left, right, t),
+        }),
+        (
+            Some(Gradient::Radial { stops: left }),
+            Some(Gradient::Radial { stops: right }),
+        ) if left.len() == right.len() => Some(Gradient::Radial {
+            stops: mix_stops(left, right, t),
+        }),
+        _ => a.clone(),
+    }
+}
+
+fn shape_gradient(shape: &Shape) -> Option<&Gradient> {
+    match shape {
+        Shape::Rect { gradient, .. }
+        | Shape::Ellipse { gradient, .. }
+        | Shape::Polygon { gradient, .. }
+        | Shape::Path { gradient, .. } => gradient.as_ref(),
+        _ => None,
+    }
+}
+
+pub(crate) fn rotated_gradient(gradient: &Option<Gradient>, rotation: f64) -> Option<Gradient> {
+    match gradient {
+        Some(Gradient::Linear { angle, stops }) => Some(Gradient::Linear {
+            angle: angle + rotation,
+            stops: stops.clone(),
+        }),
+        other => other.clone(),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Shape {
@@ -58,6 +173,8 @@ pub enum Shape {
         fill: String,
         stroke: String,
         width: f64,
+        #[serde(default)]
+        gradient: Option<Gradient>,
     },
     Ellipse {
         x: f64,
@@ -67,6 +184,8 @@ pub enum Shape {
         fill: String,
         stroke: String,
         width: f64,
+        #[serde(default)]
+        gradient: Option<Gradient>,
     },
     Polygon {
         x: f64,
@@ -77,6 +196,8 @@ pub enum Shape {
         fill: String,
         stroke: String,
         width: f64,
+        #[serde(default)]
+        gradient: Option<Gradient>,
     },
     Text {
         x: f64,
@@ -94,6 +215,8 @@ pub enum Shape {
         fill: String,
         stroke: String,
         width: f64,
+        #[serde(default)]
+        gradient: Option<Gradient>,
     },
     Group {
         children: Vec<Shape>,
@@ -236,7 +359,14 @@ pub fn shape_bounds(shape: &Shape) -> Bounds {
     }
 }
 
-fn corners_path(corners: &[Point], matrix: &Affine, fill: &str, stroke: &str, width: f64) -> Shape {
+fn corners_path(
+    corners: &[Point],
+    matrix: &Affine,
+    fill: &str,
+    stroke: &str,
+    width: f64,
+    gradient: Option<Gradient>,
+) -> Shape {
     Shape::Path {
         nodes: corners
             .iter()
@@ -250,6 +380,7 @@ fn corners_path(corners: &[Point], matrix: &Affine, fill: &str, stroke: &str, wi
         fill: fill.to_string(),
         stroke: stroke.to_string(),
         width,
+        gradient,
     }
 }
 
@@ -282,6 +413,7 @@ pub(crate) fn transform_shape(
             fill,
             stroke,
             width,
+            gradient,
         } => Ok(Shape::Path {
             nodes: nodes
                 .iter()
@@ -295,6 +427,7 @@ pub(crate) fn transform_shape(
             fill: fill.clone(),
             stroke: stroke.clone(),
             width: *width,
+            gradient: gradient.clone(),
         }),
         Shape::Text {
             x,
@@ -333,6 +466,7 @@ pub(crate) fn transform_shape(
             fill,
             stroke,
             width,
+            gradient,
         } if rotation != 0.0 => {
             if rotation % 90.0 != 0.0 {
                 return Err("ellipse cannot be rotated".to_string());
@@ -355,6 +489,7 @@ pub(crate) fn transform_shape(
                 fill: fill.clone(),
                 stroke: stroke.clone(),
                 width: *width,
+                gradient: gradient.clone(),
             })
         }
         Shape::Rect {
@@ -365,6 +500,7 @@ pub(crate) fn transform_shape(
             fill,
             stroke,
             width,
+            gradient,
         } if rotation != 0.0 => {
             let corners = [
                 Point { x: *x, y: *y },
@@ -372,7 +508,14 @@ pub(crate) fn transform_shape(
                 Point { x: x + w, y: y + h },
                 Point { x: *x, y: y + h },
             ];
-            Ok(corners_path(&corners, matrix, fill, stroke, *width))
+            Ok(corners_path(
+                &corners,
+                matrix,
+                fill,
+                stroke,
+                *width,
+                rotated_gradient(gradient, rotation),
+            ))
         }
         Shape::Polygon {
             x,
@@ -383,9 +526,17 @@ pub(crate) fn transform_shape(
             fill,
             stroke,
             width,
+            gradient,
         } if rotation != 0.0 => {
             let vertices = polygon_vertices(*x, *y, *w, *h, *sides);
-            Ok(corners_path(&vertices, matrix, fill, stroke, *width))
+            Ok(corners_path(
+                &vertices,
+                matrix,
+                fill,
+                stroke,
+                *width,
+                rotated_gradient(gradient, rotation),
+            ))
         }
         Shape::Rect {
             x,
@@ -395,6 +546,7 @@ pub(crate) fn transform_shape(
             fill,
             stroke,
             width,
+            gradient,
         } => {
             let q = apply_affine(matrix, &Point { x: *x, y: *y });
             Ok(Shape::Rect {
@@ -405,6 +557,7 @@ pub(crate) fn transform_shape(
                 fill: fill.clone(),
                 stroke: stroke.clone(),
                 width: *width,
+                gradient: gradient.clone(),
             })
         }
         Shape::Ellipse {
@@ -415,6 +568,7 @@ pub(crate) fn transform_shape(
             fill,
             stroke,
             width,
+            gradient,
         } => {
             let q = apply_affine(matrix, &Point { x: *x, y: *y });
             Ok(Shape::Ellipse {
@@ -425,6 +579,7 @@ pub(crate) fn transform_shape(
                 fill: fill.clone(),
                 stroke: stroke.clone(),
                 width: *width,
+                gradient: gradient.clone(),
             })
         }
         Shape::Polygon {
@@ -436,6 +591,7 @@ pub(crate) fn transform_shape(
             fill,
             stroke,
             width,
+            gradient,
         } => {
             let q = apply_affine(matrix, &Point { x: *x, y: *y });
             Ok(Shape::Polygon {
@@ -447,6 +603,7 @@ pub(crate) fn transform_shape(
                 fill: fill.clone(),
                 stroke: stroke.clone(),
                 width: *width,
+                gradient: gradient.clone(),
             })
         }
     }
@@ -527,11 +684,12 @@ fn union_of(source: &[Shape], indices: &[usize]) -> Bounds {
 
 fn paint_fill(shape: &mut Shape, color: &str) {
     match shape {
-        Shape::Rect { fill, .. }
-        | Shape::Ellipse { fill, .. }
-        | Shape::Polygon { fill, .. }
-        | Shape::Path { fill, .. } => {
+        Shape::Rect { fill, gradient, .. }
+        | Shape::Ellipse { fill, gradient, .. }
+        | Shape::Polygon { fill, gradient, .. }
+        | Shape::Path { fill, gradient, .. } => {
             *fill = color.to_string();
+            *gradient = None;
         }
         Shape::Group { children } => {
             for child in children {
@@ -762,6 +920,9 @@ fn densify(path: &[Point], spacing: f64) -> Vec<Point> {
 }
 
 pub(crate) fn validate(shape: &Shape) -> Result<(), String> {
+    if let Some(gradient) = shape_gradient(shape) {
+        validate_gradient(gradient)?;
+    }
     match shape {
         Shape::Group { children } => {
             if children.is_empty() {
@@ -1228,11 +1389,14 @@ fn mix_affine(a: &Affine, b: &Affine, t: f64) -> Affine {
 }
 
 fn mixable(a: &Shape, b: &Shape) -> bool {
+    let fills_alike = gradients_mixable(shape_gradient(a), shape_gradient(b));
     match (a, b) {
         (Shape::Rect { .. }, Shape::Rect { .. })
         | (Shape::Ellipse { .. }, Shape::Ellipse { .. })
-        | (Shape::Text { .. }, Shape::Text { .. }) => true,
-        (Shape::Polygon { sides, .. }, Shape::Polygon { sides: other, .. }) => sides == other,
+        | (Shape::Text { .. }, Shape::Text { .. }) => fills_alike,
+        (Shape::Polygon { sides, .. }, Shape::Polygon { sides: other, .. }) => {
+            sides == other && fills_alike
+        }
         (Shape::Stroke { points, .. }, Shape::Stroke { points: other, .. }) => {
             points.len() == other.len() && points.len() > 1
         }
@@ -1243,7 +1407,7 @@ fn mixable(a: &Shape, b: &Shape) -> bool {
                 closed: other_closed,
                 ..
             },
-        ) => closed == other_closed && nodes.len() == other.len() && nodes.len() > 1,
+        ) => closed == other_closed && nodes.len() == other.len() && nodes.len() > 1 && fills_alike,
         (Shape::Group { children }, Shape::Group { children: other }) => {
             !children.is_empty()
                 && children.len() == other.len()
@@ -1279,6 +1443,7 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
                 fill,
                 stroke,
                 width,
+                gradient,
             },
             Shape::Rect {
                 x: bx,
@@ -1288,6 +1453,7 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
                 fill: bf,
                 stroke: bs,
                 width: bwidth,
+                gradient: bgradient,
             },
         ) => Shape::Rect {
             x: mix(*x, *bx, t),
@@ -1297,6 +1463,7 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
             fill: mix_color(fill, bf, t),
             stroke: mix_color(stroke, bs, t),
             width: mix(*width, *bwidth, t),
+            gradient: mix_gradient(gradient, bgradient, t),
         },
         (
             Shape::Ellipse {
@@ -1307,6 +1474,7 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
                 fill,
                 stroke,
                 width,
+                gradient,
             },
             Shape::Ellipse {
                 x: bx,
@@ -1316,6 +1484,7 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
                 fill: bf,
                 stroke: bs,
                 width: bwidth,
+                gradient: bgradient,
             },
         ) => Shape::Ellipse {
             x: mix(*x, *bx, t),
@@ -1325,6 +1494,7 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
             fill: mix_color(fill, bf, t),
             stroke: mix_color(stroke, bs, t),
             width: mix(*width, *bwidth, t),
+            gradient: mix_gradient(gradient, bgradient, t),
         },
         (
             Shape::Polygon {
@@ -1336,6 +1506,7 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
                 fill,
                 stroke,
                 width,
+                gradient,
             },
             Shape::Polygon {
                 sides: bsides,
@@ -1346,6 +1517,7 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
                 fill: bf,
                 stroke: bs,
                 width: bwidth,
+                gradient: bgradient,
             },
         ) if sides == bsides => Shape::Polygon {
             sides: *sides,
@@ -1356,6 +1528,7 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
             fill: mix_color(fill, bf, t),
             stroke: mix_color(stroke, bs, t),
             width: mix(*width, *bwidth, t),
+            gradient: mix_gradient(gradient, bgradient, t),
         },
         (
             Shape::Stroke {
@@ -1384,6 +1557,7 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
                 fill,
                 stroke,
                 width,
+                gradient,
             },
             Shape::Path {
                 nodes: bnodes,
@@ -1391,6 +1565,7 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
                 fill: bf,
                 stroke: bs,
                 width: bwidth,
+                gradient: bgradient,
             },
         ) if closed == bclosed && nodes.len() == bnodes.len() && nodes.len() > 1 => Shape::Path {
             nodes: nodes
@@ -1418,6 +1593,7 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
             fill: mix_color(fill, bf, t),
             stroke: mix_color(stroke, bs, t),
             width: mix(*width, *bwidth, t),
+            gradient: mix_gradient(gradient, bgradient, t),
         },
         (
             Shape::Text {
@@ -3608,6 +3784,7 @@ mod tests {
             fill: "#f00".to_string(),
             stroke: "#000000".to_string(),
             width: 2.0,
+            gradient: None,
         };
         let end = Shape::Rect {
             x: 20.0,
@@ -3617,6 +3794,7 @@ mod tests {
             fill: "#0000ff".to_string(),
             stroke: "none".to_string(),
             width: 4.0,
+            gradient: None,
         };
         let middle = tween_span(&fixture, vec![start], vec![end.clone()])[1]
             .layers[0]
@@ -3648,6 +3826,7 @@ mod tests {
             fill: "#22c55e".to_string(),
             stroke: "#000000".to_string(),
             width: 1.0,
+            gradient: None,
         };
         let fixture = Fixture::new("tween-kinds");
         let frames = tween_span(&fixture, vec![box_shape(0.0, 0.0)], vec![ball.clone()]);
@@ -3685,6 +3864,7 @@ mod tests {
             fill: "#3b82f6".to_string(),
             stroke: "#000000".to_string(),
             width: 2.0,
+            gradient: None,
         };
         let end = Shape::Path {
             nodes: vec![
@@ -3703,6 +3883,7 @@ mod tests {
             fill: "#3b82f6".to_string(),
             stroke: "#000000".to_string(),
             width: 2.0,
+            gradient: None,
         };
         let frames = tween_span(&fixture, vec![start], vec![end.clone()]);
         let middle = frames[1].layers[0].shapes[0].clone();
@@ -3725,6 +3906,7 @@ mod tests {
                 fill: "#3b82f6".to_string(),
                 stroke: "#000000".to_string(),
                 width: 2.0,
+                gradient: None,
             }
         );
         assert_eq!(frames[2].layers[0].shapes, vec![end]);
@@ -4517,6 +4699,7 @@ mod tests {
             fill: "#ff0000".to_string(),
             stroke: "#000000".to_string(),
             width: 1.0,
+            gradient: None,
         };
         let back: Shape =
             serde_json::from_value(serde_json::to_value(&rect).expect("serialize")).expect("back");
@@ -4533,6 +4716,7 @@ mod tests {
             fill: "#00ff00".to_string(),
             stroke: "#000000".to_string(),
             width: 1.0,
+            gradient: None,
         }
     }
 
@@ -4557,6 +4741,7 @@ mod tests {
             fill: "#ff0000".to_string(),
             stroke: "#000000".to_string(),
             width: 1.0,
+            gradient: None,
         }
     }
 
@@ -4681,6 +4866,7 @@ mod tests {
                 fill: "#ff0000".to_string(),
                 stroke: "#000000".to_string(),
                 width: 1.0,
+                gradient: None,
             },
             polygon(5),
             text("Hi", 10.0),
@@ -4719,6 +4905,7 @@ mod tests {
             fill: "#ff0000".to_string(),
             stroke: "#000000".to_string(),
             width: 1.0,
+            gradient: None,
         };
         fixture
             .store
@@ -4992,6 +5179,7 @@ mod tests {
             fill: "#ff0000".to_string(),
             stroke: "#000000".to_string(),
             width: 1.0,
+            gradient: None,
         }
     }
 
@@ -5039,6 +5227,7 @@ mod tests {
             fill: "#ff0000".to_string(),
             stroke: "#000000".to_string(),
             width: 1.0,
+            gradient: None,
         };
         assert_eq!(
             fixture
@@ -5062,6 +5251,7 @@ mod tests {
             fill: "#ff0000".to_string(),
             stroke: "#000000".to_string(),
             width: 1.0,
+            gradient: None,
         };
         assert_eq!(
             fixture
@@ -5076,6 +5266,7 @@ mod tests {
             fill: "#ff0000".to_string(),
             stroke: "#000000".to_string(),
             width: 0.0,
+            gradient: None,
         };
         assert_eq!(
             fixture
@@ -5105,6 +5296,7 @@ mod tests {
                         fill: "#ff0000".to_string(),
                         stroke: "#000000".to_string(),
                         width: 1.0,
+                        gradient: None,
                     }
                 )
                 .expect_err("shrunk"),
@@ -5199,6 +5391,7 @@ mod tests {
             fill: "#ff0000".to_string(),
             stroke: "#000000".to_string(),
             width: 1.0,
+            gradient: None,
         }
     }
 
@@ -6277,6 +6470,7 @@ mod tests {
                     fill: "#ffffff".to_string(),
                     stroke: "#000000".to_string(),
                     width: 1.0,
+                    gradient: None,
                 },
             )
             .expect("rect");
@@ -6934,6 +7128,7 @@ mod tests {
                             fill,
                             stroke,
                             width,
+                            gradient: None,
                         },
                         other => other,
                     })
@@ -6964,6 +7159,7 @@ mod tests {
                     fill: "#ff0000".to_string(),
                     stroke: "#000000".to_string(),
                     width: 1.0,
+                    gradient: None,
                 },
             )
             .expect("draw ellipse");
@@ -7189,6 +7385,298 @@ mod tests {
         assert!(json.contains("\"children\":["));
         let back: Shape = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, group);
+    }
+
+    fn stops(pairs: &[(f64, &str)]) -> Vec<GradientStop> {
+        pairs
+            .iter()
+            .map(|(offset, color)| GradientStop {
+                offset: *offset,
+                color: color.to_string(),
+            })
+            .collect()
+    }
+
+    fn linear(angle: f64, pairs: &[(f64, &str)]) -> Option<Gradient> {
+        Some(Gradient::Linear {
+            angle,
+            stops: stops(pairs),
+        })
+    }
+
+    fn filled_rect(x: f64, gradient: Option<Gradient>) -> Shape {
+        Shape::Rect {
+            x,
+            y: 0.0,
+            w: 20.0,
+            h: 20.0,
+            fill: "#ff0000".to_string(),
+            stroke: "#000000".to_string(),
+            width: 1.0,
+            gradient,
+        }
+    }
+
+    fn gradient_of(shape: &Shape) -> Option<Gradient> {
+        match shape {
+            Shape::Rect { gradient, .. } => gradient.clone(),
+            other => panic!("expected a rectangle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gradient_validation_bounds_stops_and_angle() {
+        let one = filled_rect(0.0, linear(0.0, &[(0.0, "#ff0000")]));
+        assert_eq!(
+            validate(&one).expect_err("one stop"),
+            "gradient needs at least 2 stops"
+        );
+        let crowded: Vec<(f64, &str)> = (0..33)
+            .map(|index| (index as f64 / 32.0, "#ffffff"))
+            .collect();
+        let many = filled_rect(0.0, linear(0.0, &crowded));
+        assert_eq!(
+            validate(&many).expect_err("many stops"),
+            "gradient has too many stops"
+        );
+        let outside = filled_rect(0.0, linear(0.0, &[(0.0, "#ff0000"), (1.5, "#0000ff")]));
+        assert_eq!(
+            validate(&outside).expect_err("offset range"),
+            "gradient stop offset must be between 0 and 1"
+        );
+        let unordered = filled_rect(0.0, linear(0.0, &[(0.8, "#ff0000"), (0.2, "#0000ff")]));
+        assert_eq!(
+            validate(&unordered).expect_err("stop order"),
+            "gradient stops must be in order"
+        );
+        let tilted = filled_rect(0.0, linear(f64::NAN, &[(0.0, "#ff0000"), (1.0, "#0000ff")]));
+        assert_eq!(
+            validate(&tilted).expect_err("angle"),
+            "gradient angle must be finite"
+        );
+        let long = filled_rect(0.0, linear(0.0, &[(0.0, "#ff0000"), (1.0, &"x".repeat(1025))]));
+        assert_eq!(
+            validate(&long).expect_err("color"),
+            "gradient stop color is too long"
+        );
+        assert!(validate(&filled_rect(
+            0.0,
+            linear(-45.0, &[(0.0, "#ff0000"), (0.5, "#00ff00"), (1.0, "#0000ff")])
+        ))
+        .is_ok());
+        assert!(validate(&filled_rect(
+            0.0,
+            Some(Gradient::Radial {
+                stops: stops(&[(0.0, "#ff0000"), (1.0, "#0000ff")])
+            })
+        ))
+        .is_ok());
+    }
+
+    #[test]
+    fn gradient_survives_scaling_and_follows_rotation() {
+        let shape = filled_rect(0.0, linear(30.0, &[(0.0, "#ff0000"), (1.0, "#0000ff")]));
+        let matrix = affine_from(
+            &Point { x: 10.0, y: 10.0 },
+            0.0,
+            0.0,
+            2.0,
+            2.0,
+            0.0,
+        );
+        let scaled = transform_shape(&shape, &matrix, 2.0, 2.0, 0.0).expect("scale");
+        assert_eq!(gradient_of(&scaled), linear(30.0, &[(0.0, "#ff0000"), (1.0, "#0000ff")]));
+        let turned = transform_shape(&shape, &matrix, 1.0, 1.0, 90.0).expect("rotate");
+        match turned {
+            Shape::Path {
+                nodes,
+                closed,
+                gradient,
+                ..
+            } => {
+                assert!(closed);
+                assert_eq!(nodes.len(), 4);
+                assert_eq!(gradient, linear(120.0, &[(0.0, "#ff0000"), (1.0, "#0000ff")]));
+            }
+            other => panic!("expected a path, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tween_blends_gradient_stops_and_holds_mismatched_fills() {
+        let fixture = Fixture::new("tween-gradient");
+        let start = filled_rect(0.0, linear(0.0, &[(0.0, "#ff0000"), (1.0, "#0000ff")]));
+        let end = filled_rect(20.0, linear(90.0, &[(0.25, "#00ff00"), (0.75, "#ffffff")]));
+        let frames = tween_span(&fixture, vec![start.clone()], vec![end.clone()]);
+        assert_eq!(
+            gradient_of(&frames[1].layers[0].shapes[0]),
+            linear(45.0, &[(0.125, "#808000"), (0.875, "#8080ff")])
+        );
+        let other = Fixture::new("tween-gradient-stops");
+        let frames = tween_span(
+            &other,
+            vec![start.clone()],
+            vec![filled_rect(
+                20.0,
+                linear(
+                    0.0,
+                    &[(0.0, "#000000"), (0.5, "#404040"), (1.0, "#ffffff")],
+                ),
+            )],
+        );
+        assert_eq!(
+            gradient_of(&frames[1].layers[0].shapes[0]),
+            linear(0.0, &[(0.0, "#ff0000"), (1.0, "#0000ff")])
+        );
+        let solid = Fixture::new("tween-gradient-solid");
+        let frames = tween_span(&solid, vec![start.clone()], vec![filled_rect(20.0, None)]);
+        assert_eq!(
+            gradient_of(&frames[1].layers[0].shapes[0]),
+            linear(0.0, &[(0.0, "#ff0000"), (1.0, "#0000ff")])
+        );
+        let frames = tween_span(
+            &Fixture::new("tween-gradient-solid-end"),
+            vec![filled_rect(0.0, None)],
+            vec![start.clone()],
+        );
+        assert_eq!(gradient_of(&frames[1].layers[0].shapes[0]), None);
+    }
+
+    #[test]
+    fn mixable_requires_matching_gradients() {
+        let gradient = filled_rect(0.0, linear(0.0, &[(0.0, "#ff0000"), (1.0, "#0000ff")]));
+        assert!(!mixable(&filled_rect(0.0, None), &gradient));
+        assert!(mixable(&gradient, &gradient.clone()));
+        assert!(!mixable(
+            &gradient,
+            &filled_rect(
+                0.0,
+                Some(Gradient::Radial {
+                    stops: stops(&[(0.0, "#ff0000"), (1.0, "#0000ff")])
+                })
+            )
+        ));
+        assert!(!mixable(
+            &gradient,
+            &filled_rect(
+                0.0,
+                linear(0.0, &[(0.0, "#ff0000"), (0.5, "#00ff00"), (1.0, "#0000ff")])
+            )
+        ));
+    }
+
+    #[test]
+    fn painting_a_shape_drops_its_gradient() {
+        let mut shape = filled_rect(0.0, linear(0.0, &[(0.0, "#ff0000"), (1.0, "#0000ff")]));
+        paint_fill(&mut shape, "#00ff00");
+        assert_eq!(gradient_of(&shape), None);
+        match &shape {
+            Shape::Rect { fill, .. } => assert_eq!(fill, "#00ff00"),
+            other => panic!("expected a rectangle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gradient_shapes_round_trip_and_default_to_solid() {
+        let shape = filled_rect(
+            0.0,
+            Some(Gradient::Radial {
+                stops: stops(&[(0.0, "#ff0000"), (1.0, "#0000ff")]),
+            }),
+        );
+        let json = serde_json::to_string(&shape).expect("serialize");
+        assert!(json.contains("\"gradient\":{\"kind\":\"radial\",\"stops\":[{\"offset\":0.0,\"color\":\"#ff0000\"}"));
+        let back: Shape = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, shape);
+        let plain: Shape = serde_json::from_str(
+            "{\"kind\":\"Rect\",\"x\":0.0,\"y\":0.0,\"w\":20.0,\"h\":20.0,\"fill\":\"#ff0000\",\"stroke\":\"#000000\",\"width\":1.0}"
+        )
+        .expect("legacy shape");
+        assert_eq!(plain, filled_rect(0.0, None));
+    }
+
+    #[test]
+    fn store_replaces_and_undoes_a_gradient_fill() {
+        let fixture = Fixture::new("store-gradient");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 0.0))
+            .expect("draw");
+        let filled = filled_rect(0.0, linear(0.0, &[(0.0, "#ff0000"), (1.0, "#0000ff")]));
+        let doc = store
+            .replace_shape(id, &fixture.scene, &fixture.layer, 0, 0, filled.clone())
+            .expect("replace");
+        assert_eq!(doc.scenes[0].layers[0].keys[0].shapes, vec![filled.clone()]);
+        let broken = filled_rect(0.0, linear(0.0, &[(0.0, "#ff0000")]));
+        assert_eq!(
+            store
+                .replace_shape(id, &fixture.scene, &fixture.layer, 0, 0, broken)
+                .expect_err("broken"),
+            "gradient needs at least 2 stops"
+        );
+        assert_eq!(
+            store
+                .replace_shape(id, &fixture.scene, &fixture.layer, 0, 4, filled)
+                .expect_err("index"),
+            "unknown shape"
+        );
+        let undone = store.undo(id).expect("undo");
+        assert_eq!(
+            undone.scenes[0].layers[0].keys[0].shapes,
+            vec![box_shape(0.0, 0.0)]
+        );
+    }
+
+    #[test]
+    fn grouped_children_keep_their_gradients() {
+        let fixture = Fixture::new("group-gradient");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 0.0))
+            .expect("draw");
+        store
+            .draw(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                filled_rect(40.0, linear(20.0, &[(0.0, "#ffffff"), (1.0, "#000000")])),
+            )
+            .expect("draw filled");
+        let doc = store
+            .group_shapes(id, &fixture.scene, &fixture.layer, 0, vec![0, 1])
+            .expect("group");
+        let group = doc.scenes[0].layers[0].keys[0].shapes[0].clone();
+        let moved = transform_shape(
+            &group,
+            &affine_from(&Point { x: 0.0, y: 0.0 }, 5.0, 5.0, 2.0, 2.0, 0.0),
+            2.0,
+            2.0,
+            0.0,
+        )
+        .expect("transform");
+        match moved {
+            Shape::Group { children } => {
+                assert_eq!(
+                    shape_gradient(&children[1]).cloned(),
+                    linear(20.0, &[(0.0, "#ffffff"), (1.0, "#000000")])
+                );
+                match &children[1] {
+                    Shape::Rect { x, .. } => assert_eq!(*x, 85.0),
+                    other => panic!("expected a rectangle, got {other:?}"),
+                }
+            }
+            other => panic!("expected a group, got {other:?}"),
+        }
+        let ungrouped = store
+            .ungroup_shape(id, &fixture.scene, &fixture.layer, 0, 0)
+            .expect("ungroup");
+        assert_eq!(
+            gradient_of(&ungrouped.scenes[0].layers[0].keys[0].shapes[1]),
+            linear(20.0, &[(0.0, "#ffffff"), (1.0, "#000000")])
+        );
     }
 }
 

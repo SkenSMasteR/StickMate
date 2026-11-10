@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::document::{
-    affine_from, evaluate_layer, transform_shape, Affine, DocStore, Document, Layer, Point, Shape,
-    Transform,
+    affine_from, evaluate_layer, rotated_gradient, transform_shape, validate_gradient, Affine,
+    DocStore, Document, Layer, Point, Shape, Transform,
 };
 use crate::path::PathNode;
 
@@ -55,6 +55,7 @@ fn check_shape(shape: &Shape) -> Result<(), String> {
             fill,
             stroke,
             width: sw,
+            gradient,
         }
         | Shape::Ellipse {
             x,
@@ -64,6 +65,7 @@ fn check_shape(shape: &Shape) -> Result<(), String> {
             fill,
             stroke,
             width: sw,
+            gradient,
         }
         | Shape::Polygon {
             x,
@@ -73,6 +75,7 @@ fn check_shape(shape: &Shape) -> Result<(), String> {
             fill,
             stroke,
             width: sw,
+            gradient,
             ..
         } => {
             [*x, *y, *w, *h].iter().all(|v| v.is_finite())
@@ -81,6 +84,9 @@ fn check_shape(shape: &Shape) -> Result<(), String> {
                 && width(*sw)
                 && paint(fill)
                 && paint(stroke)
+                && gradient
+                    .as_ref()
+                    .map_or(true, |item| validate_gradient(item).is_ok())
                 && match shape {
                     Shape::Polygon { sides, .. } => (3..=1024).contains(sides),
                     _ => true,
@@ -113,6 +119,7 @@ fn check_shape(shape: &Shape) -> Result<(), String> {
             fill,
             stroke,
             width: w,
+            gradient,
         } => {
             nodes.len() >= if *closed { 3 } else { 2 }
                 && nodes.len() <= 100_000
@@ -124,6 +131,9 @@ fn check_shape(shape: &Shape) -> Result<(), String> {
                 && width(*w)
                 && paint(fill)
                 && paint(stroke)
+                && gradient
+                    .as_ref()
+                    .map_or(true, |item| validate_gradient(item).is_ok())
         }
         Shape::Group { children } => {
             !children.is_empty() && children.iter().try_for_each(check_shape).is_ok()
@@ -198,6 +208,7 @@ fn converted(shape: &Shape, matrix: &Affine, scale: f64, rotation: f64) -> Resul
         fill,
         stroke,
         width,
+        gradient,
     } = shape
     {
         if rotation % 90.0 != 0.0 {
@@ -231,6 +242,7 @@ fn converted(shape: &Shape, matrix: &Affine, scale: f64, rotation: f64) -> Resul
                 fill: fill.clone(),
                 stroke: stroke.clone(),
                 width: *width,
+                gradient: rotated_gradient(gradient, rotation),
             };
             &ellipse_path
         } else {
@@ -409,6 +421,7 @@ mod tests {
             fill: "#ff0000".to_string(),
             stroke: "#000000".to_string(),
             width: 2.0,
+            gradient: None,
         }
     }
 
@@ -421,6 +434,7 @@ mod tests {
             fill: "#ff0000".to_string(),
             stroke: "#000000".to_string(),
             width: 2.0,
+            gradient: None,
         }
     }
 
