@@ -9,6 +9,7 @@ import { useWorkspace } from "@/editor/workspace";
 import { useI18n } from "@/i18n";
 import { docList, docRecoveryReport } from "@/lib/document";
 import type { ProjectSummary } from "@/lib/document";
+import { askFlaSave, exportFla } from "@/lib/fla";
 
 const pinKey = "stickmate.pins";
 
@@ -78,6 +79,22 @@ export default function Projects({ onOpened }: { onOpened: (id: string) => void 
     }
   };
 
+  const exportProject = async (project: ProjectSummary) => {
+    const path = await askFlaSave(project.name);
+    if (!path) {
+      return;
+    }
+    try {
+      const result = await exportFla(project.id, path);
+      toast.success(result.path);
+      for (const warning of result.warnings) {
+        toast.warning(warning);
+      }
+    } catch (error) {
+      toast.error(String(error));
+    }
+  };
+
   const sorted = [...projects].sort((a, b) => {
     const pinnedA = pins[a.id] ? 1 : 0;
     const pinnedB = pins[b.id] ? 1 : 0;
@@ -141,6 +158,16 @@ export default function Projects({ onOpened }: { onOpened: (id: string) => void 
                 }}
               >
                 {t("projects.open")}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void exportProject(project);
+                }}
+              >
+                {t("projects.export")}
               </Button>
               <Button
                 variant="ghost"

@@ -3,6 +3,7 @@ mod boolean;
 mod document;
 mod entitlement;
 mod export;
+mod fla;
 mod frames;
 mod path;
 mod prefs;
@@ -10,6 +11,7 @@ mod shapes;
 mod templates;
 mod tokens;
 mod updater;
+mod xfl;
 
 use std::time::Duration;
 use tauri::Manager;
@@ -23,6 +25,7 @@ fn app_version() -> String {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(tokens::TokenCache::default())
@@ -121,6 +124,7 @@ pub fn run() {
             templates::templates_preview,
             templates::templates_open,
             export::export_web,
+            fla::project_export_fla,
             app_version
         ])
         .on_window_event(|window, event| {
