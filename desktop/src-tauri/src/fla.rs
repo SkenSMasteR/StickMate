@@ -9,6 +9,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::document::{Blend, Document, DocStore, Layer, Shape};
 use crate::xfl;
+use crate::xfl_read;
 
 const EOCD_SIG: [u8; 4] = *b"PK\x05\x06";
 const CENTRAL_SIG: [u8; 4] = *b"PK\x01\x02";
@@ -19,6 +20,13 @@ const ZIP64_LOCATOR_SIG: [u8; 4] = *b"PK\x06\x07";
 pub struct FlaExportResult {
     pub path: String,
     pub warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct FlaImportResult {
+    pub id: String,
+    pub name: String,
+    pub notes: Vec<String>,
 }
 
 fn u16_at(bytes: &[u8], at: usize) -> u16 {
@@ -287,6 +295,44 @@ pub fn project_export_fla(
     })
 }
 
+#[tauri::command]
+pub fn project_import_fla(store: State<'_, DocStore>, path: String) -> Result<FlaImportResult, String> {
+    let source = PathBuf::from(&path);
+    let bytes = fs::read(&source).map_err(|error| error.to_string())?;
+    let body = if is_zip(&bytes) {
+        let members = read_members(&bytes)?;
+        member_bytes(&members, xfl::DOM_DOCUMENT)
+            .ok_or_else(|| "DOMDocument.xml is missing from the file".to_string())?
+    } else {
+        bytes
+    };
+    let text = String::from_utf8(body)
+        .map_err(|_| "DOMDocument.xml is not readable text".to_string())?;
+    let stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Imported project");
+    let import = xfl_read::parse(&text, &archive_stem(stem))?;
+    let mut doc = import.doc;
+    let created = store.create(
+        doc.name.clone(),
+        doc.width,
+        doc.height,
+        doc.fps,
+        doc.background.clone(),
+    )?;
+    doc.id = created.id.clone();
+    store.edit(&created.id, move |target| {
+        *target = doc;
+        Ok(())
+    })?;
+    Ok(FlaImportResult {
+        id: created.id,
+        name: created.name,
+        notes: import.notes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,6 +438,28 @@ mod tests {
         let archive = write_members(&archive_members(&doc)).expect("write");
         let read = read_members(&archive).expect("read");
         assert_eq!(read, archive_members(&doc));
+    }
+
+    #[test]
+    fn import_picks_the_document_member() {
+        let doc = document("Import Me");
+        let archive = write_members(&archive_members(&doc)).expect("write");
+        let members = read_members(&archive).expect("members");
+        let body = member_bytes(&members, xfl::DOM_DOCUMENT).expect("document");
+        let packed = String::from_utf8(body).expect("utf8");
+        let import = crate::xfl_read::parse(&packed, "Import Me").expect("archive parse");
+        assert_eq!(
+            (import.doc.width, import.doc.height, import.doc.fps),
+            (640, 360, 30)
+        );
+        assert_eq!(import.doc.name, "Import Me");
+        assert!(import.notes.is_empty(), "{:?}", import.notes);
+        let loose = xfl::document_xml(&doc);
+        assert!(!is_zip(loose.as_bytes()));
+        assert_eq!(
+            crate::xfl_read::parse(&loose, "Loose").expect("loose parse").doc.name,
+            "Loose"
+        );
     }
 
     fn plain_layer() -> Layer {
