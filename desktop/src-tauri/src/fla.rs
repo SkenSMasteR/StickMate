@@ -216,6 +216,7 @@ struct Gaps {
     folder: bool,
     opacity: bool,
     tween: bool,
+    figure: bool,
 }
 
 fn scan_layers(layers: &[Layer], gaps: &mut Gaps) {
@@ -230,6 +231,7 @@ fn scan_layers(layers: &[Layer], gaps: &mut Gaps) {
             gaps.opacity |= key.transform.opacity < 0.999;
             for shape in &key.shapes {
                 gaps.gradient |= has_gradient(shape);
+                gaps.figure |= has_figure(shape);
             }
         }
         scan_layers(&layer.children, gaps);
@@ -243,6 +245,14 @@ fn has_gradient(shape: &Shape) -> bool {
         | Shape::Polygon { gradient, .. }
         | Shape::Path { gradient, .. } => gradient.is_some(),
         Shape::Group { children } => children.iter().any(has_gradient),
+        _ => false,
+    }
+}
+
+fn has_figure(shape: &Shape) -> bool {
+    match shape {
+        Shape::Figure { .. } => true,
+        Shape::Group { children } => children.iter().any(has_figure),
         _ => false,
     }
 }
@@ -273,6 +283,9 @@ pub fn export_warnings(doc: &Document) -> Vec<String> {
     }
     if gaps.tween {
         warnings.push("tweens are exported as keyframes that hold until the next key".to_string());
+    }
+    if gaps.figure {
+        warnings.push("stick figures are exported as the lines they draw, without the rig".to_string());
     }
     warnings
 }

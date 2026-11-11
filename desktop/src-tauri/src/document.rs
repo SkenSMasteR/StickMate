@@ -10,6 +10,7 @@ use tauri::State;
 
 use crate::boolean::{bool_history_name, combine, BoolOp};
 use crate::path::{flatten_path, PathNode};
+use crate::rig::{self, Figure};
 
 const HISTORY_LIMIT: usize = 100;
 const CHECKPOINT_NAME_LIMIT: usize = 64;
@@ -37,7 +38,7 @@ pub(crate) fn locked<T>(_: T) -> String {
     "document store unavailable".to_string()
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Point {
     pub x: f64,
     pub y: f64,
@@ -288,6 +289,9 @@ pub enum Shape {
     Group {
         children: Vec<Shape>,
     },
+    Figure {
+        figure: Figure,
+    },
 }
 
 pub const TEXT_ADVANCE: f64 = 0.6;
@@ -481,6 +485,12 @@ pub fn shape_bounds(shape: &Shape) -> Bounds {
         Shape::Group { children } => {
             union_of(children, &(0..children.len()).collect::<Vec<_>>())
         }
+        Shape::Figure { figure } => rig::figure_bounds(figure).unwrap_or(Bounds {
+            x: figure.x,
+            y: figure.y,
+            w: 0.0,
+            h: 0.0,
+        }),
     }
 }
 
@@ -523,6 +533,49 @@ pub(crate) fn transform_shape(
                 .map(|child| transform_shape(child, matrix, sx, sy, rotation))
                 .collect::<Result<Vec<_>, _>>()?,
         }),
+        Shape::Figure { figure } => {
+            if (sx - sy).abs() > 0.0001 {
+                return Err("a figure cannot be stretched in one direction".to_string());
+            }
+            let scale = (matrix.a * matrix.d - matrix.b * matrix.c).sqrt();
+            let grown = Affine {
+                a: scale,
+                b: 0.0,
+                c: 0.0,
+                d: scale,
+                e: 0.0,
+                f: 0.0,
+            };
+            let moved = apply_affine(matrix, &Point {
+                x: figure.x,
+                y: figure.y,
+            });
+            let mut bones = Vec::new();
+            for bone in &figure.bones {
+                bones.push(crate::rig::Bone {
+                    anchor: Point {
+                        x: bone.anchor.x * scale,
+                        y: bone.anchor.y * scale,
+                    },
+                    length: bone.length * scale,
+                    width: bone.width * scale,
+                    art: bone
+                        .art
+                        .iter()
+                        .map(|shape| transform_shape(shape, &grown, scale, scale, 0.0))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    ..bone.clone()
+                });
+            }
+            Ok(Shape::Figure {
+                figure: Figure {
+                    x: moved.x,
+                    y: moved.y,
+                    rotation: figure.rotation + rotation,
+                    bones,
+                },
+            })
+        }
         Shape::Stroke {
             points,
             color,
@@ -827,7 +880,22 @@ fn paint_fill(shape: &mut Shape, color: &str) {
                 paint_fill(child, color);
             }
         }
+        Shape::Figure { figure } => {
+            for bone in &mut figure.bones {
+                bone.color = color.to_string();
+                for shape in &mut bone.art {
+                    paint_fill(shape, color);
+                }
+            }
+        }
         _ => {}
+    }
+}
+
+fn figure_of(shape: &Shape) -> Result<&crate::rig::Figure, String> {
+    match shape {
+        Shape::Figure { figure } => Ok(figure),
+        _ => Err("shape is not a figure".to_string()),
     }
 }
 
@@ -962,6 +1030,15 @@ fn shape_hit(shape: &Shape, p: &Point, radius: f64) -> bool {
                 && p.x <= box_.x + box_.w + radius
                 && p.y >= box_.y - radius
                 && p.y <= box_.y + box_.h + radius
+        }
+        Shape::Figure { figure } => {
+            let places = rig::places(figure);
+            places.iter().enumerate().any(|(index, place)| {
+                near_segment(p, &place.base, &place.tip, radius + figure.bones[index].width / 2.0)
+                    || within(p, &place.tip, radius + figure.bones[index].width / 2.0)
+            }) || rig::art_shapes(figure)
+                .iter()
+                .any(|shape| shape_hit(shape, p, radius))
         }
         Shape::Stroke { points, width, .. } => {
             let reach = radius + width / 2.0;
@@ -2837,6 +2914,7 @@ impl DocStore {
             Shape::Text { .. } => "draw_text",
             Shape::Path { .. } => "draw_path",
             Shape::Group { .. } => "draw_group",
+            Shape::Figure { .. } => "draw_figure",
         };
         self.edit_named(id, step, |doc| {
             let layer = doc.leaf_mut(scene_id, layer_id)?;
@@ -2950,6 +3028,7 @@ impl DocStore {
                         paint_fill(child, &color);
                     }
                 }
+                Shape::Figure { .. } => paint_fill(shape, &color),
             }
             Ok(())
         })
@@ -3324,6 +3403,130 @@ impl DocStore {
                 return Err("unknown shape".to_string());
             }
             key.shapes[index] = shape;
+            Ok(())
+        })
+    }
+
+    pub fn add_figure(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        x: f64,
+        y: f64,
+        height: f64,
+    ) -> Result<Document, String> {
+        self.draw(
+            id,
+            scene_id,
+            layer_id,
+            frame,
+            Shape::Figure {
+                figure: crate::rig::humanoid(x, y, height),
+            },
+        )
+    }
+
+    pub fn pose_figure(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        index: usize,
+        bone: usize,
+        target: Point,
+    ) -> Result<Document, String> {
+        self.edit_named(id, "pose_figure", |doc| {
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let key_index = layer.key_at(frame);
+            let shape = layer
+                .keys
+                .get_mut(key_index)
+                .and_then(|key| key.shapes.get_mut(index))
+                .ok_or_else(|| "unknown shape".to_string())?;
+            let figure = match shape {
+                Shape::Figure { figure } => figure,
+                _ => return Err("shape is not a figure".to_string()),
+            };
+            crate::rig::swing(figure, bone, &target)?;
+            validate(shape)
+        })
+    }
+
+    pub fn attach_art(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        index: usize,
+        bone: usize,
+        shapes: Vec<usize>,
+    ) -> Result<Document, String> {
+        if shapes.is_empty() {
+            return Err("no shapes selected".to_string());
+        }
+        self.edit_named(id, "attach_art", |doc| {
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let key_index = layer.key_at(frame);
+            let mut taken = shapes;
+            taken.sort_unstable();
+            taken.dedup();
+            for &item in &taken {
+                if item == index || item >= layer.keys[key_index].shapes.len() {
+                    return Err("unknown shape".to_string());
+                }
+            }
+            figure_of(&layer.keys[key_index].shapes[index]).map(drop)?;
+            let mut moved = Vec::new();
+            for &item in taken.iter().rev() {
+                moved.push(layer.keys[key_index].shapes.remove(item));
+            }
+            moved.reverse();
+            let shift = taken.iter().filter(|&&item| item < index).count();
+            let shape = &mut layer.keys[key_index].shapes[index - shift];
+            crate::rig::place_art(
+                match shape {
+                    Shape::Figure { figure } => figure,
+                    _ => return Err("shape is not a figure".to_string()),
+                },
+                bone,
+                moved,
+            )?;
+            validate(shape)
+        })
+    }
+
+    pub fn detach_art(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        index: usize,
+        bone: usize,
+    ) -> Result<Document, String> {
+        self.edit_named(id, "detach_art", |doc| {
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let key_index = layer.key_at(frame);
+            let shapes = &mut layer.keys[key_index].shapes;
+            let world = crate::rig::detach_art(figure_of(&shapes[index])?, bone)?;
+            if world.is_empty() {
+                return Err("that bone carries no artwork".to_string());
+            }
+            for shape in &world {
+                validate(shape)?;
+            }
+            match &mut shapes[index] {
+                Shape::Figure { figure } => figure.bones[bone].art.clear(),
+                _ => return Err("shape is not a figure".to_string()),
+            }
+            shapes.extend(world);
             Ok(())
         })
     }
@@ -3879,6 +4082,61 @@ pub fn doc_delete_shape(
     index: usize,
 ) -> Result<Document, String> {
     store.delete_shape(&id, &scene_id, &layer_id, frame, index)
+}
+
+#[tauri::command]
+pub fn doc_add_figure(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    x: f64,
+    y: f64,
+    height: f64,
+) -> Result<Document, String> {
+    store.add_figure(&id, &scene_id, &layer_id, frame, x, y, height)
+}
+
+#[tauri::command]
+pub fn doc_pose_figure(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    index: usize,
+    bone: usize,
+    target: Point,
+) -> Result<Document, String> {
+    store.pose_figure(&id, &scene_id, &layer_id, frame, index, bone, target)
+}
+
+#[tauri::command]
+pub fn doc_attach_art(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    index: usize,
+    bone: usize,
+    shapes: Vec<usize>,
+) -> Result<Document, String> {
+    store.attach_art(&id, &scene_id, &layer_id, frame, index, bone, shapes)
+}
+
+#[tauri::command]
+pub fn doc_detach_art(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    index: usize,
+    bone: usize,
+) -> Result<Document, String> {
+    store.detach_art(&id, &scene_id, &layer_id, frame, index, bone)
 }
 
 #[tauri::command]
@@ -9098,6 +9356,370 @@ mod tests {
             gradient_of(&ungrouped.scenes[0].layers[0].keys[0].shapes[1]),
             linear(20.0, &[(0.0, "#ffffff"), (1.0, "#000000")])
         );
+    }
+
+    fn held_figure(doc: &Document, frame: u32) -> Figure {
+        let layer = &doc.scenes[0].layers[0];
+        let index = layer
+            .keys
+            .iter()
+            .rposition(|key| key.frame <= frame)
+            .expect("key");
+        layer.keys[index]
+            .shapes
+            .iter()
+            .find_map(|shape| match shape {
+                Shape::Figure { figure } => Some(figure.clone()),
+                _ => None,
+            })
+            .expect("figure")
+    }
+
+    #[test]
+    fn adding_a_figure_draws_a_humanoid() {
+        let fixture = Fixture::new("figure-add");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        let doc = store
+            .add_figure(id, &fixture.scene, &fixture.layer, 0, 200.0, 320.0, 200.0)
+            .expect("figure");
+        let figure = held_figure(&doc, 0);
+        assert_eq!(figure.bones.len(), 12);
+        assert_eq!(figure.x, 200.0);
+        assert_eq!(figure.bones[3].art.len(), 1);
+        let bounds = rig::figure_bounds(&figure).expect("bounds");
+        assert!((bounds.y - 220.0).abs() < 0.0001);
+        assert_eq!(store.history(id).expect("history")[1].name, "draw_figure");
+    }
+
+    #[test]
+    fn posing_a_joint_keys_the_pose() {
+        let fixture = Fixture::new("figure-pose");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .add_figure(id, &fixture.scene, &fixture.layer, 0, 200.0, 320.0, 200.0)
+            .expect("figure");
+        store
+            .keyframe(id, &fixture.scene, &fixture.layer, 10, false)
+            .expect("key");
+        store
+            .set_tween(id, &fixture.scene, &fixture.layer, 0, true, None)
+            .expect("tween");
+        let posed = store
+            .pose_figure(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                5,
+                0,
+                4,
+                Point { x: 260.0, y: 300.0 },
+            )
+            .expect("pose");
+        let layer = &posed.scenes[0].layers[0];
+        assert_eq!(
+            layer.keys.iter().map(|key| key.frame).collect::<Vec<_>>(),
+            vec![0, 5, 10]
+        );
+        assert!(!layer.keys[1].tween);
+        let figure = held_figure(&posed, 5);
+        let place = &rig::places(&figure)[4];
+        let aimed = (place.tip.y - place.base.y).atan2(place.tip.x - place.base.x);
+        let want = (300.0 - 268.0_f64).atan2(260.0 - 200.0);
+        assert!((aimed - want).abs() < 0.0001);
+        assert_eq!(held_figure(&posed, 0).bones[4].twist, 168.0);
+        assert_eq!(store.history(id).expect("history").last().expect("step").name, "pose_figure");
+    }
+
+    #[test]
+    fn posing_is_one_undo_step_and_a_no_op_pushes_no_history() {
+        let fixture = Fixture::new("figure-undo");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        let start = store
+            .add_figure(id, &fixture.scene, &fixture.layer, 0, 200.0, 320.0, 200.0)
+            .expect("figure");
+        let target = Point { x: 120.0, y: 340.0 };
+        let posed = store
+            .pose_figure(id, &fixture.scene, &fixture.layer, 0, 0, 5, target)
+            .expect("pose");
+        assert_eq!(store.history(id).expect("history").len(), 3);
+        let again = store
+            .pose_figure(id, &fixture.scene, &fixture.layer, 0, 0, 5, target)
+            .expect("again");
+        assert_eq!(again, posed);
+        assert_eq!(store.history(id).expect("history").len(), 3);
+        assert_eq!(store.undo(id).expect("undo"), start);
+    }
+
+    #[test]
+    fn artwork_attaches_to_a_bone_and_detaches_to_the_stage() {
+        let fixture = Fixture::new("figure-art");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .add_figure(id, &fixture.scene, &fixture.layer, 0, 200.0, 320.0, 200.0)
+            .expect("figure");
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(190.0, 250.0))
+            .expect("art");
+        let attached = store
+            .attach_art(id, &fixture.scene, &fixture.layer, 0, 0, 0, vec![1])
+            .expect("attach");
+        assert_eq!(attached.scenes[0].layers[0].keys[0].shapes.len(), 1);
+        assert_eq!(held_figure(&attached, 0).bones[0].art.len(), 1);
+        assert_eq!(store.history(id).expect("history").last().expect("step").name, "attach_art");
+        let detached = store
+            .detach_art(id, &fixture.scene, &fixture.layer, 0, 0, 0)
+            .expect("detach");
+        let shapes = &detached.scenes[0].layers[0].keys[0].shapes;
+        assert_eq!(shapes.len(), 2);
+        assert_eq!(shapes[1], box_shape(190.0, 250.0));
+        assert!(held_figure(&detached, 0).bones[0].art.is_empty());
+        assert_eq!(store.history(id).expect("history").last().expect("step").name, "detach_art");
+    }
+
+    #[test]
+    fn attaching_uses_the_figure_after_the_taken_shapes() {
+        let fixture = Fixture::new("figure-shift");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 0.0))
+            .expect("art");
+        store
+            .add_figure(id, &fixture.scene, &fixture.layer, 0, 200.0, 320.0, 200.0)
+            .expect("figure");
+        let attached = store
+            .attach_art(id, &fixture.scene, &fixture.layer, 0, 1, 0, vec![0])
+            .expect("attach");
+        assert_eq!(held_figure(&attached, 0).bones[0].art.len(), 1);
+    }
+
+    #[test]
+    fn figure_edits_refuse_unknown_targets() {
+        let fixture = Fixture::new("figure-refuse");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, box_shape(0.0, 0.0))
+            .expect("draw");
+        let elbow = Point { x: 240.0, y: 300.0 };
+        assert_eq!(
+            store
+                .pose_figure(id, &fixture.scene, &fixture.layer, 0, 9, 0, elbow)
+                .expect_err("gone"),
+            "unknown shape"
+        );
+        assert_eq!(
+            store
+                .pose_figure(id, &fixture.scene, &fixture.layer, 0, 0, 0, elbow)
+                .expect_err("rect"),
+            "shape is not a figure"
+        );
+        assert_eq!(
+            store
+                .attach_art(id, &fixture.scene, &fixture.layer, 0, 0, 0, Vec::new())
+                .expect_err("empty"),
+            "no shapes selected"
+        );
+        store
+            .add_figure(id, &fixture.scene, &fixture.layer, 0, 200.0, 320.0, 200.0)
+            .expect("figure");
+        assert_eq!(
+            store
+                .attach_art(id, &fixture.scene, &fixture.layer, 0, 1, 0, vec![1])
+                .expect_err("itself"),
+            "unknown shape"
+        );
+        assert_eq!(
+            store
+                .attach_art(id, &fixture.scene, &fixture.layer, 0, 1, 40, vec![0])
+                .expect_err("bone"),
+            "no such bone"
+        );
+        assert_eq!(
+            store
+                .pose_figure(id, &fixture.scene, &fixture.layer, 0, 1, 40, elbow)
+                .expect_err("bone"),
+            "no such bone"
+        );
+        assert_eq!(
+            store
+                .detach_art(id, &fixture.scene, &fixture.layer, 0, 1, 40)
+                .expect_err("bone"),
+            "no such bone"
+        );
+        assert_eq!(
+            store
+                .detach_art(id, &fixture.scene, &fixture.layer, 0, 1, 0)
+                .expect_err("empty bone"),
+            "that bone carries no artwork"
+        );
+        assert_eq!(
+            store
+                .detach_art(id, &fixture.scene, &fixture.layer, 0, 0, 0)
+                .expect_err("rect"),
+            "shape is not a figure"
+        );
+    }
+
+    #[test]
+    fn locked_layers_refuse_figure_edits() {
+        let fixture = Fixture::new("figure-locked");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .add_figure(id, &fixture.scene, &fixture.layer, 0, 200.0, 320.0, 200.0)
+            .expect("figure");
+        store
+            .set_layer(id, &fixture.scene, &fixture.layer, None, None, Some(true), None, None, None, None)
+            .expect("lock");
+        assert_eq!(
+            store
+                .pose_figure(id, &fixture.scene, &fixture.layer, 0, 0, 0, Point { x: 1.0, y: 1.0 })
+                .expect_err("locked"),
+            "layer is locked"
+        );
+        assert_eq!(
+            store
+                .attach_art(id, &fixture.scene, &fixture.layer, 0, 0, 0, vec![0])
+                .expect_err("locked"),
+            "layer is locked"
+        );
+        assert_eq!(
+            store
+                .detach_art(id, &fixture.scene, &fixture.layer, 0, 0, 0)
+                .expect_err("locked"),
+            "layer is locked"
+        );
+    }
+
+    #[test]
+    fn a_figure_moves_and_scales_as_one_shape() {
+        let fixture = Fixture::new("figure-transform");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .add_figure(id, &fixture.scene, &fixture.layer, 0, 200.0, 320.0, 200.0)
+            .expect("figure");
+        let moved = store
+            .transform_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![0],
+                Point { x: 0.0, y: 0.0 },
+                12.0,
+                -8.0,
+                1.0,
+                1.0,
+                0.0,
+            )
+            .expect("move");
+        let figure = held_figure(&moved, 0);
+        assert_eq!((figure.x, figure.y), (212.0, 312.0));
+        assert_eq!(figure.bones[1].length, 52.0);
+        assert_eq!(figure.bones[1].width, 12.0);
+        let grown = store
+            .transform_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![0],
+                Point { x: 212.0, y: 312.0 },
+                0.0,
+                0.0,
+                2.0,
+                2.0,
+                0.0,
+            )
+            .expect("grow");
+        let figure = held_figure(&grown, 0);
+        assert_eq!((figure.x, figure.y), (212.0, 312.0));
+        assert_eq!(figure.bones[1].length, 104.0);
+        assert_eq!(figure.bones[3].art.len(), 1);
+        let turned = store
+            .transform_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![0],
+                Point { x: 212.0, y: 312.0 },
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+                90.0,
+            )
+            .expect("turn");
+        let figure = held_figure(&turned, 0);
+        assert_eq!(figure.rotation, 90.0);
+        assert!((figure.x - 212.0).abs() < 0.0001);
+        assert_eq!(
+            store
+                .transform_shapes(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    vec![0],
+                    Point { x: 212.0, y: 312.0 },
+                    0.0,
+                    0.0,
+                    1.0,
+                    2.0,
+                    0.0,
+                )
+                .expect_err("stretch"),
+            "a figure cannot be stretched in one direction"
+        );
+    }
+
+    #[test]
+    fn painting_a_figure_recolors_bones_and_artwork() {
+        let fixture = Fixture::new("figure-paint");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .add_figure(id, &fixture.scene, &fixture.layer, 0, 200.0, 320.0, 200.0)
+            .expect("figure");
+        let painted = store
+            .paint_shape(id, &fixture.scene, &fixture.layer, 0, 0, "#ff0000".to_string())
+            .expect("paint");
+        let figure = held_figure(&painted, 0);
+        assert!(figure.bones.iter().all(|bone| bone.color == "#ff0000"));
+        match &figure.bones[3].art[0] {
+            Shape::Ellipse { fill, stroke, .. } => {
+                assert_eq!(fill, "#ff0000");
+                assert_eq!(stroke, "none");
+            }
+            other => panic!("expected a skull, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_figure_is_pickable_at_its_limbs_and_artwork() {
+        let shape = Shape::Figure {
+            figure: rig::humanoid(200.0, 320.0, 200.0),
+        };
+        assert!(shape_hit(&shape, &Point { x: 200.0, y: 300.0 }, 4.0));
+        assert!(shape_hit(&shape, &Point { x: 200.0, y: 240.0 }, 4.0));
+        assert!(!shape_hit(&shape, &Point { x: 60.0, y: 60.0 }, 4.0));
+    }
+
+    #[test]
+    fn a_figure_round_trips_through_json() {
+        let shape = Shape::Figure {
+            figure: rig::humanoid(10.0, 20.0, 100.0),
+        };
+        let text = serde_json::to_string(&shape).expect("json");
+        assert!(text.starts_with("{\"kind\":\"Figure\""));
+        assert_eq!(serde_json::from_str::<Shape>(&text).expect("read"), shape);
     }
 }
 

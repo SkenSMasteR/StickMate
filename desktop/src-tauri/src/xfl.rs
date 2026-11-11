@@ -428,7 +428,7 @@ fn shape_contour(shape: &Shape, matrix: &Affine) -> Option<Contour> {
             straight_contour(&points)
         }
         Shape::Path { nodes, closed, .. } => path_contour(nodes, *closed, matrix),
-        Shape::Text { .. } | Shape::Group { .. } => return None,
+        Shape::Text { .. } | Shape::Group { .. } | Shape::Figure { .. } => return None,
     };
     if contour.segments.is_empty() {
         return None;
@@ -473,7 +473,7 @@ fn ink_of(shape: &Shape, scale: f64, opacity: f64) -> (Option<(String, f64)>, Op
             (fill_ink(fill), stroke_ink)
         }
         Shape::Text { color, .. } => (fill_ink(color), None),
-        Shape::Group { .. } => (None, None),
+        Shape::Group { .. } | Shape::Figure { .. } => (None, None),
     }
 }
 
@@ -532,6 +532,33 @@ fn push_elements(shapes: &[Shape], matrix: &Affine, transform: &Transform, out: 
                     },
                     spacing: *spacing,
                 }));
+            }
+            Shape::Figure { figure } => {
+                let places = crate::rig::places(figure);
+                let scale = matrix.a.hypot(matrix.b);
+                for (index, bone) in figure.bones.iter().enumerate() {
+                    let place = &places[index];
+                    if bone.length > 0.0 {
+                        let (hex, channel) = color_alpha(&bone.color);
+                        out.push(Element::Shape(XflShape {
+                            fill: None,
+                            stroke: Some((
+                                hex,
+                                channel * transform.opacity,
+                                bone.width.max(0.05) * scale,
+                            )),
+                            contours: vec![Contour {
+                                start: apply(matrix, &place.base),
+                                segments: vec![Segment {
+                                    control: None,
+                                    to: apply(matrix, &place.tip),
+                                }],
+                            }],
+                        }));
+                    }
+                    let frame = compose(matrix, &crate::rig::bone_matrix(place));
+                    push_elements(&bone.art, &frame, transform, out);
+                }
             }
             other => {
                 let Some(contour) = shape_contour(other, &matrix) else {

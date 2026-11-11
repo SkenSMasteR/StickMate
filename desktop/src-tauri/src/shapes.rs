@@ -6,6 +6,7 @@ use crate::document::{
     DocStore, Document, Layer, Point, Shape, Transform,
 };
 use crate::path::PathNode;
+use crate::rig::Figure;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShapeClip {
@@ -147,12 +148,38 @@ fn check_shape(shape: &Shape) -> Result<(), String> {
         Shape::Group { children } => {
             !children.is_empty() && children.iter().try_for_each(check_shape).is_ok()
         }
+        Shape::Figure { figure } => check_figure(figure),
     };
     if valid {
         Ok(())
     } else {
         Err("invalid clipboard shape".into())
     }
+}
+
+fn check_figure(figure: &Figure) -> bool {
+    let number = |value: f64| value.is_finite();
+    if !number(figure.x) || !number(figure.y) || !number(figure.rotation) {
+        return false;
+    }
+    if figure.bones.is_empty() || figure.bones.len() > 1_000 {
+        return false;
+    }
+    figure.bones.iter().enumerate().all(|(index, bone)| {
+        bone.parent.map_or(true, |parent| parent < index)
+            && number(bone.length)
+            && bone.length >= 0.0
+            && number(bone.twist)
+            && bone.twist.abs() <= 3600.0
+            && number(bone.width)
+            && bone.width >= 0.0
+            && bone.width <= 1000.0
+            && number(bone.anchor.x)
+            && number(bone.anchor.y)
+            && bone.color.len() <= 1024
+            && bone.art.len() <= 10_000
+            && bone.art.iter().all(|shape| check_shape(shape).is_ok())
+    })
 }
 
 fn check_clip(clip: &ShapeClip) -> Result<(), String> {
@@ -207,7 +234,12 @@ fn conversion(source: Transform, target: Transform) -> Result<(Affine, f64, f64)
     Ok((matrix, scale, rotation))
 }
 
-fn converted(shape: &Shape, matrix: &Affine, scale: f64, rotation: f64) -> Result<Shape, String> {
+pub(crate) fn converted(
+    shape: &Shape,
+    matrix: &Affine,
+    scale: f64,
+    rotation: f64,
+) -> Result<Shape, String> {
     let ellipse_path;
     let shape = if let Shape::Ellipse {
         x,
@@ -267,7 +299,7 @@ fn converted(shape: &Shape, matrix: &Affine, scale: f64, rotation: f64) -> Resul
         | Shape::Ellipse { width, .. }
         | Shape::Polygon { width, .. }
         | Shape::Path { width, .. } => *width *= scale,
-        Shape::Text { .. } | Shape::Group { .. } => {}
+        Shape::Text { .. } | Shape::Group { .. } | Shape::Figure { .. } => {}
     }
     check_shape(&result)?;
     Ok(result)
@@ -466,6 +498,10 @@ mod tests {
             Shape::Stroke { points, .. } => points[0].clone(),
             Shape::Path { nodes, .. } => nodes[0].point.clone(),
             Shape::Group { children } => anchor(&children[0]),
+            Shape::Figure { figure } => Point {
+                x: figure.x,
+                y: figure.y,
+            },
         }
     }
 

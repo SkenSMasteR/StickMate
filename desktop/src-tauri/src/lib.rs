@@ -7,6 +7,7 @@ mod fla;
 mod frames;
 mod path;
 mod prefs;
+mod rig;
 mod shapes;
 mod templates;
 mod tokens;
@@ -96,6 +97,10 @@ pub fn run() {
             document::doc_paint_shape,
             document::doc_replace_shape,
             document::doc_delete_shape,
+            document::doc_add_figure,
+            document::doc_pose_figure,
+            document::doc_attach_art,
+            document::doc_detach_art,
             document::doc_transform_shapes,
             document::doc_align_shapes,
             document::doc_reorder_shapes,
