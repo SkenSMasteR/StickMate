@@ -93,6 +93,24 @@ fn check_shape(shape: &Shape) -> Result<(), String> {
                     _ => true,
                 }
         }
+        Shape::Bitmap {
+            x,
+            y,
+            w,
+            h,
+            source,
+            matrix,
+        } => {
+            [*x, *y, *w, *h].iter().all(|v| v.is_finite())
+                && *w > 0.0
+                && *h > 0.0
+                && *w <= 16384.0
+                && *h <= 16384.0
+                && crate::media::looks_like_image(source)
+                && matrix.as_ref().map_or(true, |m| {
+                    [m.a, m.b, m.c, m.d, m.e, m.f].iter().all(|v| v.is_finite())
+                })
+        }
         Shape::Text {
             x,
             y,
@@ -299,7 +317,7 @@ pub(crate) fn converted(
         | Shape::Ellipse { width, .. }
         | Shape::Polygon { width, .. }
         | Shape::Path { width, .. } => *width *= scale,
-        Shape::Text { .. } | Shape::Group { .. } | Shape::Figure { .. } => {}
+        Shape::Text { .. } | Shape::Group { .. } | Shape::Figure { .. } | Shape::Bitmap { .. } => {}
     }
     check_shape(&result)?;
     Ok(result)
@@ -489,11 +507,23 @@ mod tests {
         }
     }
 
+    fn picture(x: f64, y: f64, w: f64, h: f64) -> Shape {
+        Shape::Bitmap {
+            x,
+            y,
+            w,
+            h,
+            source: "data:image/png;base64,iVBORw0KGgo=".to_string(),
+            matrix: None,
+        }
+    }
+
     fn anchor(shape: &Shape) -> Point {
         match shape {
             Shape::Rect { x, y, .. }
             | Shape::Ellipse { x, y, .. }
             | Shape::Polygon { x, y, .. }
+            | Shape::Bitmap { x, y, .. }
             | Shape::Text { x, y, .. } => Point { x: *x, y: *y },
             Shape::Stroke { points, .. } => points[0].clone(),
             Shape::Path { nodes, .. } => nodes[0].point.clone(),
@@ -596,6 +626,41 @@ mod tests {
             }
             other => panic!("expected a curved path, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_pasted_image_keeps_its_picture_and_scales_its_box() {
+        let stage = Stage::new("image-zoom");
+        stage.draw(&stage.source.clone(), picture(100.0, 0.0, 40.0, 20.0));
+        let clip = stage.copy(&stage.source.clone(), vec![0]).expect("copy");
+        let target = stage.add_layer();
+        stage.set(&target, transform(0.0, 0.0, 2.0, 0.0));
+        let pasted = stage.paste(&target, clip).expect("paste");
+        let shapes = shapes(&pasted.document, &target);
+        assert_eq!(shapes.len(), 1);
+        assert_eq!(shapes[0], picture(50.0, 0.0, 20.0, 10.0));
+    }
+
+    #[test]
+    fn paste_refuses_an_image_it_cannot_draw() {
+        let stage = Stage::new("image-remote");
+        let clip = ShapeClip {
+            shapes: vec![Shape::Bitmap {
+                x: 0.0,
+                y: 0.0,
+                w: 40.0,
+                h: 20.0,
+                source: "https://example.com/a.png".to_string(),
+                matrix: None,
+            }],
+            transform: Transform::default(),
+        };
+        assert_eq!(
+            stage
+                .paste(&stage.source.clone(), clip)
+                .expect_err("remote image"),
+            "invalid clipboard shape"
+        );
     }
 
     #[test]

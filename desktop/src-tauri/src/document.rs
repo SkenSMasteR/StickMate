@@ -261,6 +261,15 @@ pub enum Shape {
         #[serde(default)]
         gradient: Option<Gradient>,
     },
+    Bitmap {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        source: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        matrix: Option<Affine>,
+    },
     Text {
         x: f64,
         y: f64,
@@ -452,6 +461,21 @@ fn points_bounds(points: &[Point], width: f64) -> Bounds {
     }
 }
 
+fn corners_of_box(x: f64, y: f64, w: f64, h: f64, matrix: &Option<Affine>) -> Vec<Point> {
+    [
+        Point { x, y },
+        Point { x: x + w, y },
+        Point {
+            x: x + w,
+            y: y + h,
+        },
+        Point { x, y: y + h },
+    ]
+    .into_iter()
+    .map(|point| matrix.as_ref().map_or_else(|| point.clone(), |m| apply_affine(m, &point)))
+    .collect()
+}
+
 pub fn shape_bounds(shape: &Shape) -> Bounds {
     match shape {
         Shape::Stroke { points, width, .. } => points_bounds(points, *width),
@@ -482,6 +506,14 @@ pub fn shape_bounds(shape: &Shape) -> Bounds {
             w: *w,
             h: *h,
         },
+        Shape::Bitmap {
+            x,
+            y,
+            w,
+            h,
+            matrix,
+            ..
+        } => points_bounds(&corners_of_box(*x, *y, *w, *h, matrix), 0.0),
         Shape::Group { children } => {
             union_of(children, &(0..children.len()).collect::<Vec<_>>())
         }
@@ -641,6 +673,39 @@ pub(crate) fn transform_shape(
                     Some(local.as_ref().map_or(*matrix, |inner| compose_affine(matrix, inner)))
                 },
             })
+        }
+        Shape::Bitmap {
+            x,
+            y,
+            w,
+            h,
+            source,
+            matrix: local,
+        } => {
+            let straight = local.is_none() && rotation == 0.0 && sx == sy;
+            if straight {
+                let scale = (matrix.a * matrix.d - matrix.b * matrix.c).sqrt();
+                let corner = apply_affine(matrix, &Point { x: *x, y: *y });
+                Ok(Shape::Bitmap {
+                    x: corner.x,
+                    y: corner.y,
+                    w: w * scale,
+                    h: h * scale,
+                    source: source.clone(),
+                    matrix: None,
+                })
+            } else {
+                Ok(Shape::Bitmap {
+                    x: *x,
+                    y: *y,
+                    w: *w,
+                    h: *h,
+                    source: source.clone(),
+                    matrix: Some(local.as_ref().map_or(*matrix, |inner| {
+                        compose_affine(matrix, inner)
+                    })),
+                })
+            }
         }
         Shape::Ellipse {
             x,
@@ -1076,6 +1141,15 @@ fn shape_hit(shape: &Shape, p: &Point, radius: f64) -> bool {
                     near_segment(p, a, &vertices[(index + 1) % vertices.len()], radius)
                 })
         }
+        Shape::Bitmap {
+            x, y, w, h, matrix, ..
+        } => {
+            let vertices = corners_of_box(*x, *y, *w, *h, matrix);
+            inside_polygon(p, &vertices)
+                || vertices.iter().enumerate().any(|(index, a)| {
+                    near_segment(p, a, &vertices[(index + 1) % vertices.len()], radius)
+                })
+        }
         Shape::Text {
             x,
             y,
@@ -1208,6 +1282,34 @@ pub(crate) fn validate(shape: &Shape) -> Result<(), String> {
             }
             if !(0.5..=200.0).contains(width) {
                 return Err("width must be between 0.5 and 200".to_string());
+            }
+            Ok(())
+        }
+        Shape::Bitmap {
+            x,
+            y,
+            w,
+            h,
+            source,
+            matrix,
+        } => {
+            if !x.is_finite() || !y.is_finite() {
+                return Err("bitmap coordinates must be finite".to_string());
+            }
+            if !w.is_finite() || !h.is_finite() || *w <= 0.0 || *h <= 0.0 || *w > 16384.0 || *h > 16384.0
+            {
+                return Err("bitmap size must be between 1 and 16384".to_string());
+            }
+            if !crate::media::looks_like_image(source) {
+                return Err("bitmap must be an embedded png, jpeg or gif".to_string());
+            }
+            if let Some(m) = matrix {
+                if [m.a, m.b, m.c, m.d, m.e, m.f]
+                    .iter()
+                    .any(|value| !value.is_finite())
+                {
+                    return Err("bitmap matrix must be finite".to_string());
+                }
             }
             Ok(())
         }
@@ -2015,6 +2117,7 @@ fn mixable(a: &Shape, b: &Shape) -> bool {
                                 .all(|(a, b)| mixable(a, b))
                     })
         }
+        (Shape::Bitmap { .. }, Shape::Bitmap { .. }) => true,
         _ => false,
     }
 }
@@ -2260,6 +2363,35 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
             spacing: mix(*spacing, *bspacing, t),
             leading: mix(*leading, *bleading, t),
             align: *align,
+            matrix: match (matrix, bmatrix) {
+                (Some(left), Some(right)) => Some(mix_affine(left, right, t)),
+                (Some(left), None) | (None, Some(left)) => Some(left.clone()),
+                (None, None) => None,
+            },
+        },
+        (
+            Shape::Bitmap {
+                x,
+                y,
+                w,
+                h,
+                source,
+                matrix,
+            },
+            Shape::Bitmap {
+                x: bx,
+                y: by,
+                w: bw,
+                h: bh,
+                matrix: bmatrix,
+                ..
+            },
+        ) => Shape::Bitmap {
+            x: mix(*x, *bx, t),
+            y: mix(*y, *by, t),
+            w: mix(*w, *bw, t),
+            h: mix(*h, *bh, t),
+            source: source.clone(),
             matrix: match (matrix, bmatrix) {
                 (Some(left), Some(right)) => Some(mix_affine(left, right, t)),
                 (Some(left), None) | (None, Some(left)) => Some(left.clone()),
@@ -2954,6 +3086,7 @@ impl DocStore {
             Shape::Rect { .. } => "draw_rect",
             Shape::Ellipse { .. } => "draw_ellipse",
             Shape::Polygon { .. } => "draw_polygon",
+            Shape::Bitmap { .. } => "draw_bitmap",
             Shape::Text { .. } => "draw_text",
             Shape::Path { .. } => "draw_path",
             Shape::Group { .. } => "draw_group",
@@ -3072,6 +3205,7 @@ impl DocStore {
                     }
                 }
                 Shape::Figure { .. } => paint_fill(shape, &color),
+                Shape::Bitmap { .. } => {}
             }
             Ok(())
         })
@@ -9931,6 +10065,361 @@ mod tests {
         let text = serde_json::to_string(&shape).expect("json");
         assert!(text.starts_with("{\"kind\":\"Figure\""));
         assert_eq!(serde_json::from_str::<Shape>(&text).expect("read"), shape);
+    }
+
+    const IMAGE: &str = "data:image/png;base64,iVBORw0KGgo=";
+
+    fn picture(x: f64, y: f64, w: f64, h: f64) -> Shape {
+        Shape::Bitmap {
+            x,
+            y,
+            w,
+            h,
+            source: IMAGE.to_string(),
+            matrix: None,
+        }
+    }
+
+    fn image(x: f64, y: f64) -> Shape {
+        picture(x, y, 40.0, 20.0)
+    }
+
+    fn tilted(shape: &Shape, matrix: Affine) -> Shape {
+        let mut next = shape.clone();
+        if let Shape::Bitmap { matrix: slot, .. } = &mut next {
+            *slot = Some(matrix);
+        }
+        next
+    }
+
+    #[test]
+    fn a_placed_image_is_a_shape_with_its_own_history_step() {
+        let fixture = Fixture::new("bitmap-draw");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        let drawn = store
+            .draw(id, &fixture.scene, &fixture.layer, 0, image(100.0, 50.0))
+            .expect("draw");
+        let shapes = &fixture.target(&drawn).keys[0].shapes;
+        assert_eq!(shapes, &vec![image(100.0, 50.0)]);
+        assert_eq!(
+            shape_bounds(&shapes[0]),
+            Bounds {
+                x: 100.0,
+                y: 50.0,
+                w: 40.0,
+                h: 20.0
+            }
+        );
+        assert_eq!(
+            store.history(id).expect("history").last().expect("step").name,
+            "draw_bitmap"
+        );
+        let undone = store.undo(id).expect("undo");
+        assert!(fixture.target(&undone).keys[0].shapes.is_empty());
+    }
+
+    #[test]
+    fn draw_refuses_an_image_it_cannot_place() {
+        let fixture = Fixture::new("bitmap-refuse");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        for source in [
+            "",
+            "https://example.com/a.png",
+            "data:image/tiff;base64,AAAA",
+            "data:image/png;base64,",
+        ] {
+            let mut shape = picture(0.0, 0.0, 40.0, 20.0);
+            if let Shape::Bitmap {
+                source: slot, ..
+            } = &mut shape
+            {
+                *slot = source.to_string();
+            }
+            assert_eq!(
+                validate(&shape).unwrap_err(),
+                "bitmap must be an embedded png, jpeg or gif"
+            );
+        }
+        for size in [0.0, -1.0, f64::NAN, f64::INFINITY, 20_000.0] {
+            assert_eq!(
+                validate(&picture(0.0, 0.0, size, 20.0)).unwrap_err(),
+                "bitmap size must be between 1 and 16384"
+            );
+            assert_eq!(
+                validate(&picture(0.0, 0.0, 40.0, size)).unwrap_err(),
+                "bitmap size must be between 1 and 16384"
+            );
+        }
+        for index in 0..6 {
+            for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                let mut values = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+                values[index] = invalid;
+                let [a, b, c, d, e, f] = values;
+                let shape = tilted(
+                    &picture(0.0, 0.0, 40.0, 20.0),
+                    Affine { a, b, c, d, e, f },
+                );
+                assert_eq!(validate(&shape).unwrap_err(), "bitmap matrix must be finite");
+            }
+        }
+        let before = store.history(id).expect("history").len();
+        assert_eq!(
+            store
+                .draw(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    tilted(&picture(0.0, 0.0, 40.0, 20.0), Affine {
+                        a: f64::NAN,
+                        b: 0.0,
+                        c: 0.0,
+                        d: 1.0,
+                        e: 0.0,
+                        f: 0.0,
+                    }),
+                )
+                .unwrap_err(),
+            "bitmap matrix must be finite"
+        );
+        assert_eq!(store.history(id).expect("history").len(), before);
+    }
+
+    #[test]
+    fn an_image_grows_with_its_box_and_folds_a_stretch() {
+        let fixture = Fixture::new("bitmap-grow");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, image(100.0, 50.0))
+            .expect("draw");
+        let grown = store
+            .transform_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![0],
+                Point { x: 0.0, y: 0.0 },
+                10.0,
+                5.0,
+                2.0,
+                2.0,
+                0.0,
+            )
+            .expect("grow");
+        assert_eq!(
+            fixture.target(&grown).keys[0].shapes[0],
+            picture(210.0, 105.0, 80.0, 40.0)
+        );
+        let stretched = store
+            .transform_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![0],
+                Point { x: 0.0, y: 0.0 },
+                0.0,
+                0.0,
+                3.0,
+                1.0,
+                0.0,
+            )
+            .expect("stretch");
+        let Shape::Bitmap {
+            x,
+            y,
+            w,
+            h,
+            matrix,
+            ..
+        } = &fixture.target(&stretched).keys[0].shapes[0]
+        else {
+            panic!("expected a bitmap");
+        };
+        assert_eq!((*x, *y, *w, *h), (210.0, 105.0, 80.0, 40.0));
+        let matrix = matrix.as_ref().expect("folded matrix");
+        close(matrix.a, 3.0);
+        close(matrix.d, 1.0);
+        assert_eq!(
+            shape_bounds(&fixture.target(&stretched).keys[0].shapes[0]),
+            Bounds {
+                x: 630.0,
+                y: 105.0,
+                w: 240.0,
+                h: 40.0
+            }
+        );
+        assert_eq!(
+            store.undo(id).expect("undo").scenes[0].layers[0].keys[0].shapes,
+            vec![picture(210.0, 105.0, 80.0, 40.0)]
+        );
+    }
+
+    #[test]
+    fn a_turned_image_keeps_its_picture_and_gains_a_matrix() {
+        let fixture = Fixture::new("bitmap-turn");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, image(100.0, 50.0))
+            .expect("draw");
+        let turned = store
+            .transform_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![0],
+                Point { x: 120.0, y: 60.0 },
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+                90.0,
+            )
+            .expect("turn");
+        let shape = &fixture.target(&turned).keys[0].shapes[0];
+        let Shape::Bitmap {
+            x,
+            y,
+            w,
+            h,
+            source,
+            matrix,
+        } = shape
+        else {
+            panic!("expected a bitmap");
+        };
+        assert_eq!((*x, *y, *w, *h), (100.0, 50.0, 40.0, 20.0));
+        assert_eq!(source, IMAGE);
+        let matrix = matrix.as_ref().expect("folded matrix");
+        close(matrix.a, 0.0);
+        close(matrix.b, 1.0);
+        close(matrix.c, -1.0);
+        close(matrix.d, 0.0);
+        let bounds = shape_bounds(shape);
+        close(bounds.x, 110.0);
+        close(bounds.y, 40.0);
+        close(bounds.w, 20.0);
+        close(bounds.h, 40.0);
+        assert!(validate(shape).is_ok());
+    }
+
+    #[test]
+    fn an_image_is_pickable_inside_its_turned_corners() {
+        let flat = image(0.0, 0.0);
+        assert!(shape_hit(&flat, &Point { x: 20.0, y: 10.0 }, 0.0));
+        assert!(!shape_hit(&flat, &Point { x: 45.0, y: 10.0 }, 4.0));
+        assert!(shape_hit(&flat, &Point { x: 45.0, y: 10.0 }, 5.5));
+        let turned = tilted(
+            &picture(0.0, 0.0, 40.0, 20.0),
+            Affine {
+                a: 0.0,
+                b: 1.0,
+                c: -1.0,
+                d: 0.0,
+                e: 0.0,
+                f: 0.0,
+            },
+        );
+        assert_eq!(
+            shape_bounds(&turned),
+            Bounds {
+                x: -20.0,
+                y: 0.0,
+                w: 20.0,
+                h: 40.0
+            }
+        );
+        assert!(shape_hit(&turned, &Point { x: -10.0, y: 20.0 }, 0.0));
+        assert!(!shape_hit(&turned, &Point { x: 10.0, y: 10.0 }, 0.0));
+    }
+
+    #[test]
+    fn a_tweened_image_moves_with_the_timeline() {
+        let frames = tween_span(
+            &Fixture::new("tween-bitmap"),
+            vec![image(100.0, 100.0)],
+            vec![image(300.0, 100.0)],
+        );
+        assert_eq!(frames[0].layers[0].shapes, vec![image(100.0, 100.0)]);
+        assert_eq!(frames[1].layers[0].shapes, vec![image(200.0, 100.0)]);
+        assert_eq!(frames[2].layers[0].shapes, vec![image(300.0, 100.0)]);
+    }
+
+    #[test]
+    fn an_image_rides_a_bone_and_returns_to_the_stage() {
+        let fixture = Fixture::new("bitmap-art");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        store
+            .add_figure(id, &fixture.scene, &fixture.layer, 0, 200.0, 320.0, 200.0)
+            .expect("figure");
+        store
+            .draw(id, &fixture.scene, &fixture.layer, 0, image(190.0, 250.0))
+            .expect("art");
+        let attached = store
+            .attach_art(id, &fixture.scene, &fixture.layer, 0, 0, 0, vec![1])
+            .expect("attach");
+        let art = &held_figure(&attached, 0).bones[0].art;
+        assert_eq!(art, &vec![image(-10.0, -70.0)]);
+        let grown = store
+            .transform_shapes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                vec![0],
+                Point { x: 200.0, y: 320.0 },
+                0.0,
+                0.0,
+                2.0,
+                2.0,
+                0.0,
+            )
+            .expect("grow");
+        let art = &held_figure(&grown, 0).bones[0].art;
+        assert_eq!(art, &vec![picture(-20.0, -140.0, 80.0, 40.0)]);
+        let detached = store
+            .detach_art(id, &fixture.scene, &fixture.layer, 0, 0, 0)
+            .expect("detach");
+        let shapes = &fixture.target(&detached).keys[0].shapes;
+        assert_eq!(shapes.len(), 2);
+        assert_eq!(shapes[1], picture(180.0, 180.0, 80.0, 40.0));
+    }
+
+    #[test]
+    fn an_image_serializes_its_matrix_only_when_it_has_one() {
+        let flat = picture(0.0, 0.0, 40.0, 20.0);
+        let json = serde_json::to_value(&flat).expect("json");
+        assert_eq!(json["kind"], "Bitmap");
+        assert!(json.get("matrix").is_none());
+        assert_eq!(
+            serde_json::from_value::<Shape>(json).expect("read"),
+            flat
+        );
+        let turned = tilted(
+            &flat,
+            Affine {
+                a: 1.0,
+                b: 0.5,
+                c: -0.5,
+                d: 1.0,
+                e: 12.0,
+                f: -3.0,
+            },
+        );
+        let json = serde_json::to_value(&turned).expect("json");
+        assert_eq!(json["matrix"]["e"], 12.0);
+        assert_eq!(
+            serde_json::from_value::<Shape>(json).expect("read"),
+            turned
+        );
+        assert!(validate(&turned).is_ok());
     }
 }
 

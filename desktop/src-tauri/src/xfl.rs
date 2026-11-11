@@ -428,7 +428,9 @@ fn shape_contour(shape: &Shape, matrix: &Affine) -> Option<Contour> {
             straight_contour(&points)
         }
         Shape::Path { nodes, closed, .. } => path_contour(nodes, *closed, matrix),
-        Shape::Text { .. } | Shape::Group { .. } | Shape::Figure { .. } => return None,
+        Shape::Text { .. } | Shape::Group { .. } | Shape::Figure { .. } | Shape::Bitmap { .. } => {
+            return None
+        }
     };
     if contour.segments.is_empty() {
         return None;
@@ -473,7 +475,7 @@ fn ink_of(shape: &Shape, scale: f64, opacity: f64) -> (Option<(String, f64)>, Op
             (fill_ink(fill), stroke_ink)
         }
         Shape::Text { color, .. } => (fill_ink(color), None),
-        Shape::Group { .. } | Shape::Figure { .. } => (None, None),
+        Shape::Group { .. } | Shape::Figure { .. } | Shape::Bitmap { .. } => (None, None),
     }
 }
 

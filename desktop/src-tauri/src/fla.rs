@@ -217,6 +217,7 @@ struct Gaps {
     opacity: bool,
     tween: bool,
     figure: bool,
+    bitmap: bool,
 }
 
 fn scan_layers(layers: &[Layer], gaps: &mut Gaps) {
@@ -232,6 +233,7 @@ fn scan_layers(layers: &[Layer], gaps: &mut Gaps) {
             for shape in &key.shapes {
                 gaps.gradient |= has_gradient(shape);
                 gaps.figure |= has_figure(shape);
+                gaps.bitmap |= has_bitmap(shape);
             }
         }
         scan_layers(&layer.children, gaps);
@@ -245,6 +247,14 @@ fn has_gradient(shape: &Shape) -> bool {
         | Shape::Polygon { gradient, .. }
         | Shape::Path { gradient, .. } => gradient.is_some(),
         Shape::Group { children } => children.iter().any(has_gradient),
+        _ => false,
+    }
+}
+
+fn has_bitmap(shape: &Shape) -> bool {
+    match shape {
+        Shape::Bitmap { .. } => true,
+        Shape::Group { children } => children.iter().any(has_bitmap),
         _ => false,
     }
 }
@@ -286,6 +296,9 @@ pub fn export_warnings(doc: &Document) -> Vec<String> {
     }
     if gaps.figure {
         warnings.push("stick figures are exported as the lines they draw, without the rig".to_string());
+    }
+    if gaps.bitmap {
+        warnings.push("placed images are not exported".to_string());
     }
     warnings
 }
@@ -516,6 +529,24 @@ mod tests {
         }
     }
 
+    fn image_key() -> crate::document::Keyframe {
+        crate::document::Keyframe {
+            frame: 0,
+            shapes: vec![Shape::Bitmap {
+                x: 0.0,
+                y: 0.0,
+                w: 30.0,
+                h: 30.0,
+                source: "data:image/png;base64,iVBORw0KGgo=".to_string(),
+                matrix: None,
+            }],
+            transform: Transform::default(),
+            tween: false,
+            easing: crate::document::Easing::linear(),
+            label: None,
+        }
+    }
+
     #[test]
     fn warnings_list_only_used_features() {
         let mut doc = document("Plain");
@@ -528,5 +559,9 @@ mod tests {
         assert!(warnings.iter().any(|text| text.starts_with("gradient fills")));
         assert!(warnings.iter().any(|text| text.starts_with("tweens are exported")));
         assert!(!warnings.iter().any(|text| text.starts_with("layer masks")));
+        assert!(!warnings.iter().any(|text| text.starts_with("placed images")));
+        doc.scenes[0].layers[0].keys.push(image_key());
+        assert!(export_warnings(&doc)
+            .contains(&"placed images are not exported".to_string()));
     }
 }

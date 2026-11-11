@@ -5,6 +5,7 @@ mod entitlement;
 mod export;
 mod fla;
 mod frames;
+mod media;
 mod path;
 mod prefs;
 mod rig;
@@ -130,6 +131,7 @@ pub fn run() {
             templates::templates_catalog,
             templates::templates_preview,
             templates::templates_open,
+            media::media_read,
             export::export_web,
             fla::project_export_fla,
             fla::project_import_fla,
