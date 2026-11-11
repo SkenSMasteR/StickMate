@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use quick_xml::XmlVersion;
@@ -64,6 +66,43 @@ struct EdgeRef<'a> {
     group: Option<&'a Element>,
 }
 
+struct BitmapSource {
+    href: String,
+}
+
+struct Media<'a> {
+    items: HashMap<String, BitmapSource>,
+    members: &'a [(String, Vec<u8>)],
+}
+
+impl Media<'_> {
+    fn read(&self, name: &str) -> Option<Vec<u8>> {
+        let href = self.items.get(name)?.href.as_str();
+        if href.is_empty() {
+            return None;
+        }
+        crate::fla::member_bytes(self.members, &format!("{}{href}", xfl::LIBRARY_FOLDER))
+    }
+}
+
+fn media_of<'a>(root: &Element, members: &'a [(String, Vec<u8>)]) -> Media<'a> {
+    let mut items = HashMap::new();
+    for holder in named(root, "media") {
+        for item in named(holder, "DOMBitmapItem") {
+            let Some(name) = item.attr("name").filter(|name| !name.is_empty()) else {
+                continue;
+            };
+            items.insert(
+                name.to_string(),
+                BitmapSource {
+                    href: item.attr("href").unwrap_or_default().to_string(),
+                },
+            );
+        }
+    }
+    Media { items, members }
+}
+
 #[derive(Default)]
 struct Notes {
     fps: Option<u32>,
@@ -72,6 +111,7 @@ struct Notes {
     symbols: usize,
     library: usize,
     bitmaps: usize,
+    unread: usize,
     sounds: usize,
     filters: usize,
     masks: usize,
@@ -116,6 +156,12 @@ impl Notes {
             self.bitmaps,
             "bitmap fill was skipped",
             "bitmap fills were skipped",
+        );
+        said(
+            &mut out,
+            self.unread,
+            "placed image that could not be read is skipped",
+            "placed images that could not be read are skipped",
         );
         said(
             &mut out,
@@ -193,7 +239,11 @@ fn said(out: &mut Vec<String>, value: usize, one: &str, many: &str) {
     }
 }
 
-pub fn parse(xml: &str, name: &str) -> Result<Import, String> {
+pub fn parse(
+    xml: &str,
+    name: &str,
+    members: &[(String, Vec<u8>)],
+) -> Result<Import, String> {
     if xml.len() > PROJECT_LIMIT {
         return Err("the .xfl document is too large".to_string());
     }
@@ -203,7 +253,8 @@ pub fn parse(xml: &str, name: &str) -> Result<Import, String> {
         return Err(invalid);
     }
     let mut notes = Notes::default();
-    let doc = document(&root, name, &mut notes);
+    let media = media_of(&root, members);
+    let doc = document(&root, name, &media, &mut notes);
     Ok(Import {
         doc,
         notes: notes.messages(),
@@ -371,14 +422,14 @@ fn named<'a>(el: &'a Element, name: &str) -> Vec<&'a Element> {
         .collect()
 }
 
-fn document(root: &Element, name: &str, notes: &mut Notes) -> Document {
+fn document(root: &Element, name: &str, media: &Media, notes: &mut Notes) -> Document {
     if let Some(symbols) = child(root, "symbols") {
         notes.library += named(symbols, "Include").len();
     }
     let mut scenes = Vec::new();
     if let Some(holder) = child(root, "timelines") {
         for timeline in named(holder, "DOMTimeline") {
-            scenes.push(scene(timeline, scenes.len() + 1, notes));
+            scenes.push(scene(timeline, scenes.len() + 1, media, notes));
         }
     }
     if scenes.is_empty() {
@@ -424,10 +475,10 @@ fn background(root: &Element) -> String {
     }
 }
 
-fn scene(timeline: &Element, index: usize, notes: &mut Notes) -> Scene {
+fn scene(timeline: &Element, index: usize, media: &Media, notes: &mut Notes) -> Scene {
     let mut layers = Vec::new();
     if let Some(holder) = child(timeline, "layers") {
-        collect_layers(holder, notes, &mut layers);
+        collect_layers(holder, media, notes, &mut layers);
     }
     if layers.is_empty() {
         layers.push(blank_layer("Layer 1"));
@@ -471,15 +522,15 @@ fn blank_layer(name: &str) -> Layer {
     }
 }
 
-fn collect_layers(holder: &Element, notes: &mut Notes, out: &mut Vec<Layer>) {
+fn collect_layers(holder: &Element, media: &Media, notes: &mut Notes, out: &mut Vec<Layer>) {
     for item in &holder.children {
         match item.name.as_str() {
             "DOMLayerFolder" => {
                 notes.folders += 1;
-                collect_layers(item, notes, out);
+                collect_layers(item, media, notes, out);
             }
             "DOMLayer" => {
-                if let Some(layer) = layer(item, notes) {
+                if let Some(layer) = layer(item, media, notes) {
                     out.push(layer);
                 }
             }
@@ -488,7 +539,7 @@ fn collect_layers(holder: &Element, notes: &mut Notes, out: &mut Vec<Layer>) {
     }
 }
 
-fn layer(el: &Element, notes: &mut Notes) -> Option<Layer> {
+fn layer(el: &Element, media: &Media, notes: &mut Notes) -> Option<Layer> {
     let kind = el
         .attr("layerType")
         .or_else(|| el.attr("type"))
@@ -515,7 +566,7 @@ fn layer(el: &Element, notes: &mut Notes) -> Option<Layer> {
     let mut keys = Vec::new();
     let mut length = 0u32;
     if let Some(holder) = child(el, "frames") {
-        let (frames, frames_length) = frames(holder, notes);
+        let (frames, frames_length) = frames(holder, media, notes);
         keys = frames;
         length = frames_length;
     }
@@ -540,7 +591,7 @@ fn layer(el: &Element, notes: &mut Notes) -> Option<Layer> {
     })
 }
 
-fn frames(holder: &Element, notes: &mut Notes) -> (Vec<Keyframe>, u32) {
+fn frames(holder: &Element, media: &Media, notes: &mut Notes) -> (Vec<Keyframe>, u32) {
     let mut keys: Vec<Keyframe> = Vec::new();
     let mut length = 0u32;
     let mut cursor = 0u32;
@@ -558,7 +609,7 @@ fn frames(holder: &Element, notes: &mut Notes) -> (Vec<Keyframe>, u32) {
         }
         let mut shapes = Vec::new();
         for items in named(frame, "elements") {
-            shapes.extend(elements(items, notes));
+            shapes.extend(elements(items, media, notes));
         }
         let mode = frame.attr("keyMode").unwrap_or("");
         let kind = frame.attr("tweenType").unwrap_or("none");
@@ -620,18 +671,53 @@ fn preset(method: &str) -> Option<Easing> {
     }
 }
 
-fn elements(holder: &Element, notes: &mut Notes) -> Vec<Shape> {
+fn elements(holder: &Element, media: &Media, notes: &mut Notes) -> Vec<Shape> {
     let mut out = Vec::new();
     for item in &holder.children {
         match item.name.as_str() {
             "DOMShape" => out.extend(shape(item, notes)),
             "DOMStaticText" | "DOMDynamicText" | "DOMInputText" => out.extend(text(item)),
+            "DOMBitmapInstance" => match bitmap(item, media) {
+                Some(shape) => out.push(shape),
+                None => notes.unread += 1,
+            },
             "DOMSymbolInstance" | "DOMInstance" => notes.symbols += 1,
-            "DOMElement" => out.extend(elements(item, notes)),
+            "DOMElement" => out.extend(elements(item, media, notes)),
             _ => {}
         }
     }
     out
+}
+
+fn bitmap(el: &Element, media: &Media) -> Option<Shape> {
+    let bytes = media.read(el.attr("libraryItemName")?)?;
+    let info = crate::media::inspect(&bytes).ok()?;
+    let place = matrix(el);
+    let width = info.width as f64;
+    let height = info.height as f64;
+    let stretched = (width * place.a, height * place.d);
+    if place.b == 0.0 && place.c == 0.0 && is_box(stretched.0, stretched.1) {
+        return Some(Shape::Bitmap {
+            x: place.e,
+            y: place.f,
+            w: stretched.0,
+            h: stretched.1,
+            source: info.source,
+            matrix: None,
+        });
+    }
+    Some(Shape::Bitmap {
+        x: 0.0,
+        y: 0.0,
+        w: width,
+        h: height,
+        source: info.source,
+        matrix: Some(place),
+    })
+}
+
+fn is_box(w: f64, h: f64) -> bool {
+    w > 0.0 && h > 0.0 && w <= 16384.0 && h <= 16384.0
 }
 
 fn matrix(el: &Element) -> Affine {
@@ -1071,6 +1157,7 @@ fn align_of(el: &Element) -> TextAlign {
 mod tests {
     use super::*;
     use crate::document::{Blend, Layer, Scene};
+    use crate::media::png;
     use crate::xfl;
 
     fn stage_xml(layers: &str) -> String {
@@ -1085,6 +1172,66 @@ mod tests {
         format!("<DOMFrame index=\"{index}\" duration=\"{duration}\" keyMode=\"9728\"><elements>{body}</elements></DOMFrame>")
     }
 
+    fn media_stage(items: &str, layers: &str) -> String {
+        format!("<DOMDocument xmlns=\"http://ns.adobe.com/xfl/2008/\" backgroundColor=\"#999999\" width=\"640\" height=\"360\" frameRate=\"12.0000\"><media>{items}</media><timelines><DOMTimeline name=\"Scene 1\" currentFrame=\"0\"><layers>{layers}</layers></DOMTimeline></timelines></DOMDocument>")
+    }
+
+    fn image_book(x: f64, y: f64, w: f64, h: f64) -> Document {
+        Document {
+            id: "d1".to_string(),
+            name: "Round trip".to_string(),
+            width: 640,
+            height: 360,
+            fps: 24,
+            background: "#ffffff".to_string(),
+            scenes: vec![Scene {
+                id: "s1".to_string(),
+                name: "Scene 1".to_string(),
+                layers: vec![Layer {
+                    id: "l1".to_string(),
+                    name: "Art".to_string(),
+                    visible: true,
+                    locked: false,
+                    opacity: 1.0,
+                    blend: Blend::Normal,
+                    effects: Vec::new(),
+                    masked: false,
+                    length: 1,
+                    keys: vec![Keyframe {
+                        frame: 0,
+                        shapes: vec![Shape::Bitmap {
+                            x,
+                            y,
+                            w,
+                            h,
+                            source: crate::media::data_url("png", &png(40, 20)),
+                            matrix: None,
+                        }],
+                        transform: Transform::default(),
+                        tween: false,
+                        easing: Easing::linear(),
+                        label: None,
+                    }],
+                    folder: false,
+                    children: Vec::new(),
+                }],
+            }],
+        }
+    }
+
+    fn placed(body: &str) -> Vec<Shape> {
+        let item = "<DOMBitmapItem name=\"Bitmap 1\" allowSmoothing=\"true\" originalCompressionType=\"lossless\" quality=\"50\" href=\"Bitmap 1.png\" frameRight=\"800\" frameBottom=\"400\"/>";
+        let members = vec![("LIBRARY/Bitmap 1.png".to_string(), png(40, 20))];
+        parse(&media_stage(item, &art(&plain(0, 1, body))), "Imported", &members)
+            .expect("parse")
+            .doc
+            .scenes[0]
+            .layers[0]
+            .keys[0]
+            .shapes
+            .clone()
+    }
+
     fn square(x: f64) -> String {
         format!(
             "<DOMShape><fills><FillStyle index=\"1\"><SolidColor color=\"#ff0000\"/></FillStyle></fills><edges><Edge fillStyle1=\"1\" edges=\"!{} 0|40 0!40 0|40 40!40 40|0 40!0 40|0 0\"/></edges></DOMShape>",
@@ -1093,7 +1240,7 @@ mod tests {
     }
 
     fn parsed(xml: &str) -> Document {
-        parse(xml, "Imported").expect("parse").doc
+        parse(xml, "Imported", &[]).expect("parse").doc
     }
 
     fn path_of(key: &Keyframe) -> (Vec<PathNode>, bool, String) {
@@ -1122,14 +1269,14 @@ mod tests {
     #[test]
     fn frame_rate_is_clamped_and_reported() {
         let xml = stage_xml("").replace("frameRate=\"12.0000\"", "frameRate=\"300\"");
-        let import = parse(&xml, "Imported").expect("parse");
+        let import = parse(&xml, "Imported", &[]).expect("parse");
         assert_eq!(import.doc.fps, 120);
         assert_eq!(
             import.notes,
             vec!["the frame rate was changed to 120 to fit the app range".to_string()]
         );
         let slow = stage_xml("").replace("frameRate=\"12.0000\"", "frameRate=\"23.976\"");
-        let import = parse(&slow, "Imported").expect("parse");
+        let import = parse(&slow, "Imported", &[]).expect("parse");
         assert_eq!(import.doc.fps, 24);
         assert_eq!(
             import.notes,
@@ -1293,7 +1440,7 @@ mod tests {
     #[test]
     fn unknown_easing_falls_back_to_linear() {
         let frame = "<DOMFrame index=\"0\" duration=\"12\" tweenType=\"motion\" keyMode=\"22017\"><tweens><Ease target=\"all\" method=\"wobble\"/></tweens><elements/></DOMFrame>";
-        let import = parse(&stage_xml(&art(frame)), "Imported").expect("parse");
+        let import = parse(&stage_xml(&art(frame)), "Imported", &[]).expect("parse");
         assert_eq!(
             import.doc.scenes[0].layers[0].keys[0].easing,
             Easing::linear()
@@ -1307,7 +1454,7 @@ mod tests {
     #[test]
     fn symbol_instances_are_reported() {
         let body = "<DOMSymbolInstance libraryItemName=\"Guy\" symbolType=\"graphic\"><matrix><Matrix tx=\"10\" ty=\"20\"/></matrix></DOMSymbolInstance><DOMSymbolInstance libraryItemName=\"Cat\"/>";
-        let import = parse(&stage_xml(&art(&plain(0, 1, body))), "Imported").expect("parse");
+        let import = parse(&stage_xml(&art(&plain(0, 1, body))), "Imported", &[]).expect("parse");
         let layer = &import.doc.scenes[0].layers[0];
         assert_eq!(layer.keys.len(), 1);
         assert!(layer.keys[0].shapes.is_empty());
@@ -1320,7 +1467,7 @@ mod tests {
     #[test]
     fn gradient_fills_fall_back_to_a_flat_stop() {
         let body = "<DOMShape><fills><FillStyle index=\"1\"><LinearGradientFill focus=\"0\" angle=\"-90\"><Gradient interpolation=\"linear\" type=\"linear\" focus=\"0\"><GradientStop position=\"#ff0000FF\" ratio=\"0\"/><GradientStop position=\"#0000ff\" ratio=\"1\"/></Gradient></LinearGradientFill></FillStyle></fills><edges><Edge fillStyle1=\"1\" edges=\"!0 0|40 0!40 0|40 40!40 40|0 40\"/></edges></DOMShape>";
-        let import = parse(&stage_xml(&art(&plain(0, 1, body))), "Imported").expect("parse");
+        let import = parse(&stage_xml(&art(&plain(0, 1, body))), "Imported", &[]).expect("parse");
         let (_, _, fill) = path_of(&import.doc.scenes[0].layers[0].keys[0]);
         assert_eq!(fill, "#ff0000");
         assert_eq!(
@@ -1334,7 +1481,7 @@ mod tests {
         let layers = "<DOMLayer name=\"Guide\" layerType=\"guide\"><frames><DOMFrame index=\"0\" duration=\"1\" keyMode=\"9728\"><elements/></DOMFrame></frames></DOMLayer>\
             <DOMLayer name=\"Clip\" type=\"mask\"><frames><DOMFrame index=\"0\" duration=\"1\" keyMode=\"9728\"><elements/></DOMFrame></frames></DOMLayer>\
             <DOMLayer name=\"Music\" blendMode=\"multiply\"><frames><DOMFrame index=\"0\" duration=\"1\" keyMode=\"9728\" soundName=\"hit.wav\"><SoundEnvelope><SoundEnvelopePoint level0=\"32768\" level1=\"32768\"/></SoundEnvelope></DOMFrame></frames></DOMLayer>";
-        let import = parse(&stage_xml(layers), "Imported").expect("parse");
+        let import = parse(&stage_xml(layers), "Imported", &[]).expect("parse");
         let names: Vec<&str> = import
             .doc
             .scenes[0]
@@ -1356,7 +1503,7 @@ mod tests {
     #[test]
     fn bitmap_fills_are_reported() {
         let body = "<DOMShape><fills><FillStyle index=\"1\"><DOMBitmapFill href=\"Face.png\"/></FillStyle></fills><edges><Edge fillStyle1=\"1\" edges=\"!0 0|40 0!40 0|40 40!40 40|0 40\"/></edges></DOMShape>";
-        let import = parse(&stage_xml(&art(&plain(0, 1, body))), "Imported").expect("parse");
+        let import = parse(&stage_xml(&art(&plain(0, 1, body))), "Imported", &[]).expect("parse");
         assert!(import.doc.scenes[0].layers[0].keys[0].shapes.is_empty());
         assert_eq!(import.notes, vec!["1 bitmap fill was skipped".to_string()]);
     }
@@ -1364,7 +1511,7 @@ mod tests {
     #[test]
     fn undecodable_edge_markup_is_reported() {
         let body = "<DOMShape><fills><FillStyle index=\"1\"><SolidColor color=\"#ff0000\"/></FillStyle></fills><edges><Edge fillStyle1=\"1\" edges=\"!0 0:20 20\"/></edges></DOMShape>";
-        let import = parse(&stage_xml(&art(&plain(0, 1, body))), "Imported").expect("parse");
+        let import = parse(&stage_xml(&art(&plain(0, 1, body))), "Imported", &[]).expect("parse");
         assert!(import.doc.scenes[0].layers[0].keys[0].shapes.is_empty());
         assert_eq!(
             import.notes,
@@ -1380,7 +1527,7 @@ mod tests {
             frame,
             square(0.0)
         )));
-        let import = parse(&xml, "Imported").expect("parse");
+        let import = parse(&xml, "Imported", &[]).expect("parse");
         let layer = &import.doc.scenes[0].layers[0];
         assert!(layer.keys[0].tween);
         let (nodes, closed, _) = path_of(&layer.keys[0]);
@@ -1394,17 +1541,17 @@ mod tests {
     #[test]
     fn malformed_xml_is_rejected() {
         for case in ["<DOMDocument width=\"640\"", "<DOMDocument></DOMWrong>", "<DOMDocument><timelines></DOMDocument>"] {
-            let error = parse(case, "Imported").expect_err("malformed");
+            let error = parse(case, "Imported", &[]).expect_err("malformed");
             assert!(
                 error.starts_with("the .xfl document is not valid xml"),
                 "{error}"
             );
         }
         assert_eq!(
-            parse("<span></span>", "Imported").expect_err("not xfl"),
+            parse("<span></span>", "Imported", &[]).expect_err("not xfl"),
             "the .xfl document is not valid xml"
         );
-        assert!(parse("<DOMDocument></DOMDocument>", "Imported").is_ok());
+        assert!(parse("<DOMDocument></DOMDocument>", "Imported", &[]).is_ok());
     }
 
     #[test]
@@ -1431,7 +1578,7 @@ mod tests {
     #[test]
     fn unpainted_edges_are_dropped() {
         let body = "<DOMShape><edges><Edge edges=\"!0 0|40 0\"/></edges></DOMShape>";
-        let import = parse(&stage_xml(&art(&plain(0, 1, body))), "Imported").expect("parse");
+        let import = parse(&stage_xml(&art(&plain(0, 1, body))), "Imported", &[]).expect("parse");
         assert!(import.doc.scenes[0].layers[0].keys[0].shapes.is_empty());
         assert!(import.notes.is_empty(), "{:?}", import.notes);
     }
@@ -1440,7 +1587,7 @@ mod tests {
     fn writer_output_reads_back_with_matching_geometry() {
         let doc = fixture();
         let first = xfl::document_xml(&doc);
-        let import = parse(&first, "Round trip").expect("parse");
+        let import = parse(&first, "Round trip", &[]).expect("parse");
         let read = &import.doc;
         assert_eq!((read.width, read.height, read.fps), (320, 240, 24));
         assert_eq!(read.background, "#ffffff");
@@ -1463,12 +1610,150 @@ mod tests {
     }
 
     #[test]
+    fn a_placed_image_round_trips_through_the_library() {
+        let doc = image_book(150.0, 60.0, 80.0, 40.0);
+        let xml = xfl::document_xml(&doc);
+        let members = xfl::library_members(&doc);
+        assert_eq!(members[0].0, "LIBRARY/Bitmap 1.png".to_string());
+        let import = parse(&xml, "Round trip", &members).expect("parse");
+        assert!(import.notes.is_empty(), "{:?}", import.notes);
+        assert_eq!(
+            import.doc.scenes[0].layers[0].keys[0].shapes,
+            doc.scenes[0].layers[0].keys[0].shapes
+        );
+    }
+
+    #[test]
+    fn a_turned_image_round_trips_through_the_library() {
+        let mut doc = image_book(0.0, 0.0, 40.0, 20.0);
+        let shapes = &mut doc.scenes[0].layers[0].keys[0].shapes;
+        let Shape::Bitmap { matrix, .. } = &mut shapes[0] else {
+            panic!("expected a bitmap")
+        };
+        *matrix = Some(Affine {
+            a: -2.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 100.0,
+            f: 20.0,
+        });
+        let expected = shapes.clone();
+        let import = parse(&xfl::document_xml(&doc), "Round trip", &xfl::library_members(&doc))
+            .expect("parse");
+        assert!(import.notes.is_empty(), "{:?}", import.notes);
+        assert_eq!(import.doc.scenes[0].layers[0].keys[0].shapes, expected);
+    }
+
+    #[test]
+    fn a_turned_image_keeps_its_matrix() {
+        let body = "<DOMBitmapInstance libraryItemName=\"Bitmap 1\"><matrix><Matrix a=\"0\" b=\"1\" c=\"-1\" d=\"0\" tx=\"100\" ty=\"50\"/></matrix></DOMBitmapInstance>";
+        let shapes = placed(body);
+        match &shapes[0] {
+            Shape::Bitmap {
+                x,
+                y,
+                w,
+                h,
+                source,
+                matrix,
+            } => {
+                assert_eq!((*x, *y), (0.0, 0.0));
+                assert_eq!((*w, *h), (40.0, 20.0));
+                assert_eq!(
+                    *matrix,
+                    Some(Affine {
+                        a: 0.0,
+                        b: 1.0,
+                        c: -1.0,
+                        d: 0.0,
+                        e: 100.0,
+                        f: 50.0
+                    })
+                );
+                assert_eq!(*source, crate::media::data_url("png", &png(40, 20)));
+            }
+            other => panic!("expected a bitmap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_stretched_image_bakes_its_scale_into_the_box() {
+        let body = "<DOMBitmapInstance libraryItemName=\"Bitmap 1\"><matrix><Matrix a=\"2\" b=\"0\" c=\"0\" d=\"3\" tx=\"10\" ty=\"20\"/></matrix></DOMBitmapInstance>";
+        let shapes = placed(body);
+        match &shapes[0] {
+            Shape::Bitmap {
+                x,
+                y,
+                w,
+                h,
+                matrix,
+                ..
+            } => {
+                assert_eq!((*x, *y, *w, *h), (10.0, 20.0, 80.0, 60.0));
+                assert!(matrix.is_none());
+            }
+            other => panic!("expected a bitmap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_flipped_image_keeps_the_flip_in_its_matrix() {
+        let body = "<DOMBitmapInstance libraryItemName=\"Bitmap 1\"><matrix><Matrix a=\"-2\" b=\"0\" c=\"0\" d=\"1\" tx=\"100\" ty=\"20\"/></matrix></DOMBitmapInstance>";
+        let shapes = placed(body);
+        match &shapes[0] {
+            Shape::Bitmap {
+                x,
+                y,
+                w,
+                h,
+                matrix,
+                ..
+            } => {
+                assert_eq!((*x, *y, *w, *h), (0.0, 0.0, 40.0, 20.0));
+                let place = matrix.expect("matrix");
+                assert_eq!((place.a, place.d, place.e, place.f), (-2.0, 1.0, 100.0, 20.0));
+                crate::document::validate(&shapes[0]).expect("valid");
+            }
+            other => panic!("expected a bitmap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_impossible_stretch_keeps_the_scale_in_its_matrix() {
+        let body = "<DOMBitmapInstance libraryItemName=\"Bitmap 1\"><matrix><Matrix a=\"900\" b=\"0\" c=\"0\" d=\"1\" tx=\"10\" ty=\"20\"/></matrix></DOMBitmapInstance>";
+        let shapes = placed(body);
+        match &shapes[0] {
+            Shape::Bitmap { w, h, matrix, .. } => {
+                assert_eq!((*w, *h), (40.0, 20.0));
+                assert_eq!(matrix.expect("matrix").a, 900.0);
+                crate::document::validate(&shapes[0]).expect("valid");
+            }
+            other => panic!("expected a bitmap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn placed_images_without_their_files_are_reported() {
+        let body = "<DOMBitmapInstance libraryItemName=\"Bitmap 1\"><matrix><Matrix tx=\"10\" ty=\"20\"/></matrix></DOMBitmapInstance>\
+            <DOMBitmapInstance libraryItemName=\"Gone\"><matrix><Matrix tx=\"30\" ty=\"40\"/></matrix></DOMBitmapInstance>";
+        let item = "<DOMBitmapItem name=\"Bitmap 1\" href=\"Bitmap 1.png\" frameRight=\"800\" frameBottom=\"400\"/>";
+        let import = parse(&media_stage(item, &art(&plain(0, 1, body))), "Imported", &[])
+            .expect("parse");
+        assert!(import.doc.scenes[0].layers[0].keys[0].shapes.is_empty());
+        assert_eq!(
+            import.notes,
+            vec!["2 placed images that could not be read are skipped".to_string()]
+        );
+    }
+
+    #[test]
     fn archive_member_selects_the_document() {
         let doc = fixture();
         let members = crate::fla::archive_members(&doc);
         let body = crate::fla::member_bytes(&members, xfl::DOM_DOCUMENT).expect("member");
         let text = String::from_utf8(body).expect("utf8");
-        let import = parse(&text, "Round trip").expect("parse");
+        let import = parse(&text, "Round trip", &members).expect("parse");
         assert_eq!(import.doc.width, 320);
         assert_eq!(import.doc.scenes[0].layers[0].keys[0].shapes.len(), 1);
         assert!(crate::fla::member_bytes(&members, "Missing.xml").is_none());
@@ -1481,7 +1766,7 @@ mod tests {
             "1".repeat(PROJECT_LIMIT + 1)
         );
         assert_eq!(
-            parse(&huge, "Imported").expect_err("size"),
+            parse(&huge, "Imported", &[]).expect_err("size"),
             "the .xfl document is too large"
         );
     }

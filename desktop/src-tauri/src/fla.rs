@@ -190,7 +190,7 @@ pub fn archive_stem(name: &str) -> String {
 
 pub fn archive_members(doc: &Document) -> Vec<(String, Vec<u8>)> {
     let stem = archive_stem(&doc.name);
-    vec![
+    let mut members = vec![
         (format!("{stem}.xfl"), b"PROXY-CS5".to_vec()),
         (xfl::LIBRARY_FOLDER.to_string(), Vec::new()),
         ("META-INF/".to_string(), Vec::new()),
@@ -204,7 +204,9 @@ pub fn archive_members(doc: &Document) -> Vec<(String, Vec<u8>)> {
             xfl::PUBLISH_SETTINGS.to_string(),
             xfl::publish_settings(&stem).into_bytes(),
         ),
-    ]
+    ];
+    members.extend(xfl::library_members(doc));
+    members
 }
 
 #[derive(Default)]
@@ -217,7 +219,6 @@ struct Gaps {
     opacity: bool,
     tween: bool,
     figure: bool,
-    bitmap: bool,
 }
 
 fn scan_layers(layers: &[Layer], gaps: &mut Gaps) {
@@ -233,7 +234,6 @@ fn scan_layers(layers: &[Layer], gaps: &mut Gaps) {
             for shape in &key.shapes {
                 gaps.gradient |= has_gradient(shape);
                 gaps.figure |= has_figure(shape);
-                gaps.bitmap |= has_bitmap(shape);
             }
         }
         scan_layers(&layer.children, gaps);
@@ -247,14 +247,6 @@ fn has_gradient(shape: &Shape) -> bool {
         | Shape::Polygon { gradient, .. }
         | Shape::Path { gradient, .. } => gradient.is_some(),
         Shape::Group { children } => children.iter().any(has_gradient),
-        _ => false,
-    }
-}
-
-fn has_bitmap(shape: &Shape) -> bool {
-    match shape {
-        Shape::Bitmap { .. } => true,
-        Shape::Group { children } => children.iter().any(has_bitmap),
         _ => false,
     }
 }
@@ -297,9 +289,6 @@ pub fn export_warnings(doc: &Document) -> Vec<String> {
     if gaps.figure {
         warnings.push("stick figures are exported as the lines they draw, without the rig".to_string());
     }
-    if gaps.bitmap {
-        warnings.push("placed images are not exported".to_string());
-    }
     warnings
 }
 
@@ -327,12 +316,13 @@ pub fn project_export_fla(
 pub fn project_import_fla(store: State<'_, DocStore>, path: String) -> Result<FlaImportResult, String> {
     let source = PathBuf::from(&path);
     let bytes = fs::read(&source).map_err(|error| error.to_string())?;
-    let body = if is_zip(&bytes) {
+    let (body, members) = if is_zip(&bytes) {
         let members = read_members(&bytes)?;
-        member_bytes(&members, xfl::DOM_DOCUMENT)
-            .ok_or_else(|| "DOMDocument.xml is missing from the file".to_string())?
+        let body = member_bytes(&members, xfl::DOM_DOCUMENT)
+            .ok_or_else(|| "DOMDocument.xml is missing from the file".to_string())?;
+        (body, members)
     } else {
-        bytes
+        (bytes, Vec::new())
     };
     let text = String::from_utf8(body)
         .map_err(|_| "DOMDocument.xml is not readable text".to_string())?;
@@ -340,7 +330,7 @@ pub fn project_import_fla(store: State<'_, DocStore>, path: String) -> Result<Fl
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("Imported project");
-    let import = xfl_read::parse(&text, &archive_stem(stem))?;
+    let import = xfl_read::parse(&text, &archive_stem(stem), &members)?;
     let mut doc = import.doc;
     let created = store.create(
         doc.name.clone(),
@@ -477,7 +467,7 @@ mod tests {
         let members = read_members(&archive).expect("members");
         let body = member_bytes(&members, xfl::DOM_DOCUMENT).expect("document");
         let packed = String::from_utf8(body).expect("utf8");
-        let import = crate::xfl_read::parse(&packed, "Import Me").expect("archive parse");
+        let import = crate::xfl_read::parse(&packed, "Import Me", &members).expect("archive parse");
         assert_eq!(
             (import.doc.width, import.doc.height, import.doc.fps),
             (640, 360, 30)
@@ -487,7 +477,7 @@ mod tests {
         let loose = xfl::document_xml(&doc);
         assert!(!is_zip(loose.as_bytes()));
         assert_eq!(
-            crate::xfl_read::parse(&loose, "Loose").expect("loose parse").doc.name,
+            crate::xfl_read::parse(&loose, "Loose", &[]).expect("loose parse").doc.name,
             "Loose"
         );
     }
@@ -535,9 +525,9 @@ mod tests {
             shapes: vec![Shape::Bitmap {
                 x: 0.0,
                 y: 0.0,
-                w: 30.0,
-                h: 30.0,
-                source: "data:image/png;base64,iVBORw0KGgo=".to_string(),
+                w: 40.0,
+                h: 20.0,
+                source: crate::media::data_url("png", &crate::media::png(40, 20)),
                 matrix: None,
             }],
             transform: Transform::default(),
@@ -561,7 +551,17 @@ mod tests {
         assert!(!warnings.iter().any(|text| text.starts_with("layer masks")));
         assert!(!warnings.iter().any(|text| text.starts_with("placed images")));
         doc.scenes[0].layers[0].keys.push(image_key());
-        assert!(export_warnings(&doc)
-            .contains(&"placed images are not exported".to_string()));
+        let warnings = export_warnings(&doc);
+        assert!(!warnings.iter().any(|text| text.starts_with("placed images")));
+        assert!(!warnings.iter().any(|text| text.starts_with("stick figures")));
+        let members = archive_members(&doc);
+        assert_eq!(
+            member_bytes(&members, "LIBRARY/Bitmap 1.png"),
+            Some(crate::media::png(40, 20))
+        );
+        let xml = String::from_utf8(member_bytes(&members, xfl::DOM_DOCUMENT).expect("xml"))
+            .expect("utf8");
+        assert!(xml.contains("<DOMBitmapItem name=\"Bitmap 1\""));
+        assert!(xml.contains("<DOMBitmapInstance libraryItemName=\"Bitmap 1\">"));
     }
 }

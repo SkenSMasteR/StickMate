@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::f64::consts::TAU;
 
 use crate::document::{
@@ -42,9 +43,61 @@ pub struct XflText {
     pub spacing: f64,
 }
 
+#[derive(Clone)]
+pub struct XflBitmap {
+    pub name: String,
+    pub href: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+pub struct XflBitmapInstance {
+    pub item: String,
+    pub matrix: Affine,
+}
+
+#[derive(Default)]
+pub(crate) struct Library {
+    seen: HashMap<String, usize>,
+    items: Vec<XflBitmap>,
+}
+
+impl Library {
+    fn register(&mut self, source: &str) -> Option<&XflBitmap> {
+        if let Some(index) = self.seen.get(source) {
+            return self.items.get(*index);
+        }
+        let kind = crate::media::kind_of_source(source)?;
+        let bytes = crate::media::payload(source)?;
+        let info = crate::media::inspect(&bytes).ok()?;
+        let index = self.items.len();
+        let extension = if kind == "jpeg" { "jpg" } else { kind };
+        self.items.push(XflBitmap {
+            name: format!("Bitmap {}", index + 1),
+            href: format!("Bitmap {}.{extension}", index + 1),
+            width: info.width,
+            height: info.height,
+        });
+        self.seen.insert(source.to_string(), index);
+        self.items.get(index)
+    }
+
+    fn clone_items(&self) -> Vec<XflBitmap> {
+        self.items.clone()
+    }
+
+    fn source_of(&self, index: usize) -> Option<&str> {
+        self.seen
+            .iter()
+            .find(|(_, at)| **at == index)
+            .map(|(source, _)| source.as_str())
+    }
+}
+
 pub enum Element {
     Shape(XflShape),
     Text(XflText),
+    Bitmap(XflBitmapInstance),
 }
 
 pub struct XflFrame {
@@ -71,6 +124,7 @@ pub struct XflDocument {
     pub height: u32,
     pub fps: u32,
     pub background: String,
+    pub media: Vec<XflBitmap>,
     pub scenes: Vec<XflScene>,
 }
 
@@ -233,6 +287,25 @@ fn compose(outer: &Affine, inner: &Affine) -> Affine {
         e: outer.a * inner.e + outer.c * inner.f + outer.e,
         f: outer.b * inner.e + outer.d * inner.f + outer.f,
     }
+}
+
+fn identity() -> Affine {
+    Affine {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    }
+}
+
+fn translate(x: f64, y: f64) -> Affine {
+    Affine { e: x, f: y, ..identity() }
+}
+
+fn scaled(sx: f64, sy: f64) -> Affine {
+    Affine { a: sx, d: sy, ..identity() }
 }
 
 fn lerp(a: &Point, b: &Point, t: f64) -> Point {
@@ -479,17 +552,23 @@ fn ink_of(shape: &Shape, scale: f64, opacity: f64) -> (Option<(String, f64)>, Op
     }
 }
 
-fn frame_elements(key: &Keyframe, transform: &Transform) -> Vec<Element> {
+fn frame_elements(key: &Keyframe, transform: &Transform, library: &mut Library) -> Vec<Element> {
     let matrix = transform_matrix(transform);
     let mut out = Vec::new();
-    push_elements(&key.shapes, &matrix, transform, &mut out);
+    push_elements(&key.shapes, &matrix, transform, &mut out, library);
     out
 }
 
-fn push_elements(shapes: &[Shape], matrix: &Affine, transform: &Transform, out: &mut Vec<Element>) {
+fn push_elements(
+    shapes: &[Shape],
+    matrix: &Affine,
+    transform: &Transform,
+    out: &mut Vec<Element>,
+    library: &mut Library,
+) {
     for shape in shapes {
         match shape {
-            Shape::Group { children } => push_elements(children, matrix, transform, out),
+            Shape::Group { children } => push_elements(children, matrix, transform, out, library),
             Shape::Text {
                 x,
                 y,
@@ -559,8 +638,34 @@ fn push_elements(shapes: &[Shape], matrix: &Affine, transform: &Transform, out: 
                         }));
                     }
                     let frame = compose(matrix, &crate::rig::bone_matrix(place));
-                    push_elements(&bone.art, &frame, transform, out);
+                    push_elements(&bone.art, &frame, transform, out, library);
                 }
+            }
+            Shape::Bitmap {
+                x,
+                y,
+                w,
+                h,
+                source,
+                matrix: local,
+            } => {
+                let Some(item) = library.register(source) else {
+                    continue;
+                };
+                if item.width == 0 || item.height == 0 {
+                    continue;
+                }
+                let natural = compose(
+                    &translate(*x, *y),
+                    &scaled(*w / item.width as f64, *h / item.height as f64),
+                );
+                let placed = local
+                    .as_ref()
+                    .map_or(natural, |inner| compose(inner, &natural));
+                out.push(Element::Bitmap(XflBitmapInstance {
+                    item: item.name.clone(),
+                    matrix: compose(matrix, &placed),
+                }));
             }
             other => {
                 let Some(contour) = shape_contour(other, &matrix) else {
@@ -580,7 +685,7 @@ fn push_elements(shapes: &[Shape], matrix: &Affine, transform: &Transform, out: 
     }
 }
 
-pub fn export_scene(scene: &Scene) -> XflScene {
+pub fn export_scene(scene: &Scene, library: &mut Library) -> XflScene {
     let mut flat = Vec::new();
     flatten_layers(&scene.layers, &mut flat);
     XflScene {
@@ -588,7 +693,7 @@ pub fn export_scene(scene: &Scene) -> XflScene {
         layers: flat
             .iter()
             .enumerate()
-            .map(|(index, layer)| export_layer(layer, index))
+            .map(|(index, layer)| export_layer(layer, index, library))
             .collect(),
     }
 }
@@ -603,17 +708,17 @@ fn flatten_layers<'a>(layers: &'a [Layer], out: &mut Vec<&'a Layer>) {
     }
 }
 
-pub fn export_layer(layer: &Layer, index: usize) -> XflLayer {
+pub fn export_layer(layer: &Layer, index: usize, library: &mut Library) -> XflLayer {
     XflLayer {
         name: layer.name.clone(),
         color: layer_color(index),
         visible: layer.visible,
         locked: layer.locked,
-        frames: export_frames(layer),
+        frames: export_frames(layer, library),
     }
 }
 
-pub fn export_frames(layer: &Layer) -> Vec<XflFrame> {
+pub fn export_frames(layer: &Layer, library: &mut Library) -> Vec<XflFrame> {
     let mut frames = Vec::new();
     for (position, key) in layer.keys.iter().enumerate() {
         if position == 0 && key.frame > 0 {
@@ -631,20 +736,42 @@ pub fn export_frames(layer: &Layer) -> Vec<XflFrame> {
         frames.push(XflFrame {
             index: key.frame,
             duration: end.saturating_sub(key.frame).max(1),
-            elements: frame_elements(key, &key.transform),
+            elements: frame_elements(key, &key.transform, library),
         });
     }
     frames
 }
 
 pub fn export_document(doc: &Document) -> XflDocument {
+    let mut library = Library::default();
+    let scenes = doc
+        .scenes
+        .iter()
+        .map(|scene| export_scene(scene, &mut library))
+        .collect();
     XflDocument {
         width: doc.width,
         height: doc.height,
         fps: doc.fps,
         background: doc.background.clone(),
-        scenes: doc.scenes.iter().map(export_scene).collect(),
+        media: library.clone_items(),
+        scenes,
     }
+}
+
+pub fn library_members(doc: &Document) -> Vec<(String, Vec<u8>)> {
+    let mut library = Library::default();
+    for scene in &doc.scenes {
+        export_scene(scene, &mut library);
+    }
+    let mut out = Vec::new();
+    for (index, item) in library.items.iter().enumerate() {
+        let bytes = library.source_of(index).and_then(crate::media::payload);
+        if let Some(bytes) = bytes {
+            out.push((format!("{LIBRARY_FOLDER}{}", item.href), bytes));
+        }
+    }
+    out
 }
 
 pub fn render(model: &XflDocument) -> String {
@@ -657,7 +784,10 @@ pub fn render(model: &XflDocument) -> String {
         model.fps as f64,
         model.scenes.len() + 1
     ));
-    out.push_str("     <symbols/>\n     <timelines>\n");
+    out.push_str(&format!(
+        "{}     <symbols/>\n     <timelines>\n",
+        media_xml(&model.media)
+    ));
     for scene in &model.scenes {
         out.push_str(&format!(
             "          <DOMTimeline name=\"{}\" currentFrame=\"0\" layerDepthEnabled=\"true\">\n               <layers>\n",
@@ -674,6 +804,24 @@ pub fn render(model: &XflDocument) -> String {
 
 pub fn document_xml(doc: &Document) -> String {
     render(&export_document(doc))
+}
+
+fn media_xml(items: &[XflBitmap]) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("     <media>\n");
+    for item in items {
+        out.push_str(&format!(
+            "          <DOMBitmapItem name=\"{}\" allowSmoothing=\"true\" originalCompressionType=\"lossless\" quality=\"50\" href=\"{}\" frameRight=\"{}\" frameBottom=\"{}\"/>\n",
+            escape(&item.name),
+            escape(&item.href),
+            twips(item.width as f64),
+            twips(item.height as f64)
+        ));
+    }
+    out.push_str("     </media>\n");
+    out
 }
 
 fn layer_xml(layer: &XflLayer, indent: &str, current: bool) -> String {
@@ -719,6 +867,9 @@ fn frame_xml(frame: &XflFrame, indent: &str) -> String {
                 }
                 Element::Text(text) => {
                     inner.push_str(&text_xml(text, &format!("{indent}          ")))
+                }
+                Element::Bitmap(instance) => {
+                    inner.push_str(&bitmap_xml(instance, &format!("{indent}          ")))
                 }
             }
         }
@@ -798,6 +949,19 @@ fn text_xml(text: &XflText, indent: &str) -> String {
     )
 }
 
+fn bitmap_xml(instance: &XflBitmapInstance, indent: &str) -> String {
+    format!(
+        "{indent}<DOMBitmapInstance libraryItemName=\"{}\">\n{indent}     <matrix>\n{indent}          <Matrix a=\"{}\" b=\"{}\" c=\"{}\" d=\"{}\" tx=\"{}\" ty=\"{}\"/>\n{indent}     </matrix>\n{indent}</DOMBitmapInstance>\n",
+        escape(&instance.item),
+        num(instance.matrix.a),
+        num(instance.matrix.b),
+        num(instance.matrix.c),
+        num(instance.matrix.d),
+        num(instance.matrix.e),
+        num(instance.matrix.f),
+    )
+}
+
 fn edge_string(contour: &Contour) -> String {
     let mut out = String::new();
     let mut current = contour.start.clone();
@@ -834,6 +998,7 @@ pub fn publish_settings(name: &str) -> String {
 mod tests {
     use super::*;
     use crate::document::{Easing, Keyframe, Transform};
+    use crate::media::png;
 
     fn key(frame: u32, shapes: Vec<Shape>) -> Keyframe {
         Keyframe {
@@ -874,6 +1039,37 @@ mod tests {
             width: 0.0,
             gradient: None,
         }
+    }
+
+    fn image(x: f64, y: f64, w: f64, h: f64, source: &str) -> Shape {
+        Shape::Bitmap {
+            x,
+            y,
+            w,
+            h,
+            source: source.to_string(),
+            matrix: None,
+        }
+    }
+
+    fn book(shapes: Vec<Shape>) -> Document {
+        Document {
+            id: "d1".to_string(),
+            name: "Book".to_string(),
+            width: 640,
+            height: 360,
+            fps: 24,
+            background: "#ffffff".to_string(),
+            scenes: vec![Scene {
+                id: "s1".to_string(),
+                name: "Scene 1".to_string(),
+                layers: vec![layer(vec![key(0, shapes)], 1)],
+            }],
+        }
+    }
+
+    fn bits() -> Library {
+        Library::default()
     }
 
     #[test]
@@ -960,13 +1156,13 @@ mod tests {
     #[test]
     fn frames_cover_the_whole_layer() {
         let held = layer(vec![key(0, vec![rect(0.0, 0.0, 2.0, 2.0)]), key(5, Vec::new())], 8);
-        let frames = export_frames(&held);
+        let frames = export_frames(&held, &mut bits());
         assert_eq!(frames.len(), 2);
         assert_eq!((frames[0].index, frames[0].duration), (0, 5));
         assert_eq!((frames[1].index, frames[1].duration), (5, 3));
 
         let late = layer(vec![key(3, Vec::new())], 4);
-        let frames = export_frames(&late);
+        let frames = export_frames(&late, &mut bits());
         assert_eq!(frames.len(), 2);
         assert_eq!((frames[0].index, frames[0].duration), (0, 3));
         assert!(frames[0].elements.is_empty());
@@ -980,9 +1176,10 @@ mod tests {
             height: 360,
             fps: 24,
             background: "#ffffff".to_string(),
+            media: Vec::new(),
             scenes: vec![XflScene {
                 name: "Scene 1".to_string(),
-                layers: vec![export_layer(&held, 0)],
+                layers: vec![export_layer(&held, 0, &mut bits())],
             }],
         });
         assert!(xml.contains("<Edge fillStyle1=\"1\" edges=\"!0 0|40 0!40 0|40 40!40 40|0 40!0 40|0 0\"/>"));
@@ -1020,7 +1217,7 @@ mod tests {
             gradient: None,
         };
         let held = layer(vec![key(0, vec![shape])], 1);
-        let frames = export_frames(&held);
+        let frames = export_frames(&held, &mut bits());
         let Element::Shape(part) = &frames[0].elements[0] else {
             panic!("expected a shape");
         };
@@ -1047,7 +1244,7 @@ mod tests {
             matrix: None,
         };
         let held = layer(vec![key(0, vec![shape])], 1);
-        let xml = frame_xml(&export_frames(&held)[0], "");
+        let xml = frame_xml(&export_frames(&held, &mut bits())[0], "");
         assert!(xml.contains("<characters>hi&#xd;there</characters>"));
         assert!(xml.contains("face=\"ArialMT\""));
         assert!(xml.contains("fillColor=\"#616161\""));
@@ -1060,7 +1257,7 @@ mod tests {
         let mut held = layer(vec![key(0, Vec::new())], 1);
         held.visible = false;
         held.locked = true;
-        let xml = layer_xml(&export_layer(&held, 0), "", false);
+        let xml = layer_xml(&export_layer(&held, 0, &mut bits()), "", false);
         assert!(xml.contains("visible=\"false\""));
         assert!(xml.contains("locked=\"true\""));
         assert!(xml.contains("<DOMLayer name=\"Art\" color=\"#FF0000\" autoNamed=\"false\""));
@@ -1079,7 +1276,7 @@ mod tests {
             name: "Scene 1".to_string(),
             layers: vec![folder],
         };
-        let exported = export_scene(&scene);
+        let exported = export_scene(&scene, &mut bits());
         assert_eq!(exported.layers.len(), 2);
         assert_eq!(exported.layers[0].frames.len(), 1);
         assert_eq!(exported.layers[1].frames.len(), 1);
@@ -1091,9 +1288,65 @@ mod tests {
         let group = Shape::Group {
             children: vec![rect(0.0, 0.0, 2.0, 2.0), rect(3.0, 3.0, 1.0, 1.0)],
         };
-        let xml = layer_xml(&export_layer(&layer(vec![key(0, vec![group])], 1), 0), "", false);
+        let xml = layer_xml(
+            &export_layer(&layer(vec![key(0, vec![group])], 1), 0, &mut bits()),
+            "",
+            false,
+        );
         assert_eq!(xml.matches("<DOMShape").count(), 2);
         assert!(xml.contains("!0 0"));
         assert!(xml.contains("!60 60"));
+    }
+
+    #[test]
+    fn the_same_image_is_only_in_the_library_once() {
+        let shared = crate::media::data_url("png", &png(20, 10));
+        let other = crate::media::data_url("png", &png(30, 15));
+        let doc = book(vec![
+            image(0.0, 0.0, 40.0, 20.0, &shared),
+            image(15.0, 5.0, 40.0, 20.0, &shared),
+            image(20.0, 30.0, 60.0, 30.0, &other),
+        ]);
+        let xml = document_xml(&doc);
+        assert_eq!(xml.matches("<DOMBitmapItem").count(), 2);
+        assert_eq!(xml.matches("<DOMBitmapInstance").count(), 3);
+        assert!(xml.contains("name=\"Bitmap 1\" allowSmoothing=\"true\""));
+        assert!(xml.contains("href=\"Bitmap 1.png\" frameRight=\"400\" frameBottom=\"200\""));
+        assert!(xml.contains("href=\"Bitmap 2.png\" frameRight=\"600\" frameBottom=\"300\""));
+        assert!(xml.find("<media>").expect("media") < xml.find("<symbols/>").expect("symbols"));
+        assert_eq!(
+            library_members(&doc),
+            vec![
+                ("LIBRARY/Bitmap 1.png".to_string(), png(20, 10)),
+                ("LIBRARY/Bitmap 2.png".to_string(), png(30, 15)),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_image_at_its_natural_size_lands_where_it_was_placed() {
+        let shared = crate::media::data_url("png", &png(20, 10));
+        let doc = book(vec![image(150.0, 60.0, 20.0, 10.0, &shared)]);
+        let xml = document_xml(&doc);
+        assert!(xml.contains("libraryItemName=\"Bitmap 1\""));
+        assert!(xml.contains("<Matrix a=\"1\" b=\"0\" c=\"0\" d=\"1\" tx=\"150\" ty=\"60\"/>"));
+    }
+
+    #[test]
+    fn a_scaled_image_carries_the_scale_of_its_box() {
+        let shared = crate::media::data_url("png", &png(20, 10));
+        let doc = book(vec![image(10.0, 20.0, 40.0, 30.0, &shared)]);
+        let xml = document_xml(&doc);
+        assert!(xml.contains("<Matrix a=\"2\" b=\"0\" c=\"0\" d=\"3\" tx=\"10\" ty=\"20\"/>"));
+    }
+
+    #[test]
+    fn an_image_that_cannot_be_decoded_is_left_out() {
+        let broken = "data:image/png;base64,iVBORw0KGgo=".to_string();
+        let doc = book(vec![image(0.0, 0.0, 30.0, 30.0, &broken)]);
+        let xml = document_xml(&doc);
+        assert!(!xml.contains("<media>"));
+        assert!(!xml.contains("DOMBitmapInstance"));
+        assert!(library_members(&doc).is_empty());
     }
 }

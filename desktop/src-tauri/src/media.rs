@@ -130,6 +130,23 @@ pub fn looks_like_image(source: &str) -> bool {
     }
 }
 
+pub fn kind_of_source(source: &str) -> Option<&'static str> {
+    let rest = source.strip_prefix("data:image/")?;
+    let (kind, _) = rest.split_once(";base64,")?;
+    match kind {
+        "png" => Some("png"),
+        "jpeg" => Some("jpeg"),
+        "gif" => Some("gif"),
+        _ => None,
+    }
+}
+
+pub fn payload(source: &str) -> Option<Vec<u8>> {
+    let rest = source.strip_prefix("data:image/")?;
+    let (_, body) = rest.split_once(";base64,")?;
+    STANDARD.decode(body).ok()
+}
+
 pub fn data_url(kind: &str, bytes: &[u8]) -> String {
     format!("data:image/{};base64,{}", kind, STANDARD.encode(bytes))
 }
@@ -141,20 +158,21 @@ pub fn media_read(path: String) -> Result<MediaInfo, String> {
 }
 
 #[cfg(test)]
+pub(crate) fn png(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.extend_from_slice(&13u32.to_be_bytes());
+    bytes.extend_from_slice(b"IHDR");
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
+    bytes.extend_from_slice(&0u32.to_be_bytes());
+    bytes.extend_from_slice(b"IEND");
+    bytes
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-
-    fn png(width: u32, height: u32) -> Vec<u8> {
-        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
-        bytes.extend_from_slice(&13u32.to_be_bytes());
-        bytes.extend_from_slice(b"IHDR");
-        bytes.extend_from_slice(&width.to_be_bytes());
-        bytes.extend_from_slice(&height.to_be_bytes());
-        bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
-        bytes.extend_from_slice(&0u32.to_be_bytes());
-        bytes.extend_from_slice(b"IEND");
-        bytes
-    }
 
     fn jpeg(width: u32, height: u32) -> Vec<u8> {
         let mut bytes = vec![0xff, 0xd8, 0xff, 0xe0];
@@ -231,6 +249,28 @@ mod tests {
             "data:image/png;base64,{}",
             "A".repeat(LIMIT * 2)
         )));
+    }
+
+    #[test]
+    fn a_source_remembers_its_kind_and_holds_its_bytes() {
+        let bytes = png(20, 10);
+        let source = data_url("png", &bytes);
+        assert_eq!(kind_of_source(&source), Some("png"));
+        assert_eq!(payload(&source), Some(bytes.clone()));
+        let other = data_url("jpeg", &jpeg(4, 3));
+        assert_eq!(kind_of_source(&other), Some("jpeg"));
+        assert_eq!(payload(&other), Some(jpeg(4, 3)));
+        assert_eq!(payload(&data_url("gif", &gif(2, 2))), Some(gif(2, 2)));
+    }
+
+    #[test]
+    fn source_helpers_refuse_what_they_cannot_read() {
+        assert_eq!(kind_of_source("https://example.com/a.png"), None);
+        assert_eq!(kind_of_source("data:image/tiff;base64,AAAA"), None);
+        assert_eq!(kind_of_source("data:image/png"), None);
+        assert_eq!(payload("data:image/png;base64,!!!!"), None);
+        assert_eq!(payload("data:image/png"), None);
+        assert_eq!(payload(""), None);
     }
 
     #[test]
