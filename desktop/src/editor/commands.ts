@@ -635,6 +635,12 @@ export function buildCommands(
       run: actions.detachArt,
       disabled: selectedFigures.length !== 1
     },
+    {
+      id: "media.importImage",
+      label: t("command.importImage"),
+      keys: "ctrl+shift+i",
+      run: actions.importImage
+    },
     { id: "playback.toggle", label: t("command.play"), keys: "space", run: actions.togglePlay },
     { id: "playback.back", label: t("command.stepBack"), keys: ",", run: () => actions.step(-1) },
     { id: "playback.forward", label: t("command.stepForward"), keys: ".", run: () => actions.step(1) },

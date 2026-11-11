@@ -12,6 +12,8 @@ import { useI18n } from "@/i18n";
 import { useConfirm } from "@/lib/confirm";
 import { usePrefs } from "@/lib/prefs";
 import type { ViewPrefs } from "@/lib/view";
+import { askImageOpen, mediaRead } from "@/lib/media";
+import type { MediaInfo } from "@/lib/media";
 import {
   docAddFolder,
   docAddFigure,
@@ -177,6 +179,20 @@ function clamp(value: number, low: number, high: number): number {
   return Math.min(Math.max(value, low), high);
 }
 
+function bitmapAt(stageWidth: number, stageHeight: number, image: MediaInfo): Shape {
+  const scale = Math.min(1, stageWidth / image.width, stageHeight / image.height);
+  const w = image.width * scale;
+  const h = image.height * scale;
+  return {
+    kind: "Bitmap",
+    x: (stageWidth - w) / 2,
+    y: (stageHeight - h) / 2,
+    w,
+    h,
+    source: image.source
+  };
+}
+
 function firstIn(doc: Document, sceneId: string, parentId: string | null): Layer | null {
   const target = doc.scenes.find((item) => item.id === sceneId);
   if (!target) {
@@ -245,6 +261,7 @@ export interface Actions {
   zoomFit: () => void;
   draw: (shape: Shape) => void;
   drawFigure: (x: number, y: number) => void;
+  importImage: () => void;
   poseFigure: (index: number, bone: number, target: Point) => void;
   reachFigure: (index: number, bone: number, target: Point) => void;
   attachArt: () => void;
@@ -738,6 +755,25 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           setTab({ selected: [count], selectedBone: 0, selectedNode: null, pivot: null });
         }
       });
+    },
+    importImage: () => {
+      if (!doc || !layer || layer.locked) {
+        return;
+      }
+      const count = heldKey(layer, frame)?.shapes.length ?? 0;
+      const place = (image: MediaInfo) =>
+        edit((d, s, l) => docDraw(d.id, s.id, l.id, frame, bitmapAt(d.width, d.height, image)));
+      void askImageOpen()
+        .then((path) => (path === null ? null : mediaRead(path)))
+        .then((image) => (image === null ? Promise.resolve(false) : place(image)))
+        .then((ok) => {
+          if (ok) {
+            setTab({ selected: [count], selectedBone: null, selectedNode: null, pivot: null });
+          }
+        })
+        .catch((error) => {
+          toast.error(String(error));
+        });
     },
     poseFigure: (index, bone, target) =>
       edit((d, s, l) => docPoseFigure(d.id, s.id, l.id, frame, index, bone, target)),

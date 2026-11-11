@@ -4,23 +4,11 @@ import type { MockExtension } from "../backend";
 
 export const written = new Map<string, string>();
 
-let savePath: string | null = null;
-let openPath: string | null = null;
 let plan: { name: string; notes: string[] } | null = null;
 
 export function reset(): void {
   written.clear();
-  savePath = "C:/Users/Test/Downloads/StickMate.fla";
-  openPath = "C:/Users/Test/Downloads/tut.fla";
   plan = { name: "Imported", notes: [] };
-}
-
-export function nextSavePath(path: string | null): void {
-  savePath = path;
-}
-
-export function nextOpenPath(path: string | null): void {
-  openPath = path;
 }
 
 export function nextImport(value: { name: string; notes: string[] } | null): void {
@@ -78,10 +66,6 @@ const TEXTS: Record<string, string> = {
 const ORDER = ["gradient", "blend", "effect", "mask", "folder", "opacity", "tween"];
 
 export const handlers: MockExtension = (context) => ({
-  "plugin:dialog|save": () => savePath,
-
-  "plugin:dialog|open": () => openPath,
-
   project_export_fla: (args): FlaExportResult => {
     const doc = context.state(args.id as string).doc;
     const flags = new Set<string>();

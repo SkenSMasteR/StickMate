@@ -8,7 +8,8 @@ import { ConfirmProvider } from "@/lib/confirm";
 import type { Document, Keyframe, Layer, Scene, Shape } from "@/lib/document";
 import { PrefsProvider } from "@/lib/prefs";
 import { store } from "./backend";
-import { nextImport, nextOpenPath, nextSavePath, written } from "./backend/fla";
+import { nextImport, written } from "./backend/fla";
+import { nextOpenPath, nextSavePath } from "./backend/dialog";
 
 function keyframe(shapes: Shape[], tween = false): Keyframe {
   return {
