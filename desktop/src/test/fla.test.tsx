@@ -8,7 +8,7 @@ import { ConfirmProvider } from "@/lib/confirm";
 import type { Document, Keyframe, Layer, Scene, Shape } from "@/lib/document";
 import { PrefsProvider } from "@/lib/prefs";
 import { store } from "./backend";
-import { nextSavePath, written } from "./backend/fla";
+import { nextImport, nextOpenPath, nextSavePath, written } from "./backend/fla";
 
 function keyframe(shapes: Shape[], tween = false): Keyframe {
   return {
@@ -135,6 +135,15 @@ describe("animate project exchange", () => {
     expect(await screen.findByText("gradient fills are exported as flat colours")).toBeTruthy();
     expect(screen.getByText("blend modes are not exported")).toBeTruthy();
     expect(screen.getByText("tweens are exported as keyframes that hold until the next key")).toBeTruthy();
+  });
+
+  test("imports an animate file as a new project", async () => {
+    mount();
+    nextOpenPath("C:/Users/Test/Downloads/tut.fla");
+    nextImport({ name: "Tut", notes: ["symbol instances were skipped"] });
+    fireEvent.click(screen.getByText("Import"));
+    expect(await screen.findByText("Tut")).toBeTruthy();
+    expect(await screen.findByText("symbol instances were skipped")).toBeTruthy();
   });
 
   test("does nothing when the save dialog is cancelled", async () => {

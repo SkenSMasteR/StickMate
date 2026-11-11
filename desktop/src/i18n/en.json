@@ -30,6 +30,7 @@
   "projects.open": "Open",
   "projects.refresh": "Refresh",
   "projects.export": "Export",
+  "projects.import": "Import",
   "projects.delete": "Delete",
   "templates.title": "Templates",
   "settings.title": "Settings",

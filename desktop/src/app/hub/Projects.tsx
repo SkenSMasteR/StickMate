@@ -9,7 +9,7 @@ import { useWorkspace } from "@/editor/workspace";
 import { useI18n } from "@/i18n";
 import { docList, docRecoveryReport } from "@/lib/document";
 import type { ProjectSummary } from "@/lib/document";
-import { askFlaSave, exportFla } from "@/lib/fla";
+import { askFlaOpen, askFlaSave, exportFla, importFla } from "@/lib/fla";
 
 const pinKey = "stickmate.pins";
 
@@ -95,6 +95,23 @@ export default function Projects({ onOpened }: { onOpened: (id: string) => void 
     }
   };
 
+  const importProject = async () => {
+    const path = await askFlaOpen();
+    if (!path) {
+      return;
+    }
+    try {
+      const result = await importFla(path);
+      await refresh();
+      toast.success(result.name);
+      for (const note of result.notes) {
+        toast.warning(note);
+      }
+    } catch (error) {
+      toast.error(String(error));
+    }
+  };
+
   const sorted = [...projects].sort((a, b) => {
     const pinnedA = pins[a.id] ? 1 : 0;
     const pinnedB = pins[b.id] ? 1 : 0;
@@ -106,7 +123,10 @@ export default function Projects({ onOpened }: { onOpened: (id: string) => void 
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto">
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-end gap-2">
+        <Button variant="outline" size="sm" onClick={() => void importProject()}>
+          {t("projects.import")}
+        </Button>
         <Button variant="outline" size="sm" onClick={() => void refresh()}>
           {t("projects.refresh")}
         </Button>

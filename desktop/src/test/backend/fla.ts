@@ -5,23 +5,29 @@ import type { MockExtension } from "../backend";
 export const written = new Map<string, string>();
 
 let savePath: string | null = null;
-let importResult: FlaImportResult | null = null;
+let openPath: string | null = null;
+let plan: { name: string; notes: string[] } | null = null;
 
 export function reset(): void {
   written.clear();
-  savePath = null;
-  importResult = null;
+  savePath = "C:/Users/Test/Downloads/StickMate.fla";
+  openPath = "C:/Users/Test/Downloads/tut.fla";
+  plan = { name: "Imported", notes: [] };
 }
 
 export function nextSavePath(path: string | null): void {
   savePath = path;
 }
 
-export function nextImportResult(result: FlaImportResult | null): void {
-  importResult = result;
+export function nextOpenPath(path: string | null): void {
+  openPath = path;
 }
 
-function gap(flags: Set<string>, layer: Layer) {
+export function nextImport(value: { name: string; notes: string[] } | null): void {
+  plan = value;
+}
+
+function gaps(flags: Set<string>, layer: Layer) {
   if (layer.blend !== "normal") {
     flags.add("blend");
   }
@@ -49,13 +55,13 @@ function gap(flags: Set<string>, layer: Layer) {
     }
   }
   for (const child of layer.children) {
-    gap(flags, child);
+    gaps(flags, child);
   }
 }
 
 function hasGradient(key: Keyframe): boolean {
-  return key.shapes.some((shape) =>
-    "gradient" in shape && shape.gradient !== undefined && shape.gradient !== null
+  return key.shapes.some(
+    (shape) => "gradient" in shape && shape.gradient !== undefined && shape.gradient !== null
   );
 }
 
@@ -74,14 +80,14 @@ const ORDER = ["gradient", "blend", "effect", "mask", "folder", "opacity", "twee
 export const handlers: MockExtension = (context) => ({
   "plugin:dialog|save": () => savePath,
 
-  "plugin:dialog|open": () => savePath,
+  "plugin:dialog|open": () => openPath,
 
   project_export_fla: (args): FlaExportResult => {
-    const doc = context.state(args.id as string).doc as Document;
+    const doc = context.state(args.id as string).doc;
     const flags = new Set<string>();
     for (const scene of doc.scenes) {
       for (const layer of scene.layers) {
-        gap(flags, layer);
+        gaps(flags, layer);
       }
     }
     written.set(args.path as string, doc.name);
@@ -92,9 +98,19 @@ export const handlers: MockExtension = (context) => ({
   },
 
   project_import_fla: (): FlaImportResult => {
-    if (!importResult) {
-      throw new Error("no .fla was chosen");
+    if (!plan) {
+      throw new Error("no animate file was chosen");
     }
-    return importResult;
+    const doc: Document = {
+      id: context.id("d"),
+      name: plan.name,
+      width: 640,
+      height: 360,
+      fps: 24,
+      background: "#ffffff",
+      scenes: [context.newScene("Scene 1")]
+    };
+    context.store.set(doc.id, { doc, undo: [], redo: [], updated_at: Date.now() });
+    return { id: doc.id, name: doc.name, notes: plan.notes };
   }
 });
