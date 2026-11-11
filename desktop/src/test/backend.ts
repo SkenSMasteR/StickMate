@@ -1528,6 +1528,7 @@ export interface State {
 }
 
 export const store = new Map<string, State>();
+const stepNames = new WeakMap<Document, string>();
 
 function state(docId: string): State {
   const found = store.get(docId);
@@ -1568,7 +1569,7 @@ function layer(doc: Document, sceneId: string, layerId: string): Layer {
   return found;
 }
 
-function edit(docId: string, change: (doc: Document) => void): Document {
+function edit(docId: string, change: (doc: Document) => void, name?: string): Document {
   const current = state(docId);
   const before = structuredClone(current.doc);
   const next = structuredClone(current.doc);
@@ -1583,6 +1584,9 @@ function edit(docId: string, change: (doc: Document) => void): Document {
   current.redo = [];
   current.doc = next;
   current.updated_at = Date.now();
+  if (name) {
+    stepNames.set(next, name);
+  }
   return next;
 }
 
@@ -1625,6 +1629,7 @@ export interface MockContext {
   reseedLayer: typeof reseedLayer;
   setLayerMask: typeof setLayerMask;
   edit: typeof edit;
+  stepNames: typeof stepNames;
   id: typeof id;
   newLayer: typeof newLayer;
   newScene: typeof newScene;
@@ -1660,6 +1665,7 @@ const context: MockContext = {
   reseedLayer,
   setLayerMask,
   edit,
+  stepNames,
   id,
   newLayer,
   newScene,
@@ -1977,6 +1983,27 @@ mockIPC(
             structuredClone(a.shape)
           );
         });
+      case "doc_set_keyframes": {
+        const run = a.run as Shape[][];
+        for (const shapes of run) {
+          for (const shape of shapes) {
+            validateShape(shape);
+          }
+        }
+        return edit(
+          a.id as string,
+          (doc) => {
+            const target = layer(doc, a.sceneId as string, a.layerId as string);
+            writable(target);
+            const start = a.frame as number;
+            run.forEach((shapes, offset) => {
+              target.keys[keyAt(target, start + offset)].shapes =
+                structuredClone(shapes);
+            });
+          },
+          "place_image_sequence"
+        );
+      }
       case "doc_erase": {
         const path = a.path as Point[];
         const radius = a.radius as number;

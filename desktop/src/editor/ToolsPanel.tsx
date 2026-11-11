@@ -3,6 +3,7 @@ import {
   Circle,
   Download,
   Eraser,
+  Film,
   ImagePlus,
   Keyboard,
   MousePointer2,
@@ -58,6 +59,7 @@ export default function ToolsPanel({
   const commands = buildCommands(actions, t, prefs.shortcuts, onShortcuts, onExport);
   const bottom = [
     { id: "media.importImage", icon: ImagePlus, run: actions.importImage },
+    { id: "media.importSequence", icon: Film, run: actions.importSequence },
     { id: "view.export", icon: Download, run: onExport },
     ...(onPalette ? [{ id: "view.palette", icon: Search, run: onPalette }] : []),
     { id: "view.shortcuts", icon: Keyboard, run: onShortcuts }

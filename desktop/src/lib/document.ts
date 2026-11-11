@@ -1201,6 +1201,16 @@ export function docDraw(
   return invoke<Document>("doc_draw", { id, sceneId, layerId, frame, shape });
 }
 
+export function docSetKeyframes(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  run: Shape[][]
+): Promise<Document> {
+  return invoke<Document>("doc_set_keyframes", { id, sceneId, layerId, frame, run });
+}
+
 export function docAddFigure(
   id: string,
   sceneId: string,

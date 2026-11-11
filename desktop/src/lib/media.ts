@@ -14,6 +14,10 @@ export function mediaRead(path: string): Promise<MediaInfo> {
   return invoke<MediaInfo>("media_read", { path });
 }
 
+export function mediaSequence(path: string): Promise<MediaInfo[]> {
+  return invoke<MediaInfo[]>("media_sequence", { path });
+}
+
 export async function askImageOpen(): Promise<string | null> {
   const value = await open({ multiple: false, filters: FILTERS });
   return typeof value === "string" ? value : null;

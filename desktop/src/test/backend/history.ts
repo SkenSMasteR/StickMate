@@ -271,7 +271,7 @@ function diffName(prev: Document, next: Document): string {
 }
 
 export const handlers: MockExtension = (context) => {
-  const { state, edit, id } = context;
+  const { state, edit, id, stepNames } = context;
 
   return {
     doc_history: (args) => {
@@ -285,6 +285,7 @@ export const handlers: MockExtension = (context) => {
         const override = nameOverrides.get(doc);
         const name =
           override ??
+          stepNames.get(doc) ??
           (index === 0 ? "new_document" : diffName(snapshots[index - 1], doc));
         if (!stepTimes.has(doc)) {
           stepTimes.set(doc, Date.now());

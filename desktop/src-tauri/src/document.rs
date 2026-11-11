@@ -3101,6 +3101,30 @@ impl DocStore {
         })
     }
 
+    pub fn set_keyframes(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        run: Vec<Vec<Shape>>,
+    ) -> Result<Document, String> {
+        for shapes in &run {
+            for shape in shapes {
+                validate(shape)?;
+            }
+        }
+        self.edit_named(id, "place_image_sequence", |doc| {
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            for (offset, shapes) in run.into_iter().enumerate() {
+                let index = layer.key_at(frame + offset as u32);
+                layer.keys[index].shapes = shapes;
+            }
+            Ok(())
+        })
+    }
+
     pub fn erase(
         &self,
         id: &str,
@@ -4236,6 +4260,18 @@ pub fn doc_draw(
     shape: Shape,
 ) -> Result<Document, String> {
     store.draw(&id, &scene_id, &layer_id, frame, shape)
+}
+
+#[tauri::command]
+pub fn doc_set_keyframes(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    run: Vec<Vec<Shape>>,
+) -> Result<Document, String> {
+    store.set_keyframes(&id, &scene_id, &layer_id, frame, run)
 }
 
 #[tauri::command]
@@ -10185,6 +10221,108 @@ mod tests {
             "bitmap matrix must be finite"
         );
         assert_eq!(store.history(id).expect("history").len(), before);
+    }
+
+    #[test]
+    fn an_image_sequence_writes_one_keyframe_per_frame() {
+        let fixture = Fixture::new("bitmap-sequence");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        let run = vec![
+            vec![image(0.0, 0.0)],
+            vec![image(10.0, 0.0)],
+            vec![image(20.0, 0.0)],
+        ];
+        let placed = store
+            .set_keyframes(id, &fixture.scene, &fixture.layer, 0, run)
+            .expect("sequence");
+        let target = fixture.target(&placed);
+        assert_eq!(
+            target.keys.iter().map(|key| key.frame).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(target.length, 3);
+        assert_eq!(target.keys[2].shapes, vec![image(20.0, 0.0)]);
+        let steps = store.history(id).expect("history");
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[1].name, "place_image_sequence");
+        let replaced = store
+            .set_keyframes(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                1,
+                vec![vec![image(9.0, 9.0)]],
+            )
+            .expect("replace");
+        assert_eq!(fixture.target(&replaced).keys.len(), 3);
+        assert_eq!(
+            fixture.target(&replaced).keys[1].shapes,
+            vec![image(9.0, 9.0)]
+        );
+        let undone = store.undo(id).expect("undo the replace");
+        assert_eq!(
+            fixture.target(&undone).keys[1].shapes,
+            vec![image(10.0, 0.0)]
+        );
+        let undone = store.undo(id).expect("undo the run");
+        assert_eq!(fixture.target(&undone).keys.len(), 1);
+    }
+
+    #[test]
+    fn a_sequence_refuses_an_empty_run_a_bad_shape_and_a_locked_layer() {
+        let fixture = Fixture::new("bitmap-sequence-refuse");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        let empty = store
+            .set_keyframes(id, &fixture.scene, &fixture.layer, 0, vec![])
+            .expect("empty");
+        assert_eq!(empty, fixture.doc);
+        assert_eq!(store.history(id).expect("history").len(), 1);
+        assert_eq!(
+            store
+                .set_keyframes(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    vec![vec![image(0.0, 0.0)], vec![picture(0.0, 0.0, 0.0, 20.0)]],
+                )
+                .expect_err("bad shape"),
+            "bitmap size must be between 1 and 16384"
+        );
+        assert_eq!(store.history(id).expect("history").len(), 1);
+        store
+            .set_layer(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                None,
+                None,
+                Some(true),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("lock");
+        assert_eq!(
+            store
+                .set_keyframes(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    vec![vec![image(0.0, 0.0)]]
+                )
+                .expect_err("locked"),
+            "layer is locked"
+        );
+        assert!(fixture
+            .target(&store.get(id).expect("get"))
+            .keys[0]
+            .shapes
+            .is_empty());
     }
 
     #[test]

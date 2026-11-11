@@ -267,6 +267,7 @@
   "command.attachArt": "Закачи арт на коска",
   "command.detachArt": "Одкачи арт од коска",
   "command.importImage": "Внеси слика",
+  "command.importSequence": "Внеси низа слики",
   "command.palette": "Палета со команди",
   "command.nudge.left": "Помести лево",
   "command.nudge.right": "Помести десно",

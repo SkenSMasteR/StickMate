@@ -8,6 +8,7 @@ import {
   docKeyframe,
   docNew,
   docErase,
+  docSetKeyframes,
   docSetTransform,
   docSetTween,
   docTransformShapes,
@@ -105,6 +106,25 @@ describe("bitmap backend commands", () => {
     expect(steps[steps.length - 1].name).toBe("draw_bitmap");
     await docUndo(id);
     expect(listed(id)).toHaveLength(0);
+  });
+
+  test("a numbered run of images lands on its own keyframes", async () => {
+    const { id, sceneId, layerId } = await opened();
+    await docSetKeyframes(id, sceneId, layerId, 0, [
+      [image(0, 0)],
+      [image(40, 0)],
+      [image(80, 0)]
+    ]);
+    expect(listed(id, 0)).toHaveLength(1);
+    expect(
+      current(id).scenes[0].layers[0].keys.map((key) => key.frame)
+    ).toEqual([0, 1, 2]);
+    expect(boxIs(shapeBounds(listed(id, 2)[0]), [80, 0, 40, 20])).toBe(true);
+    const steps = await docHistory(id);
+    expect(steps).toHaveLength(2);
+    expect(steps[steps.length - 1].name).toBe("place_image_sequence");
+    await docUndo(id);
+    expect(current(id).scenes[0].layers[0].keys).toHaveLength(1);
   });
 
   test("draw refuses an image it cannot place", async () => {

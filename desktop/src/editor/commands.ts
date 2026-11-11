@@ -641,6 +641,12 @@ export function buildCommands(
       keys: "ctrl+shift+i",
       run: actions.importImage
     },
+    {
+      id: "media.importSequence",
+      label: t("command.importSequence"),
+      keys: "ctrl+shift+j",
+      run: actions.importSequence
+    },
     { id: "playback.toggle", label: t("command.play"), keys: "space", run: actions.togglePlay },
     { id: "playback.back", label: t("command.stepBack"), keys: ",", run: () => actions.step(-1) },
     { id: "playback.forward", label: t("command.stepForward"), keys: ".", run: () => actions.step(1) },

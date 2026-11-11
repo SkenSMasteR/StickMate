@@ -12,7 +12,7 @@ import { useI18n } from "@/i18n";
 import { useConfirm } from "@/lib/confirm";
 import { usePrefs } from "@/lib/prefs";
 import type { ViewPrefs } from "@/lib/view";
-import { askImageOpen, mediaRead } from "@/lib/media";
+import { askImageOpen, mediaRead, mediaSequence } from "@/lib/media";
 import type { MediaInfo } from "@/lib/media";
 import {
   docAddFolder,
@@ -47,6 +47,7 @@ import {
   docReorderShapes,
   docReachFigure,
   docReplaceShape,
+  docSetKeyframes,
   docSetLabel,
   docSetLayer,
   docSetTransform,
@@ -262,6 +263,7 @@ export interface Actions {
   draw: (shape: Shape) => void;
   drawFigure: (x: number, y: number) => void;
   importImage: () => void;
+  importSequence: () => void;
   poseFigure: (index: number, bone: number, target: Point) => void;
   reachFigure: (index: number, bone: number, target: Point) => void;
   attachArt: () => void;
@@ -769,6 +771,32 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         .then((ok) => {
           if (ok) {
             setTab({ selected: [count], selectedBone: null, selectedNode: null, pivot: null });
+          }
+        })
+        .catch((error) => {
+          toast.error(String(error));
+        });
+    },
+    importSequence: () => {
+      if (!doc || !layer || layer.locked) {
+        return;
+      }
+      const place = (images: MediaInfo[]) =>
+        edit((d, s, l) =>
+          docSetKeyframes(
+            d.id,
+            s.id,
+            l.id,
+            frame,
+            images.map((image) => [bitmapAt(d.width, d.height, image)])
+          )
+        );
+      void askImageOpen()
+        .then((path) => (path === null ? null : mediaSequence(path)))
+        .then((images) => (images === null ? Promise.resolve(false) : place(images)))
+        .then((ok) => {
+          if (ok) {
+            setTab({ selected: [0], selectedBone: null, selectedNode: null, pivot: null });
           }
         })
         .catch((error) => {

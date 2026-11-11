@@ -267,6 +267,7 @@
   "command.attachArt": "Attach art to bone",
   "command.detachArt": "Detach art from bone",
   "command.importImage": "Import image",
+  "command.importSequence": "Import image sequence",
   "command.palette": "Command palette",
   "command.nudge.left": "Move left",
   "command.nudge.right": "Move right",

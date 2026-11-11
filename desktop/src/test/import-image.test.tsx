@@ -36,7 +36,7 @@ function box(shape: Shape): number[] {
 
 async function pickImport(): Promise<void> {
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /^Import image/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Import image \(/ }));
   });
   await flush();
 }

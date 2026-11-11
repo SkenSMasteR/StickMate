@@ -2,6 +2,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Serialize;
 
 const LIMIT: usize = 4 * 1024 * 1024;
+const SEQUENCE_LIMIT: usize = 600;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -157,6 +158,71 @@ pub fn media_read(path: String) -> Result<MediaInfo, String> {
     inspect(&bytes)
 }
 
+fn split_extension(name: &str) -> (&str, &str) {
+    match name.rsplit_once('.') {
+        Some((stem, extension)) => (stem, extension),
+        None => (name, ""),
+    }
+}
+
+fn split_numbered(name: &str) -> Option<(&str, &str)> {
+    let (stem, extension) = split_extension(name);
+    let head = stem.trim_end_matches(|digit: char| digit.is_ascii_digit());
+    let digits = &stem[head.len()..];
+    if digits.is_empty() {
+        return None;
+    }
+    Some((head, extension))
+}
+
+fn frame_number(name: &str, prefix: &str, extension: &str) -> Option<u32> {
+    let (stem, tail) = split_extension(name);
+    if !tail.eq_ignore_ascii_case(extension) {
+        return None;
+    }
+    let digits = stem.strip_prefix(prefix)?;
+    if digits.is_empty() || !digits.bytes().all(|digit| digit.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u32>().ok()
+}
+
+#[tauri::command]
+pub fn media_sequence(path: String) -> Result<Vec<MediaInfo>, String> {
+    let chosen = std::path::Path::new(&path);
+    let name = chosen
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    let (prefix, extension) =
+        split_numbered(name).ok_or_else(|| "the file name does not end in a number".to_string())?;
+    let mut found: Vec<(u32, std::path::PathBuf)> = Vec::new();
+    let entries = std::fs::read_dir(chosen.parent().unwrap_or_else(|| std::path::Path::new(".")))
+        .map_err(|error| error.to_string())?;
+    for entry in entries.flatten() {
+        let file = entry.path();
+        if let Some(number) = file
+            .file_name()
+            .and_then(|value| value.to_str())
+            .and_then(|name| frame_number(name, prefix, extension))
+        {
+            found.push((number, file));
+        }
+    }
+    if found.len() > SEQUENCE_LIMIT {
+        return Err("a sequence can hold up to 600 images".to_string());
+    }
+    found.sort_by_key(|(number, _)| *number);
+    let mut run = Vec::with_capacity(found.len());
+    for (_, file) in found {
+        let name = file.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+        let unreadable = || format!("{name} is not a readable image");
+        let bytes = std::fs::read(&file).map_err(|_| unreadable())?;
+        run.push(inspect(&bytes).map_err(|_| unreadable())?);
+    }
+    Ok(run)
+}
+
 #[cfg(test)]
 pub(crate) fn png(width: u32, height: u32) -> Vec<u8> {
     let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
@@ -283,6 +349,81 @@ mod tests {
         assert_eq!((info.width, info.height, info.kind), (18, 9, "png"));
         let missing = media_read(dir.join("missing.png").to_string_lossy().into_owned());
         assert!(missing.unwrap_err().contains("os error 2"));
+        std::fs::remove_dir_all(&dir).expect("clean");
+    }
+
+    fn sequence_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "stickmate-sequence-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        dir
+    }
+
+    #[test]
+    fn a_sequence_gathers_its_numbered_siblings_in_order() {
+        let dir = sequence_dir("order");
+        for (name, size) in [
+            ("walk_0001.png", (10u32, 4u32)),
+            ("walk_0002.png", (20, 8)),
+            ("walk_010.png", (30, 12)),
+        ] {
+            std::fs::write(dir.join(name), png(size.0, size.1)).expect("write");
+        }
+        std::fs::write(dir.join("walk_notes.png"), b"not an image").expect("write");
+        std::fs::write(dir.join("walk_0003.jpg"), png(40, 16)).expect("write");
+        let run =
+            media_sequence(dir.join("walk_0002.png").to_string_lossy().into_owned()).expect("run");
+        assert_eq!(
+            run.iter()
+                .map(|info| (info.width, info.height, info.kind))
+                .collect::<Vec<_>>(),
+            vec![(10, 4, "png"), (20, 8, "png"), (30, 12, "png")]
+        );
+        std::fs::remove_dir_all(&dir).expect("clean");
+    }
+
+    #[test]
+    fn a_sequence_needs_a_numbered_file_name() {
+        let dir = sequence_dir("unnumbered");
+        std::fs::write(dir.join("walk.png"), png(6, 3)).expect("write");
+        assert_eq!(
+            media_sequence(dir.join("walk.png").to_string_lossy().into_owned())
+                .expect_err("unnumbered"),
+            "the file name does not end in a number"
+        );
+        std::fs::remove_dir_all(&dir).expect("clean");
+    }
+
+    #[test]
+    fn a_sequence_stops_at_six_hundred_images() {
+        let dir = sequence_dir("length");
+        for number in 0..601 {
+            std::fs::write(dir.join(format!("run_{number:04}.png")), png(2, 2)).expect("write");
+        }
+        assert_eq!(
+            media_sequence(dir.join("run_0000.png").to_string_lossy().into_owned())
+                .expect_err("too long"),
+            "a sequence can hold up to 600 images"
+        );
+        std::fs::remove_dir_all(&dir).expect("clean");
+    }
+
+    #[test]
+    fn a_sequence_names_a_frame_it_cannot_read() {
+        let dir = sequence_dir("unreadable");
+        std::fs::write(dir.join("run_0001.png"), png(2, 2)).expect("write");
+        std::fs::write(dir.join("run_0002.png"), b"broken").expect("write");
+        assert_eq!(
+            media_sequence(dir.join("run_0001.png").to_string_lossy().into_owned())
+                .expect_err("broken frame"),
+            "run_0002.png is not a readable image"
+        );
+        let outside = dir.join("absent").join("run_0001.png");
+        let missing = media_sequence(outside.to_string_lossy().into_owned()).expect_err("missing");
+        assert!(missing.contains("os error"));
         std::fs::remove_dir_all(&dir).expect("clean");
     }
 
