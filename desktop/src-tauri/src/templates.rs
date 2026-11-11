@@ -170,7 +170,7 @@ fn parse_manifest(folder: &str, bytes: &[u8]) -> Result<Manifest, String> {
         || manifest.width > 8192
         || manifest.height > 8192
         || manifest.fps == 0
-        || manifest.fps > 60
+        || manifest.fps > 120
     {
         return Err(invalid);
     }
@@ -265,7 +265,7 @@ fn validate_document(doc: &Document) -> Result<(), String> {
     if doc.width == 0 || doc.height == 0 || doc.width > 8192 || doc.height > 8192 {
         return Err("template project resolution is invalid".to_string());
     }
-    if doc.fps == 0 || doc.fps > 60 {
+    if doc.fps == 0 || doc.fps > 120 {
         return Err("template project frame rate is invalid".to_string());
     }
     if doc.scenes.is_empty() {
@@ -546,7 +546,7 @@ mod tests {
                 assert!(parse_manifest("ball", &bytes(&value)).is_err(), "{field} {version}");
             }
         }
-        for (field, number) in [("width", 0), ("height", 9000), ("fps", 0), ("fps", 61)] {
+        for (field, number) in [("width", 0), ("height", 9000), ("fps", 0), ("fps", 121)] {
             let mut value = manifest_value();
             value[field] = serde_json::json!(number);
             assert!(parse_manifest("ball", &bytes(&value)).is_err(), "{field}");
@@ -684,7 +684,7 @@ mod tests {
         assert!(validate_document(&project(&value)).is_err());
 
         let mut value = ball_value();
-        value["fps"] = serde_json::json!(120);
+        value["fps"] = serde_json::json!(121);
         assert!(validate_document(&project(&value)).is_err());
 
         let mut value = ball_value();

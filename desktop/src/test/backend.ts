@@ -1340,8 +1340,8 @@ mockIPC(
         if (!width || !height || width > 8192 || height > 8192) {
           throw new Error("resolution must be between 1 and 8192");
         }
-        if (!fps || fps > 60) {
-          throw new Error("frame rate must be between 1 and 60");
+        if (!fps || fps > 120) {
+          throw new Error("frame rate must be between 1 and 120");
         }
         const doc: Document = {
           id: id("d"),

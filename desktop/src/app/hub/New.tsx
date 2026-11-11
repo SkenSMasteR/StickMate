@@ -4,13 +4,6 @@ import { Card } from "@/components/ui/card";
 import ColorField from "@/components/color-field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from "@/components/ui/select";
 import { useWorkspace } from "@/editor/workspace";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -21,8 +14,6 @@ const presets = [
   { label: "1080 x 1080", width: 1080, height: 1080 },
   { label: "3840 x 2160", width: 3840, height: 2160 }
 ];
-
-const frameRates = [24, 30, 60];
 
 export default function New({ onOpened }: { onOpened: (id: string) => void }) {
   const { t } = useI18n();
@@ -108,18 +99,13 @@ export default function New({ onOpened }: { onOpened: (id: string) => void }) {
       <div className="flex flex-wrap items-end gap-6">
         <div className="flex w-40 flex-col gap-2">
           <Label>{t("new.frameRate")}</Label>
-          <Select value={frameRate} onValueChange={setFrameRate}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {frameRates.map((rate) => (
-                <SelectItem key={rate} value={String(rate)}>
-                  {rate} fps
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <Input
+            type="number"
+            min={1}
+            max={120}
+            value={frameRate}
+            onChange={(event) => setFrameRate(event.target.value)}
+          />
         </div>
 
         <div className="flex w-48 flex-col gap-2">

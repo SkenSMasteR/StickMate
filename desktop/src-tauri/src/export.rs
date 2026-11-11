@@ -81,8 +81,8 @@ fn scene_length(scene: &Scene) -> u32 {
 }
 
 fn build_package(doc: &Document, options: &ExportOptions) -> Result<Package, String> {
-    if options.fps == 0 || options.fps > 60 {
-        return Err("frame rate must be between 1 and 60".to_string());
+    if options.fps == 0 || options.fps > 120 {
+        return Err("frame rate must be between 1 and 120".to_string());
     }
     if !options.scale.is_finite() || !(0.25..=4.0).contains(&options.scale) {
         return Err("resolution scale must be between 0.25 and 4".to_string());
@@ -420,12 +420,12 @@ mod tests {
                 "resolution scale must be between 0.25 and 4"
             );
         }
-        for fps in [0, 61] {
+        for fps in [0, 121] {
             let mut bad = options(ExportRange::Whole);
             bad.fps = fps;
             assert_eq!(
                 build_package(&doc(), &bad).expect_err("fps"),
-                "frame rate must be between 1 and 60"
+                "frame rate must be between 1 and 120"
             );
         }
         let mut huge = options(ExportRange::Whole);

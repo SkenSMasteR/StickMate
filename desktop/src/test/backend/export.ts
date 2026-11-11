@@ -69,8 +69,8 @@ interface Payload {
 }
 
 function buildPayload(doc: Document, options: ExportOptions): Payload {
-  if (!Number.isInteger(options.fps) || options.fps < 1 || options.fps > 60) {
-    throw new Error("frame rate must be between 1 and 60");
+  if (!Number.isInteger(options.fps) || options.fps < 1 || options.fps > 120) {
+    throw new Error("frame rate must be between 1 and 120");
   }
   if (!Number.isFinite(options.scale) || options.scale < 0.25 || options.scale > 4) {
     throw new Error("resolution scale must be between 0.25 and 4");

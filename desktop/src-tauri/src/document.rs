@@ -2386,8 +2386,8 @@ impl DocStore {
         if width == 0 || height == 0 || width > 8192 || height > 8192 {
             return Err("resolution must be between 1 and 8192".to_string());
         }
-        if fps == 0 || fps > 60 {
-            return Err("frame rate must be between 1 and 60".to_string());
+        if fps == 0 || fps > 120 {
+            return Err("frame rate must be between 1 and 120".to_string());
         }
         let doc = Document {
             id: new_id("d"),
@@ -4136,7 +4136,7 @@ mod tests {
             .is_err());
         assert!(fixture
             .store
-            .create("Bad".to_string(), 800, 600, 120, "#fff".to_string())
+            .create("Bad".to_string(), 800, 600, 121, "#fff".to_string())
             .is_err());
         assert_eq!(fixture.store.list().expect("list").len(), 1);
     }

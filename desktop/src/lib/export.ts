@@ -27,7 +27,7 @@ export const EXPORT_RANGE_KINDS: ExportRangeKind[] = ["whole", "scene", "frames"
 
 export const EXPORT_SCALES = [0.5, 1, 2];
 
-export const FPS_LIMITS = { min: 1, max: 60 };
+export const FPS_LIMITS = { min: 1, max: 120 };
 
 export const FRAME_LIMITS = { min: 0, max: 99999 };
 

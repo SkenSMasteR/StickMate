@@ -67,7 +67,7 @@ describe("export preset sanitisation", () => {
     expect(sanitizeSettings({ ...defaultSettings, rangeKind: "clip" })).toBeNull();
     expect(sanitizeSettings({ ...defaultSettings, scale: 3 })).toBeNull();
     expect(sanitizeSettings({ ...defaultSettings, fps: 0 })).toBeNull();
-    expect(sanitizeSettings({ ...defaultSettings, fps: 61 })).toBeNull();
+    expect(sanitizeSettings({ ...defaultSettings, fps: 121 })).toBeNull();
     expect(sanitizeSettings({ ...defaultSettings, loop: "yes" })).toBeNull();
     expect(sanitizeSettings({ ...defaultSettings, start: Number.NaN })).toBeNull();
     expect(sanitizeSettings({ ...defaultSettings, start: 9, end: 4 })).toBeNull();

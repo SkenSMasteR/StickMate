@@ -308,7 +308,7 @@ export default function ExportDialog({
               aria-label={t("export.fps")}
               className="rounded-none"
               min={1}
-              max={60}
+              max={120}
               value={fps}
               onChange={(event) => setFps(event.target.value)}
             />

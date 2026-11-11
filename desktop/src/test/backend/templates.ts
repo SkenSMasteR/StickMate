@@ -279,7 +279,7 @@ function parseManifest(folder: string, body: string): Manifest {
     parsed.width > 8192 ||
     parsed.height > 8192 ||
     parsed.fps < 1 ||
-    parsed.fps > 60
+    parsed.fps > 120
   ) {
     throw new Error(invalid);
   }
@@ -442,7 +442,7 @@ function parseProject(body: string, expected: Manifest): Document {
   ) {
     throw new Error("template project resolution is invalid");
   }
-  if (!Number.isInteger(doc.fps) || doc.fps < 1 || doc.fps > 60) {
+  if (!Number.isInteger(doc.fps) || doc.fps < 1 || doc.fps > 120) {
     throw new Error("template project frame rate is invalid");
   }
   if (doc.scenes.length === 0) {

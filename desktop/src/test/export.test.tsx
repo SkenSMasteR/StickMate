@@ -787,6 +787,6 @@ describe("export dialog", () => {
     await mountDialog(doc);
     fireEvent.change(screen.getByLabelText("Frame rate"), { target: { value: "0" } });
     await clickExport();
-    await screen.findByText(/frame rate must be between 1 and 60/);
+    await screen.findByText(/frame rate must be between 1 and 120/);
   });
 });

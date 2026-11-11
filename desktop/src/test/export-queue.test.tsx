@@ -62,7 +62,7 @@ beforeEach(() => {
 describe("export queue store", () => {
   test("enqueue refuses invalid settings and adds no job", () => {
     expect(enqueueExportJob("d1", settings({ fps: 0 }))).toBeNull();
-    expect(enqueueExportJob("d1", settings({ fps: 61 }))).toBeNull();
+    expect(enqueueExportJob("d1", settings({ fps: 121 }))).toBeNull();
     expect(enqueueExportJob("d1", settings({ end: -1 }))).toBeNull();
     expect(enqueueExportJob("d1", settings({ start: 5, end: 2 }))).toBeNull();
     expect(enqueueExportJob("d1", settings({ scale: 3 }))).toBeNull();
