@@ -685,6 +685,8 @@ function FigureFields({
   onFigure: (figure: Figure) => void;
 }) {
   const { t } = useI18n();
+  const { tab, setTab } = useWorkspace();
+  const currentBone = tab?.selectedBone ?? 0;
   const rounded = (value: number) => Number(value.toFixed(2));
   const editBone = (index: number, patch: Partial<Bone>) =>
     onFigure({
@@ -699,6 +701,25 @@ function FigureFields({
         onCommit={(rotation) => onFigure({ ...figure, rotation })}
       />
       <p className="text-xs text-muted-foreground">{t("editor.bones")}</p>
+      <div className="flex flex-wrap gap-1">
+        {figure.bones.map((_, index) => (
+          <button
+            key={index}
+            data-bone-pick={index}
+            type="button"
+            aria-pressed={index === currentBone}
+            onClick={() => setTab({ selectedBone: index })}
+            className={cn(
+              "h-7 w-7 border text-xs",
+              index === currentBone
+                ? "border-border bg-accent text-accent-foreground"
+                : "border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            )}
+          >
+            {index + 1}
+          </button>
+        ))}
+      </div>
       {figure.bones.map((bone, index) => (
         <div key={index} className="grid grid-cols-2 gap-2">
           <NumberField
@@ -934,6 +955,11 @@ export default function SidePanel() {
       ? { x: selBounds.x + selBounds.w / 2, y: selBounds.y + selBounds.h / 2 }
       : { x: 0, y: 0 });
   const nodeIndex = tab.selectedNode;
+  const bone = tab.selectedBone ?? 0;
+  const selectedFigures = tab.selected.filter(
+    (index) => key?.shapes[index]?.kind === "Figure"
+  ).length;
+  const selectedArt = tab.selected.length - selectedFigures;
   const tweened = key?.tween ?? false;
   const easing = key?.easing ?? linearEasing;
   const easingChoice =
@@ -1297,6 +1323,28 @@ export default function SidePanel() {
               </button>
             ))}
           </div>
+          {selectedFigures > 0 && (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                data-attach-art
+                disabled={selectedFigures !== 1 || selectedArt === 0}
+                onClick={actions.attachArt}
+                className="h-7 flex-1 border border-border px-2 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
+              >
+                {t("editor.attachArt")}
+              </button>
+              <button
+                type="button"
+                data-detach-art
+                disabled={selectedFigures !== 1}
+                onClick={actions.detachArt}
+                className="h-7 flex-1 border border-border px-2 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
+              >
+                {t("editor.detachArt")} {bone + 1}
+              </button>
+            </div>
+          )}
         </Section>
       )}
 

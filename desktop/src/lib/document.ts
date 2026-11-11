@@ -449,6 +449,29 @@ export function figurePlaces(figure: Figure): Place[] {
   return places;
 }
 
+export function swingFigure(figure: Figure, bone: number, target: Point): Figure | null {
+  const places = figurePlaces(figure);
+  const place = places[bone];
+  const current = figure.bones[bone];
+  if (!place || !current) {
+    return null;
+  }
+  const dx = target.x - place.base.x;
+  const dy = target.y - place.base.y;
+  if (Math.hypot(dx, dy) < 0.001) {
+    return null;
+  }
+  const parentPlace = current.parent === null ? undefined : places[current.parent];
+  const parentAngle = parentPlace
+    ? parentPlace.angle
+    : (figure.rotation * Math.PI) / 180;
+  const twist = ((Math.atan2(dy, dx) - parentAngle) * 180) / Math.PI;
+  return {
+    ...figure,
+    bones: figure.bones.map((item, index) => (index === bone ? { ...item, twist } : item))
+  };
+}
+
 export function boneMatrix(place: Place): Affine {
   const cos = Math.cos(place.angle);
   const sin = Math.sin(place.angle);

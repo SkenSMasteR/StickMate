@@ -16,6 +16,7 @@ import {
   polygonVertices,
   shapeBounds,
   shapeGradient,
+  swingFigure,
   TEXT_LEADING,
   textLayout,
   textLinePositions,
@@ -26,6 +27,7 @@ import type {
   Bounds,
   Effect,
   EvalLayer,
+  Figure,
   Gradient,
   PathNode,
   Point,
@@ -56,7 +58,8 @@ interface Drag {
     | "selmove"
     | "scale"
     | "rotate"
-    | "pivot";
+    | "pivot"
+    | "pose";
   start: Point;
   clientStart: Point;
   panStart: Point;
@@ -69,6 +72,9 @@ interface Drag {
   axis?: "x" | "y";
   scaleAxis?: "x" | "y";
   angle?: number;
+  shape?: number;
+  bone?: number;
+  figure?: Figure;
 }
 
 interface SelPreview {
@@ -81,7 +87,7 @@ interface SelPreview {
   rotation: number;
 }
 
-const PICK_TOOLS: Tool[] = ["select", "node", "fill", "eyedropper", "text"];
+const PICK_TOOLS: Tool[] = ["select", "node", "fill", "eyedropper", "text", "figure"];
 
 function pathData(nodes: PathNode[], closed: boolean): string {
   const first = nodes[0];
@@ -690,6 +696,7 @@ export default function Canvas() {
   const [penNodes, setPenNodes] = useState<PathNode[]>([]);
   const [penHover, setPenHover] = useState<Point | null>(null);
   const [nodePreview, setNodePreview] = useState<PathShape | null>(null);
+  const [posePreview, setPosePreview] = useState<{ index: number; figure: Figure } | null>(null);
   const penRef = useRef<PathNode[]>([]);
   const commitRef = useRef<(closed: boolean) => void>(() => undefined);
 
@@ -728,6 +735,7 @@ export default function Canvas() {
     setPenNodes([]);
     setPenHover(null);
     setNodePreview(null);
+    setPosePreview(null);
     setMarquee(null);
     setSelPreview(null);
     setSnapLines(NO_SNAP_LINES);
@@ -888,6 +896,70 @@ export default function Canvas() {
     nodePath && tab.selectedNode !== null
       ? nodePath.nodes[tab.selectedNode] ?? null
       : null;
+  const rigIndex =
+    tab.tool === "figure"
+      ? tab.selected.find((index) => activeShapes[index]?.kind === "Figure") ?? null
+      : null;
+  const rigShape = rigIndex === null ? undefined : activeShapes[rigIndex];
+  const rig =
+    posePreview && posePreview.index === rigIndex
+      ? posePreview.figure
+      : rigShape?.kind === "Figure"
+        ? rigShape.figure
+        : null;
+
+  const JOINT_TOLERANCE_PX = 7;
+
+  function nearestJoint(figure: Figure, local: Point): number | null {
+    const tolerance = JOINT_TOLERANCE_PX / scale;
+    let best: number | null = null;
+    let bestDistance = tolerance;
+    const places = figurePlaces(figure);
+    for (let index = 0; index < places.length; index += 1) {
+      const distance = Math.hypot(local.x - places[index].tip.x, local.y - places[index].tip.y);
+      if (distance <= bestDistance) {
+        bestDistance = distance;
+        best = index;
+      }
+    }
+    return best;
+  }
+
+  const startPose = (index: number, bone: number, figure: Figure, event: ReactPointerEvent) => {
+    dragRef.current = {
+      mode: "pose",
+      start: { x: 0, y: 0 },
+      clientStart: { x: event.clientX, y: event.clientY },
+      panStart: pan,
+      origin: transform,
+      shape: index,
+      bone,
+      figure
+    };
+    svgRef.current?.setPointerCapture(event.pointerId);
+  };
+
+  const onJointDown = (
+    index: number,
+    bone: number,
+    figure: Figure,
+    event: ReactPointerEvent
+  ) => {
+    event.stopPropagation();
+    if (layer.locked) {
+      toast.error(t("editor.layerLocked"));
+      return;
+    }
+    setTab({
+      selected: tab.selected.includes(index)
+        ? tab.selected
+        : [...tab.selected, index].sort((a, b) => a - b),
+      selectedBone: bone,
+      pivot: null,
+      selectedNode: null
+    });
+    startPose(index, bone, figure, event);
+  };
 
   const onAnchorDown = (index: number, event: ReactPointerEvent) => {
     event.stopPropagation();
@@ -972,6 +1044,24 @@ export default function Canvas() {
     }
     if (layer.locked && tab.tool !== "eyedropper") {
       toast.error(t("editor.layerLocked"));
+      return;
+    }
+    if (tab.tool === "figure") {
+      const local = toShape(toDoc(event.clientX, event.clientY));
+      if (shape.kind !== "Figure") {
+        actions.toggleSelect(index);
+        return;
+      }
+      const bone = nearestJoint(shape.figure, local);
+      setTab({
+        selected: [index],
+        selectedBone: bone ?? 0,
+        pivot: null,
+        selectedNode: null
+      });
+      if (bone !== null) {
+        startPose(index, bone, shape.figure, event);
+      }
       return;
     }
     if (tab.tool === "fill") {
@@ -1138,6 +1228,11 @@ export default function Canvas() {
     }
     setTab({ playing: false });
     const point = toDoc(event.clientX, event.clientY);
+    if (tab.tool === "figure") {
+      const local = toShape(point);
+      actions.drawFigure(local.x, local.y);
+      return;
+    }
     if (tab.tool === "text") {
       const count = heldKey(layer, tab.frame)?.shapes.length ?? 0;
       actions.draw({
@@ -1295,6 +1390,11 @@ export default function Canvas() {
       setSelPreview({ indices, pivot, dx: 0, dy: 0, sx: 1, sy: 1, rotation: angle });
       return;
     }
+    if (drag.mode === "pose" && drag.figure) {
+      const posed = swingFigure(drag.figure, drag.bone ?? 0, toShape(point));
+      setPosePreview(posed ? { index: drag.shape ?? 0, figure: posed } : null);
+      return;
+    }
     if (drag.mode === "pen") {
       if (Math.hypot(point.x - drag.start.x, point.y - drag.start.y) > 2) {
         const nodes = penRef.current;
@@ -1411,6 +1511,17 @@ export default function Canvas() {
     if (drag.mode === "pivot") {
       return;
     }
+    if (drag.mode === "pose") {
+      const preview = posePreview;
+      setPosePreview(null);
+      if (preview && preview.index === drag.shape && drag.bone !== undefined) {
+        const place = figurePlaces(preview.figure)[drag.bone];
+        if (place) {
+          actions.poseFigure(preview.index, drag.bone, place.tip);
+        }
+      }
+      return;
+    }
     if (
       (drag.mode === "selmove" || drag.mode === "scale" || drag.mode === "rotate") &&
       selPreview
@@ -1451,7 +1562,7 @@ export default function Canvas() {
       }
       const isActive = item.id === layer.id;
       const previewing = isActive && !faded && selPreview !== null;
-      const content =
+      const pathed =
         isActive && !faded && nodePreview && tab.selected.length === 1
           ? {
               ...item,
@@ -1460,6 +1571,17 @@ export default function Canvas() {
               )
             }
           : item;
+      const content =
+        isActive && !faded && posePreview
+          ? {
+              ...pathed,
+              shapes: pathed.shapes.map((shape, index) =>
+                index === posePreview.index && shape.kind === "Figure"
+                  ? { kind: "Figure" as const, figure: posePreview.figure }
+                  : shape
+              )
+            }
+          : pathed;
       const shownShapes = previewing
         ? content.shapes.filter((_, index) => !selPreview.indices.includes(index))
         : content.shapes;
@@ -1626,6 +1748,28 @@ export default function Canvas() {
             </g>
           ))}
           {current && renderLayers(current.layers, false)}
+          {rig && rigIndex !== null && (
+            <g
+              transform={`translate(${transform.x} ${transform.y}) rotate(${transform.rotation}) scale(${transform.scale})`}
+            >
+              {figurePlaces(rig).map((place, index) => (
+                <circle
+                  key={index}
+                  data-figure-joint={index}
+                  cx={place.tip.x}
+                  cy={place.tip.y}
+                  r={JOINT_TOLERANCE_PX}
+                  fill={index === tab.selectedBone ? "#3b82f6" : "#ffffff"}
+                  fillOpacity={index === tab.selectedBone ? 1 : 0.7}
+                  stroke="#3b82f6"
+                  strokeWidth={1}
+                  vectorEffect="non-scaling-stroke"
+                  style={{ cursor: "grab" }}
+                  onPointerDown={(event) => onJointDown(rigIndex, index, rig, event)}
+                />
+              ))}
+            </g>
+          )}
           {tab.tool === "select" && selectionBounds && !selPreview && (
             <g
               transform={`translate(${transform.x} ${transform.y}) rotate(${transform.rotation}) scale(${transform.scale})`}

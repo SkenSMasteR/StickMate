@@ -14,12 +14,15 @@ import { usePrefs } from "@/lib/prefs";
 import type { ViewPrefs } from "@/lib/view";
 import {
   docAddFolder,
+  docAddFigure,
   docAddLayer,
   docAddScene,
   docAlignShapes,
+  docAttachArt,
   docClose,
   docDelete,
   docDeleteShapes,
+  docDetachArt,
   docDraw,
   docDuplicateScene,
   docErase,
@@ -32,6 +35,7 @@ import {
   docMoveScene,
   docNew,
   docPaintShape,
+  docPoseFigure,
   docRemoveFrame,
   docRemoveFolder,
   docRemoveLayer,
@@ -96,7 +100,8 @@ export type Tool =
   | "eyedropper"
   | "text"
   | "pen"
-  | "node";
+  | "node"
+  | "figure";
 
 export interface TabState {
   sceneId: string;
@@ -114,6 +119,7 @@ export interface TabState {
   selected: number[];
   pivot: Point | null;
   selectedNode: number | null;
+  selectedBone: number | null;
   alignReference: AlignReference;
   stroke: string;
   fill: string;
@@ -152,6 +158,7 @@ function firstTab(doc: Document): TabState {
     selected: [],
     pivot: null,
     selectedNode: null,
+    selectedBone: null,
     alignReference: "selection",
     stroke: "#000000",
     fill: "#3b82f6",
@@ -236,6 +243,10 @@ export interface Actions {
   zoomBy: (factor: number) => void;
   zoomFit: () => void;
   draw: (shape: Shape) => void;
+  drawFigure: (x: number, y: number) => void;
+  poseFigure: (index: number, bone: number, target: Point) => void;
+  attachArt: () => void;
+  detachArt: () => void;
   erase: (path: Point[]) => void;
   paintShape: (index: number, color: string) => void;
   replaceShape: (index: number, shape: Shape) => void;
@@ -713,6 +724,61 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     zoomBy: (factor) => setTab({ zoom: clamp((tab?.zoom ?? 1) * factor, 0.1, 8) }),
     zoomFit: () => setTab({ zoom: 1 }),
     draw: (shape) => edit((d, s, l) => docDraw(d.id, s.id, l.id, frame, shape)),
+    drawFigure: (x, y) => {
+      if (!doc || !layer || layer.locked) {
+        return;
+      }
+      const count = heldKey(layer, frame)?.shapes.length ?? 0;
+      void edit((d, s, l) =>
+        docAddFigure(d.id, s.id, l.id, frame, x, y, Math.round(doc.height * 0.6))
+      ).then((ok) => {
+        if (ok) {
+          setTab({ selected: [count], selectedBone: 0, selectedNode: null, pivot: null });
+        }
+      });
+    },
+    poseFigure: (index, bone, target) =>
+      edit((d, s, l) => docPoseFigure(d.id, s.id, l.id, frame, index, bone, target)),
+    attachArt: () => {
+      const shapes = layer ? heldKey(layer, frame)?.shapes ?? [] : [];
+      const indices = [...new Set(tab?.selected ?? [])].sort((a, b) => a - b);
+      const figures = indices.filter((index) => shapes[index]?.kind === "Figure");
+      const [index] = figures;
+      const bone = tab?.selectedBone ?? null;
+      const art =
+        figures.length === 1 && index !== undefined
+          ? indices.filter((item) => item !== index)
+          : [];
+      if (index === undefined || bone === null || art.length === 0 || !layer || layer.locked) {
+        toast.error(t("editor.pickBoneArt"));
+        return;
+      }
+      void edit((d, s, l) => docAttachArt(d.id, s.id, l.id, frame, index, bone, art)).then(
+        (ok) => {
+          if (ok) {
+            setTab({ selected: [index - art.filter((item) => item < index).length] });
+          }
+        }
+      );
+    },
+    detachArt: () => {
+      const shapes = layer ? heldKey(layer, frame)?.shapes ?? [] : [];
+      const indices = [...new Set(tab?.selected ?? [])].sort((a, b) => a - b);
+      const figures = indices.filter((index) => shapes[index]?.kind === "Figure");
+      const [index] = figures;
+      const bone = tab?.selectedBone ?? null;
+      if (
+        figures.length !== 1 ||
+        index === undefined ||
+        bone === null ||
+        !layer ||
+        layer.locked
+      ) {
+        toast.error(t("editor.pickBoneArt"));
+        return;
+      }
+      void edit((d, s, l) => docDetachArt(d.id, s.id, l.id, frame, index, bone));
+    },
     erase: (path) => {
       if (path.length === 0) {
         return;

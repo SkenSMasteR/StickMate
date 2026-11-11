@@ -3,6 +3,7 @@ import { buildCommands } from "@/editor/commands";
 import type { CommandContext } from "@/editor/commands";
 import type { Actions, TabState } from "@/editor/workspace";
 import type { Document, Layer, Scene } from "@/lib/document";
+import { humanoidFigure } from "@/lib/document";
 import { validateProfile } from "@/lib/shortcuts";
 
 const t = (key: string) => key;
@@ -73,6 +74,7 @@ function fixtureTab(): TabState {
     selected: [],
     pivot: null,
     selectedNode: null,
+    selectedBone: null,
     alignReference: "selection",
     stroke: "#000000",
     fill: "#3b82f6",
@@ -128,7 +130,7 @@ function tick(): Promise<void> {
 describe("command model", () => {
   test("the five argument call keeps only zero argument commands", () => {
     const commands = buildCommands(stubActions(), t, {}, vi.fn(), vi.fn());
-    expect(commands.length).toBe(66);
+    expect(commands.length).toBe(69);
     expect(commands.every((item) => item.args === undefined)).toBe(true);
     expect(commands.find((item) => item.id === "view.palette")?.disabled).toBe(true);
     expect(commands.some((item) => item.id === "layer.rename")).toBe(false);
@@ -198,7 +200,7 @@ describe("command model", () => {
     ]) {
       expect(ids, id).toContain(id);
     }
-    expect(commands.length).toBe(100);
+    expect(commands.length).toBe(103);
     for (const command of commands) {
       if (command.args) {
         expect(typeof command.runArgs, command.id).toBe("function");
@@ -399,6 +401,29 @@ describe("command model", () => {
     expect(state("edit.group")).toBe(true);
     expect(state("edit.ungroup")).toBe(true);
     expect(state("edit.combine")).toBe(true);
+  });
+
+  test("artwork attachment follows the figure in the selection", () => {
+    const context = makeContext(fixtureDoc());
+    const build = () => buildCommands(stubActions(), t, {}, vi.fn(), vi.fn(), context);
+    const state = (id: string) => build().find((item) => item.id === id)?.disabled;
+    const tab = context.state.tab;
+    if (!tab) {
+      throw new Error("tab is missing");
+    }
+    context.state.layer?.keys[0].shapes.push(
+      { kind: "Rect", x: 0, y: 0, w: 10, h: 10, fill: "#000000", stroke: "#000000", width: 1 },
+      { kind: "Figure", figure: humanoidFigure(10, 10, 100) }
+    );
+    tab.selected = [0];
+    expect(state("figure.attach")).toBe(true);
+    expect(state("figure.detach")).toBe(true);
+    tab.selected = [0, 1];
+    expect(state("figure.attach")).toBe(false);
+    expect(state("figure.detach")).toBe(false);
+    tab.selected = [1];
+    expect(state("figure.attach")).toBe(true);
+    expect(state("figure.detach")).toBe(false);
   });
 
   test("removing frames by count asks for confirmation first", async () => {

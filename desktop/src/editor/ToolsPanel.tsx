@@ -10,6 +10,7 @@ import {
   Pentagon,
   Pencil,
   Pipette,
+  PersonStanding,
   Search,
   Slash,
   Square,
@@ -37,7 +38,8 @@ const tools: Array<{ id: Tool; icon: typeof Pencil }> = [
   { id: "eyedropper", icon: Pipette },
   { id: "text", icon: Type },
   { id: "pen", icon: PenTool },
-  { id: "node", icon: Waypoints }
+  { id: "node", icon: Waypoints },
+  { id: "figure", icon: PersonStanding }
 ];
 
 export default function ToolsPanel({

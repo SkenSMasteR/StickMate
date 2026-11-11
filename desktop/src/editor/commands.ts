@@ -71,7 +71,8 @@ const toolIds: Tool[] = [
   "eyedropper",
   "text",
   "pen",
-  "node"
+  "node",
+  "figure"
 ];
 
 function parameterCommands(
@@ -603,6 +604,8 @@ export function buildCommands(
     ? heldKey(context.state.layer, context.state.frame)?.shapes ?? []
     : [];
   const singleShape = selected.length === 1 ? heldShapes[selected[0]] : undefined;
+  const selectedFigures = selected.filter((index) => heldShapes[index]?.kind === "Figure");
+  const selectedArt = selected.length - selectedFigures.length;
   const defaults: CommandDef[] = [
     { id: "tool.select", label: t("command.select"), keys: "v", run: () => actions.setTool("select") },
     { id: "tool.pencil", label: t("command.pencil"), keys: "p", run: () => actions.setTool("pencil") },
@@ -617,6 +620,21 @@ export function buildCommands(
     { id: "tool.text", label: t("command.text"), keys: "t", run: () => actions.setTool("text") },
     { id: "tool.pen", label: t("command.pen"), keys: "n", run: () => actions.setTool("pen") },
     { id: "tool.node", label: t("command.node"), keys: "a", run: () => actions.setTool("node") },
+    { id: "tool.figure", label: t("command.figure"), keys: "f", run: () => actions.setTool("figure") },
+    {
+      id: "figure.attach",
+      label: t("command.attachArt"),
+      keys: "ctrl+alt+a",
+      run: actions.attachArt,
+      disabled: selectedFigures.length !== 1 || selectedArt === 0
+    },
+    {
+      id: "figure.detach",
+      label: t("command.detachArt"),
+      keys: null,
+      run: actions.detachArt,
+      disabled: selectedFigures.length !== 1
+    },
     { id: "playback.toggle", label: t("command.play"), keys: "space", run: actions.togglePlay },
     { id: "playback.back", label: t("command.stepBack"), keys: ",", run: () => actions.step(-1) },
     { id: "playback.forward", label: t("command.stepForward"), keys: ".", run: () => actions.step(1) },
