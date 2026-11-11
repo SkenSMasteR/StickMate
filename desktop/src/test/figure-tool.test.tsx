@@ -104,16 +104,16 @@ describe("stick figure tool", () => {
     expect(document.querySelectorAll("[data-bone-pick]").length).toBe(12);
   });
 
-  test("turns only the dragged bone and keeps every segment length", async () => {
+  test("dragging an elbow turns only that bone and keeps every length", async () => {
     const doc = await planted();
     const figure = rig(doc.id);
     const before = figurePlaces(figure);
-    const target = { x: before[5].base.x + 60, y: before[5].base.y - 70 };
-    await drag(joint(5), [
-      [before[5].tip.x, before[5].tip.y],
+    const target = { x: before[4].base.x + 60, y: before[4].base.y - 70 };
+    await drag(joint(4), [
+      [before[4].tip.x, before[4].tip.y],
       [target.x, target.y]
     ]);
-    await waitFor(() => expect(rig(doc.id).bones[5].twist).not.toBe(figure.bones[5].twist));
+    await waitFor(() => expect(rig(doc.id).bones[4].twist).not.toBe(figure.bones[4].twist));
     const after = figurePlaces(rig(doc.id));
     expect(rig(doc.id).bones.map((bone) => bone.length)).toEqual(
       figure.bones.map((bone) => bone.length)
@@ -121,15 +121,38 @@ describe("stick figure tool", () => {
     expect(after.every((place, index) => near(span(place), span(before[index]), 1e-9))).toBe(true);
     expect(
       figure.bones.every(
-        (bone, index) => index === 5 || bone.twist === rig(doc.id).bones[index].twist
+        (bone, index) => index === 4 || bone.twist === rig(doc.id).bones[index].twist
       )
     ).toBe(true);
-    const dx = target.x - after[5].base.x;
-    const dy = target.y - after[5].base.y;
-    const cross = (after[5].tip.x - after[5].base.x) * dy - (after[5].tip.y - after[5].base.y) * dx;
+    const dx = target.x - after[4].base.x;
+    const dy = target.y - after[4].base.y;
+    const cross = (after[4].tip.x - after[4].base.x) * dy - (after[4].tip.y - after[4].base.y) * dx;
     expect(Math.abs(cross)).toBeLessThan(1e-6);
-    expect((after[5].tip.x - after[5].base.x) * dx + (after[5].tip.y - after[5].base.y) * dy).toBeGreaterThan(0);
-    expect(joint(5).getAttribute("fill")).toBe("#3b82f6");
+    expect((after[4].tip.x - after[4].base.x) * dx + (after[4].tip.y - after[4].base.y) * dy).toBeGreaterThan(0);
+    expect(joint(4).getAttribute("fill")).toBe("#3b82f6");
+  });
+
+  test("dragging a wrist reaches the whole arm to the pointer", async () => {
+    const doc = await planted();
+    const figure = rig(doc.id);
+    const before = figurePlaces(figure);
+    const stepsBefore = steps(doc.id);
+    const target = { x: before[4].base.x + 40, y: before[4].base.y + 40 };
+    await drag(joint(5), [
+      [before[5].tip.x, before[5].tip.y],
+      [target.x, target.y]
+    ]);
+    await waitFor(() => expect(rig(doc.id).bones[4].twist).not.toBe(figure.bones[4].twist));
+    const after = figurePlaces(rig(doc.id));
+    expect(Math.hypot(after[5].tip.x - target.x, after[5].tip.y - target.y)).toBeLessThan(0.01);
+    expect(after.every((place, index) => near(span(place), span(before[index]), 1e-9))).toBe(true);
+    expect(
+      figure.bones.every(
+        (bone, index) => index === 5 || index === 4 || bone.twist === rig(doc.id).bones[index].twist
+      )
+    ).toBe(true);
+    expect(near(after[4].base.x, before[4].base.x, 1e-9)).toBe(true);
+    expect(steps(doc.id)).toBe(stepsBefore + 1);
   });
 
   test("poses one drag as a single undo step", async () => {

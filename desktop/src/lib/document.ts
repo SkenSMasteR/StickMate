@@ -472,6 +472,70 @@ export function swingFigure(figure: Figure, bone: number, target: Point): Figure
   };
 }
 
+export function ikChain(figure: Figure, bone: number): number[] | null {
+  const current = figure.bones[bone];
+  if (!current) {
+    return null;
+  }
+  const out = [bone];
+  let parent = current.parent;
+  while (parent !== null && figure.bones[parent]) {
+    const joined = figure.bones.filter((item) => item.parent === parent).length;
+    if (joined !== 1) {
+      break;
+    }
+    out.push(parent);
+    parent = figure.bones[parent].parent;
+  }
+  return out.reverse();
+}
+
+export function isLeafBone(figure: Figure, bone: number): boolean {
+  return !figure.bones.some((item) => item.parent === bone);
+}
+
+function wrapTwist(twist: number): number {
+  const turned = ((twist % 360) + 360) % 360;
+  return turned > 180 ? turned - 360 : turned;
+}
+
+export function reachFigure(figure: Figure, bone: number, target: Point): Figure | null {
+  const chain = ikChain(figure, bone);
+  if (!chain) {
+    return null;
+  }
+  const bones = figure.bones.map((item) => ({ ...item }));
+  let placed = figurePlaces({ ...figure, bones });
+  for (let step = 0; step < 48; step += 1) {
+    const tip = placed[bone]?.tip;
+    if (!tip || Math.hypot(tip.x - target.x, tip.y - target.y) < 0.01) {
+      break;
+    }
+    for (let walk = chain.length - 1; walk >= 0; walk -= 1) {
+      const joint = chain[walk];
+      const base = placed[joint];
+      const arm = placed[bone];
+      if (!base || !arm) {
+        continue;
+      }
+      const armX = arm.tip.x - base.base.x;
+      const armY = arm.tip.y - base.base.y;
+      const goalX = target.x - base.base.x;
+      const goalY = target.y - base.base.y;
+      if (Math.hypot(armX, armY) < 0.001 || Math.hypot(goalX, goalY) < 0.001) {
+        continue;
+      }
+      const delta = Math.atan2(armX * goalY - armY * goalX, armX * goalX + armY * goalY);
+      const turned = bones[joint];
+      if (turned) {
+        turned.twist = wrapTwist(turned.twist + (delta * 180) / Math.PI);
+      }
+      placed = figurePlaces({ ...figure, bones });
+    }
+  }
+  return { ...figure, bones };
+}
+
 export function boneMatrix(place: Place): Affine {
   const cos = Math.cos(place.angle);
   const sin = Math.sin(place.angle);
@@ -1121,6 +1185,26 @@ export function docPoseFigure(
   target: Point
 ): Promise<Document> {
   return invoke<Document>("doc_pose_figure", { id, sceneId, layerId, frame, index, bone, target });
+}
+
+export function docReachFigure(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  index: number,
+  bone: number,
+  target: Point
+): Promise<Document> {
+  return invoke<Document>("doc_reach_figure", {
+    id,
+    sceneId,
+    layerId,
+    frame,
+    index,
+    bone,
+    target
+  });
 }
 
 export function docAttachArt(

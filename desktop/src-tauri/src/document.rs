@@ -3499,6 +3499,34 @@ impl DocStore {
         })
     }
 
+    pub fn reach_figure(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        index: usize,
+        bone: usize,
+        target: Point,
+    ) -> Result<Document, String> {
+        self.edit_named(id, "reach_figure", |doc| {
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let key_index = layer.key_at(frame);
+            let shape = layer
+                .keys
+                .get_mut(key_index)
+                .and_then(|key| key.shapes.get_mut(index))
+                .ok_or_else(|| "unknown shape".to_string())?;
+            let figure = match shape {
+                Shape::Figure { figure } => figure,
+                _ => return Err("shape is not a figure".to_string()),
+            };
+            crate::rig::reach(figure, bone, &target)?;
+            validate(shape)
+        })
+    }
+
     pub fn attach_art(
         &self,
         id: &str,
@@ -4153,6 +4181,20 @@ pub fn doc_pose_figure(
     target: Point,
 ) -> Result<Document, String> {
     store.pose_figure(&id, &scene_id, &layer_id, frame, index, bone, target)
+}
+
+#[tauri::command]
+pub fn doc_reach_figure(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    index: usize,
+    bone: usize,
+    target: Point,
+) -> Result<Document, String> {
+    store.reach_figure(&id, &scene_id, &layer_id, frame, index, bone, target)
 }
 
 #[tauri::command]
@@ -9543,6 +9585,41 @@ mod tests {
     }
 
     #[test]
+    fn reaching_a_leaf_joint_keys_the_whole_limb_as_one_step() {
+        let fixture = Fixture::new("figure-reach");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        let added = store
+            .add_figure(id, &fixture.scene, &fixture.layer, 0, 200.0, 320.0, 200.0)
+            .expect("figure");
+        let started = held_figure(&added, 0);
+        store
+            .keyframe(id, &fixture.scene, &fixture.layer, 10, false)
+            .expect("key");
+        let target = Point { x: 150.0, y: 250.0 };
+        let reached = store
+            .reach_figure(id, &fixture.scene, &fixture.layer, 5, 0, 5, target)
+            .expect("reach");
+        let layer = &reached.scenes[0].layers[0];
+        assert_eq!(
+            layer.keys.iter().map(|key| key.frame).collect::<Vec<_>>(),
+            vec![0, 5, 10]
+        );
+        let figure = held_figure(&reached, 5);
+        let place = &rig::places(&figure)[5];
+        assert!((place.tip.x - target.x).hypot(place.tip.y - target.y) < 0.01);
+        assert_ne!(figure.bones[4].twist, started.bones[4].twist);
+        assert_eq!(figure.bones[1].twist, started.bones[1].twist);
+        assert_eq!(held_figure(&reached, 0).bones[5].twist, -10.0);
+        let steps = store.history(id).expect("history");
+        assert_eq!(steps.last().expect("step").name, "reach_figure");
+        let undone = store.undo(id).expect("undo");
+        let back = held_figure(&undone, 5);
+        assert_eq!(back.bones[4].twist, started.bones[4].twist);
+        assert_eq!(back.bones[5].twist, started.bones[5].twist);
+    }
+
+    #[test]
     fn posing_is_one_undo_step_and_a_no_op_pushes_no_history() {
         let fixture = Fixture::new("figure-undo");
         let store = &fixture.store;
@@ -9657,6 +9734,24 @@ mod tests {
         );
         assert_eq!(
             store
+                .reach_figure(id, &fixture.scene, &fixture.layer, 0, 9, 0, elbow)
+                .expect_err("gone"),
+            "unknown shape"
+        );
+        assert_eq!(
+            store
+                .reach_figure(id, &fixture.scene, &fixture.layer, 0, 0, 0, elbow)
+                .expect_err("rect"),
+            "shape is not a figure"
+        );
+        assert_eq!(
+            store
+                .reach_figure(id, &fixture.scene, &fixture.layer, 0, 1, 40, elbow)
+                .expect_err("bone"),
+            "no such bone"
+        );
+        assert_eq!(
+            store
                 .detach_art(id, &fixture.scene, &fixture.layer, 0, 1, 40)
                 .expect_err("bone"),
             "no such bone"
@@ -9689,6 +9784,12 @@ mod tests {
         assert_eq!(
             store
                 .pose_figure(id, &fixture.scene, &fixture.layer, 0, 0, 0, Point { x: 1.0, y: 1.0 })
+                .expect_err("locked"),
+            "layer is locked"
+        );
+        assert_eq!(
+            store
+                .reach_figure(id, &fixture.scene, &fixture.layer, 0, 0, 5, Point { x: 1.0, y: 1.0 })
                 .expect_err("locked"),
             "layer is locked"
         );

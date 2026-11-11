@@ -12,8 +12,10 @@ import {
   heldKey,
   findLayer,
   identityTransform,
+  isLeafBone,
   leafLayers,
   polygonVertices,
+  reachFigure,
   shapeBounds,
   shapeGradient,
   swingFigure,
@@ -1391,7 +1393,11 @@ export default function Canvas() {
       return;
     }
     if (drag.mode === "pose" && drag.figure) {
-      const posed = swingFigure(drag.figure, drag.bone ?? 0, toShape(point));
+      const bone = drag.bone ?? 0;
+      const target = toShape(point);
+      const posed = isLeafBone(drag.figure, bone)
+        ? reachFigure(drag.figure, bone, target)
+        : swingFigure(drag.figure, bone, target);
       setPosePreview(posed ? { index: drag.shape ?? 0, figure: posed } : null);
       return;
     }
@@ -1517,7 +1523,11 @@ export default function Canvas() {
       if (preview && preview.index === drag.shape && drag.bone !== undefined) {
         const place = figurePlaces(preview.figure)[drag.bone];
         if (place) {
-          actions.poseFigure(preview.index, drag.bone, place.tip);
+          if (drag.figure && isLeafBone(drag.figure, drag.bone)) {
+            actions.reachFigure(preview.index, drag.bone, place.tip);
+          } else {
+            actions.poseFigure(preview.index, drag.bone, place.tip);
+          }
         }
       }
       return;

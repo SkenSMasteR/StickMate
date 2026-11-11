@@ -99,6 +99,7 @@ pub fn run() {
             document::doc_delete_shape,
             document::doc_add_figure,
             document::doc_pose_figure,
+            document::doc_reach_figure,
             document::doc_attach_art,
             document::doc_detach_art,
             document::doc_transform_shapes,

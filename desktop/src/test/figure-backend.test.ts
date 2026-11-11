@@ -7,12 +7,16 @@ import {
   docKeyframe,
   docNew,
   docPoseFigure,
+  docReachFigure,
   docRedo,
   docSetLayer,
   docSetTween,
   docUndo,
   figureBounds,
   figurePlaces,
+  humanoidFigure,
+  ikChain,
+  isLeafBone,
   shapeBounds
 } from "@/lib/document";
 import type { Bounds, Document, Figure, Place, Point, Shape } from "@/lib/document";
@@ -163,6 +167,85 @@ describe("figure backend commands", () => {
     expect(rigAt(id).bones[4].twist).toBe(figure.bones[4].twist);
   });
 
+  test("a chain stops where the bones split", () => {
+    const figure = humanoidFigure(200, 320, 200);
+    expect(ikChain(figure, 5)).toEqual([4, 5]);
+    expect(ikChain(figure, 7)).toEqual([6, 7]);
+    expect(ikChain(figure, 3)).toEqual([2, 3]);
+    expect(ikChain(figure, 1)).toEqual([1]);
+    expect(ikChain(figure, 0)).toEqual([0]);
+    expect(ikChain(figure, 30)).toBeNull();
+    expect([3, 5, 7, 9, 11].every((index) => isLeafBone(figure, index))).toBe(true);
+    expect([0, 1, 2, 4, 6].every((index) => !isLeafBone(figure, index))).toBe(true);
+  });
+
+  test("reaching a wrist pulls the whole arm onto the pointer", async () => {
+    const { id, sceneId, layerId } = await opened();
+    const figure = rigAt(id);
+    const places = figurePlaces(figure);
+    const target = { x: places[5].base.x + 45, y: places[5].base.y - 45 };
+    await docReachFigure(id, sceneId, layerId, 0, 0, 5, target);
+    const reached = figurePlaces(rigAt(id));
+    const turned = rigAt(id).bones;
+    expect(Math.hypot(reached[5].tip.x - target.x, reached[5].tip.y - target.y)).toBeLessThan(0.01);
+    expect(reached.every((place, index) => near(span(place), span(places[index]), 1e-9))).toBe(true);
+    expect(near(reached[4].base.x, places[4].base.x, 1e-9)).toBe(true);
+    expect(near(reached[4].base.y, places[4].base.y, 1e-9)).toBe(true);
+    expect([4, 5].every((index) => turned[index].twist !== figure.bones[index].twist)).toBe(true);
+    expect([0, 1, 2, 3, 6, 7, 8, 9, 10, 11].every((index) => turned[index].twist === figure.bones[index].twist)).toBe(true);
+  });
+
+  test("a far pointer stretches the limb straight at it", async () => {
+    const { id, sceneId, layerId } = await opened();
+    const places = figurePlaces(rigAt(id));
+    const shoulder = places[4].base;
+    const target = { x: -100, y: -100 };
+    await docReachFigure(id, sceneId, layerId, 0, 0, 5, target);
+    const place = figurePlaces(rigAt(id))[5];
+    const reach = span(places[4]) + span(places[5]);
+    const dx = target.x - shoulder.x;
+    const dy = target.y - shoulder.y;
+    expect(Math.hypot(place.tip.x - shoulder.x, place.tip.y - shoulder.y)).toBeCloseTo(reach, 6);
+    const drift = Math.abs(Math.atan2(dy, dx) - Math.atan2(place.tip.y - shoulder.y, place.tip.x - shoulder.x));
+    expect(drift).toBeLessThan(0.002);
+    expect([4, 5].every((index) => Math.abs(rigAt(id).bones[index].twist) <= 180)).toBe(true);
+  });
+
+  test("a joint with no length follows the bone that carries it", async () => {
+    const { id, sceneId, layerId } = await opened();
+    const before = rigAt(id);
+    await docReachFigure(id, sceneId, layerId, 0, 0, 3, { x: 260, y: 268 });
+    const after = rigAt(id);
+    const place = figurePlaces(after)[3];
+    expect(after.bones[3].twist).toBe(before.bones[3].twist);
+    expect(after.bones[2].twist).not.toBe(before.bones[2].twist);
+    expect(near(place.base.x, 208, 0.01)).toBe(true);
+    expect(near(place.base.y, 268, 0.01)).toBe(true);
+    expect(span(figurePlaces(after)[2])).toBeCloseTo(span(figurePlaces(before)[2]), 9);
+  });
+
+  test("reaching a leg turns the hip too and undoes as one step", async () => {
+    const { id, sceneId, layerId } = await opened();
+    const before = JSON.stringify(rigAt(id).bones);
+    const start = rigAt(id);
+    const places = figurePlaces(rigAt(id));
+    await docReachFigure(id, sceneId, layerId, 0, 0, 7, {
+      x: places[6].base.x - 50,
+      y: places[6].base.y + 70
+    });
+    const reached = figurePlaces(rigAt(id));
+    const goal = { x: places[6].base.x - 50, y: places[6].base.y + 70 };
+    expect(Math.hypot(reached[7].tip.x - goal.x, reached[7].tip.y - goal.y)).toBeLessThan(0.01);
+    expect(reached.every((place, index) => near(span(place), span(places[index]), 1e-9))).toBe(true);
+    expect(rigAt(id).bones[6].twist).not.toBe(start.bones[6].twist);
+    expect(rigAt(id).bones[7].twist).not.toBe(start.bones[7].twist);
+    expect(rigAt(id).bones[0].twist).toBe(start.bones[0].twist);
+    await docUndo(id);
+    expect(JSON.stringify(rigAt(id).bones)).toBe(before);
+    await docRedo(id);
+    expect(JSON.stringify(rigAt(id).bones)).not.toBe(before);
+  });
+
   test("posing on a tweened frame materializes the held key", async () => {
     const { id, sceneId, layerId } = await opened();
     await docKeyframe(id, sceneId, layerId, 4, false);
@@ -253,6 +336,9 @@ describe("figure backend commands", () => {
       "layer is locked"
     );
     await expect(docDetachArt(id, sceneId, layerId, 0, 0, 3)).rejects.toThrow("layer is locked");
+    await expect(
+      docReachFigure(id, sceneId, layerId, 0, 0, 5, { x: places[5].base.x + 10, y: places[5].base.y })
+    ).rejects.toThrow("layer is locked");
     expect(JSON.stringify(listed(id))).toBe(before);
     expect(store.get(id)?.undo.length ?? 0).toBe(steps);
   });
@@ -281,6 +367,15 @@ describe("figure backend commands", () => {
     );
     await expect(docPoseFigure(id, sceneId, layerId, 0, 0, 4, places[4].base)).rejects.toThrow(
       "the pointer is on the joint"
+    );
+    await expect(docReachFigure(id, sceneId, layerId, 0, 9, 0, { x: 1, y: 1 })).rejects.toThrow(
+      "unknown shape"
+    );
+    await expect(docReachFigure(id, sceneId, layerId, 0, 1, 0, { x: 1, y: 1 })).rejects.toThrow(
+      "shape is not a figure"
+    );
+    await expect(docReachFigure(id, sceneId, layerId, 0, 0, 30, { x: 1, y: 1 })).rejects.toThrow(
+      "no such bone"
     );
     await expect(docDetachArt(id, sceneId, layerId, 0, 0, 5)).rejects.toThrow(
       "that bone carries no artwork"

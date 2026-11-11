@@ -43,6 +43,7 @@ import {
   docRename,
   docRenameScene,
   docReorderShapes,
+  docReachFigure,
   docReplaceShape,
   docSetLabel,
   docSetLayer,
@@ -245,6 +246,7 @@ export interface Actions {
   draw: (shape: Shape) => void;
   drawFigure: (x: number, y: number) => void;
   poseFigure: (index: number, bone: number, target: Point) => void;
+  reachFigure: (index: number, bone: number, target: Point) => void;
   attachArt: () => void;
   detachArt: () => void;
   erase: (path: Point[]) => void;
@@ -739,6 +741,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     },
     poseFigure: (index, bone, target) =>
       edit((d, s, l) => docPoseFigure(d.id, s.id, l.id, frame, index, bone, target)),
+    reachFigure: (index, bone, target) =>
+      edit((d, s, l) => docReachFigure(d.id, s.id, l.id, frame, index, bone, target)),
     attachArt: () => {
       const shapes = layer ? heldKey(layer, frame)?.shapes ?? [] : [];
       const indices = [...new Set(tab?.selected ?? [])].sort((a, b) => a - b);

@@ -94,6 +94,64 @@ pub fn swing(figure: &mut Figure, bone: usize, target: &Point) -> Result<(), Str
     Ok(())
 }
 
+pub fn ik_chain(figure: &Figure, bone: usize) -> Result<Vec<usize>, String> {
+    figure
+        .bones
+        .get(bone)
+        .ok_or_else(|| "no such bone".to_string())?;
+    let mut out = vec![bone];
+    let mut parent = figure.bones[bone].parent;
+    while let Some(index) = parent {
+        let joined = figure
+            .bones
+            .iter()
+            .filter(|item| item.parent == Some(index))
+            .count();
+        if joined != 1 {
+            break;
+        }
+        out.push(index);
+        parent = figure.bones[index].parent;
+    }
+    out.reverse();
+    Ok(out)
+}
+
+fn wrap_twist(twist: f64) -> f64 {
+    let turned = twist.rem_euclid(360.0);
+    if turned > 180.0 {
+        turned - 360.0
+    } else {
+        turned
+    }
+}
+
+pub fn reach(figure: &mut Figure, bone: usize, target: &Point) -> Result<(), String> {
+    let chain = ik_chain(figure, bone)?;
+    let mut placed = places(figure);
+    for _ in 0..48 {
+        let tip = placed[bone].tip;
+        if (tip.x - target.x).hypot(tip.y - target.y) < 0.01 {
+            break;
+        }
+        for index in chain.iter().rev() {
+            let base = placed[*index].base;
+            let arm_x = placed[bone].tip.x - base.x;
+            let arm_y = placed[bone].tip.y - base.y;
+            let goal_x = target.x - base.x;
+            let goal_y = target.y - base.y;
+            if arm_x.hypot(arm_y) < 0.001 || goal_x.hypot(goal_y) < 0.001 {
+                continue;
+            }
+            let delta =
+                (arm_x * goal_y - arm_y * goal_x).atan2(arm_x * goal_x + arm_y * goal_y);
+            figure.bones[*index].twist = wrap_twist(figure.bones[*index].twist + delta.to_degrees());
+            placed = places(figure);
+        }
+    }
+    Ok(())
+}
+
 pub fn art_frames(figure: &Figure) -> Vec<(usize, Affine)> {
     places(figure)
         .iter()
@@ -519,6 +577,90 @@ mod tests {
         let aimed = (place.tip.x - target.x, place.tip.y - target.y);
         assert!((aimed.0 - (place.tip.x - target.x)).abs() < 0.0001);
         assert!(place.angle < 0.0);
+    }
+
+    #[test]
+    fn a_chain_stops_where_the_bones_split() {
+        let figure = humanoid(200.0, 320.0, 200.0);
+        assert_eq!(ik_chain(&figure, 5).expect("chain"), vec![4, 5]);
+        assert_eq!(ik_chain(&figure, 7).expect("chain"), vec![6, 7]);
+        assert_eq!(ik_chain(&figure, 3).expect("chain"), vec![2, 3]);
+        assert_eq!(ik_chain(&figure, 4).expect("chain"), vec![4]);
+        assert_eq!(ik_chain(&figure, 1).expect("chain"), vec![1]);
+        assert_eq!(ik_chain(&chain(), 1).expect("chain"), vec![0, 1]);
+        assert_eq!(ik_chain(&chain(), 0).expect("chain"), vec![0]);
+        assert!(ik_chain(&figure, 40).is_err());
+    }
+
+    #[test]
+    fn reaching_pulls_the_whole_limb_to_the_pointer() {
+        let mut figure = humanoid(200.0, 320.0, 200.0);
+        let started = figure.clone();
+        let before = places(&figure);
+        let target = Point {
+            x: before[1].tip.x + 20.0,
+            y: before[1].tip.y + 30.0,
+        };
+        reach(&mut figure, 5, &target).expect("reach");
+        let after = places(&figure);
+        assert!((after[5].tip.x - target.x).hypot(after[5].tip.y - target.y) < 0.01);
+        assert!((after[4].base.x - before[4].base.x).abs() < 0.0001);
+        assert!((after[4].base.y - before[4].base.y).abs() < 0.0001);
+        for index in 0..figure.bones.len() {
+            assert!(
+                (distance(&after[index]) - distance(&before[index])).abs() < 0.0001,
+                "bone {index} changed length"
+            );
+            if index != 4 && index != 5 {
+                assert_eq!(figure.bones[index].twist, started.bones[index].twist);
+            }
+        }
+        assert_ne!(figure.bones[4].twist, started.bones[4].twist);
+        assert_ne!(figure.bones[5].twist, started.bones[5].twist);
+    }
+
+    #[test]
+    fn an_unreachable_pointer_stretches_the_limb_straight() {
+        let mut figure = humanoid(200.0, 320.0, 200.0);
+        let shoulder = places(&figure)[4].base;
+        let target = Point {
+            x: shoulder.x + 900.0,
+            y: shoulder.y + 500.0,
+        };
+        reach(&mut figure, 5, &target).expect("reach");
+        let after = places(&figure);
+        let reach = (after[5].tip.x - shoulder.x).hypot(after[5].tip.y - shoulder.y);
+        let stretched = figure.bones[4].length + figure.bones[5].length;
+        assert!((reach - stretched).abs() < 0.01);
+        let dx = target.x - shoulder.x;
+        let dy = target.y - shoulder.y;
+        let cross = (after[5].tip.x - shoulder.x) * dy - (after[5].tip.y - shoulder.y) * dx;
+        assert!(cross.abs() < 0.01);
+        for index in [4usize, 5] {
+            assert!(figure.bones[index].twist.abs() <= 180.0, "twist {}", figure.bones[index].twist);
+        }
+    }
+
+    #[test]
+    fn a_zero_length_effector_follows_its_parent() {
+        let mut figure = humanoid(200.0, 320.0, 200.0);
+        let before = places(&figure);
+        let neck = before[2].base;
+        let twist = figure.bones[2].twist;
+        let target = Point {
+            x: neck.x + 6.0,
+            y: neck.y + 2.0,
+        };
+        reach(&mut figure, 3, &target).expect("reach");
+        let after = places(&figure);
+        let dx = target.x - neck.x;
+        let dy = target.y - neck.y;
+        let cross = (after[3].tip.x - neck.x) * dy - (after[3].tip.y - neck.y) * dx;
+        assert!(cross.abs() < 0.01);
+        assert!((after[3].tip.x - neck.x) * dx + (after[3].tip.y - neck.y) * dy > 0.0);
+        assert_eq!(figure.bones[3].twist, 0.0);
+        assert_ne!(figure.bones[2].twist, twist);
+        assert!((distance(&after[2]) - distance(&before[2])).abs() < 0.0001);
     }
 
     #[test]

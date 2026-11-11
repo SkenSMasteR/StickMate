@@ -312,6 +312,54 @@ function swingFigure(figure: Figure, bone: number, target: Point): void {
   figure.bones[bone].twist = ((Math.atan2(dy, dx) - parentAngle) * 180) / Math.PI;
 }
 
+function ikChain(figure: Figure, bone: number): number[] {
+  const current = figure.bones[bone];
+  if (!current) {
+    throw new Error("no such bone");
+  }
+  const out = [bone];
+  let parent = current.parent;
+  while (parent !== null && figure.bones[parent]) {
+    const joined = figure.bones.filter((item) => item.parent === parent).length;
+    if (joined !== 1) {
+      break;
+    }
+    out.push(parent);
+    parent = figure.bones[parent].parent;
+  }
+  return out.reverse();
+}
+
+function reachFigure(figure: Figure, bone: number, target: Point): void {
+  const chain = ikChain(figure, bone);
+  let placed = figurePlaces(figure);
+  for (let step = 0; step < 48; step += 1) {
+    const tip = placed[bone]?.tip;
+    if (!tip || Math.hypot(tip.x - target.x, tip.y - target.y) < 0.01) {
+      return;
+    }
+    for (let walk = chain.length - 1; walk >= 0; walk -= 1) {
+      const joint = chain[walk];
+      const base = placed[joint];
+      const arm = placed[bone];
+      if (!base || !arm) {
+        continue;
+      }
+      const armX = arm.tip.x - base.base.x;
+      const armY = arm.tip.y - base.base.y;
+      const goalX = target.x - base.base.x;
+      const goalY = target.y - base.base.y;
+      if (Math.hypot(armX, armY) < 0.001 || Math.hypot(goalX, goalY) < 0.001) {
+        continue;
+      }
+      const delta = Math.atan2(armX * goalY - armY * goalX, armX * goalX + armY * goalY);
+      const turned = (((figure.bones[joint].twist + (delta * 180) / Math.PI) % 360) + 360) % 360;
+      figure.bones[joint].twist = turned > 180 ? turned - 360 : turned;
+      placed = figurePlaces(figure);
+    }
+  }
+}
+
 function placeArt(figure: Figure, bone: number, shapes: Shape[]): void {
   const place = figurePlace(figure, bone);
   for (const shape of shapes) {
@@ -1971,6 +2019,18 @@ mockIPC(
             throw new Error("unknown shape");
           }
           swingFigure(figureOf(shape), a.bone as number, a.target as Point);
+          validateShape(shape);
+        });
+      case "doc_reach_figure":
+        return edit(a.id as string, (doc) => {
+          const target = layer(doc, a.sceneId as string, a.layerId as string);
+          writable(target);
+          const key = target.keys[keyAt(target, a.frame as number)];
+          const shape = key.shapes[a.index as number];
+          if (!shape) {
+            throw new Error("unknown shape");
+          }
+          reachFigure(figureOf(shape), a.bone as number, a.target as Point);
           validateShape(shape);
         });
       case "doc_attach_art": {
