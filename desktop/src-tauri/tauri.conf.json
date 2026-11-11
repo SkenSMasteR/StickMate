@@ -55,7 +55,15 @@
     "active": true,
     "targets": ["nsis", "appimage"],
     "icon": ["icons/icon.png", "icons/icon.ico"],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "headerImage": "nsis/header.bmp",
+        "sidebarImage": "nsis/sidebar.bmp",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico"
+      }
+    }
   },
   "plugins": {
     "updater": {
