@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{Cursor, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use tauri::State;
@@ -302,14 +302,55 @@ pub fn project_export_fla(
     let warnings = export_warnings(&doc);
     let archive = write_members(&archive_members(&doc))?;
     let target = PathBuf::from(&path);
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    fs::write(&target, archive).map_err(|error| error.to_string())?;
+    write_replacing(&target, &archive)?;
     Ok(FlaExportResult {
         path: target.to_string_lossy().into_owned(),
         warnings,
     })
+}
+
+pub(crate) fn write_replacing(target: &Path, bytes: &[u8]) -> Result<(), String> {
+    if target.is_dir() {
+        return Err("the output path is a folder".to_string());
+    }
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+    }
+    let temp = beside(target, "tmp");
+    let written = replace(target, bytes, &temp);
+    if written.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    written
+}
+
+fn replace(target: &Path, bytes: &[u8], temp: &Path) -> Result<(), String> {
+    fs::write(temp, bytes).map_err(|error| error.to_string())?;
+    if !target.exists() {
+        return fs::rename(temp, target).map_err(|error| error.to_string());
+    }
+    let previous = beside(target, "previous");
+    fs::rename(target, &previous).map_err(|error| error.to_string())?;
+    match fs::rename(temp, target) {
+        Ok(()) => {
+            let _ = fs::remove_file(&previous);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = fs::rename(&previous, target);
+            Err(error.to_string())
+        }
+    }
+}
+
+fn beside(target: &Path, tag: &str) -> PathBuf {
+    let name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("stickmate");
+    target.with_file_name(format!(".{name}.stickmate-{tag}"))
 }
 
 #[tauri::command]
@@ -563,5 +604,84 @@ mod tests {
             .expect("utf8");
         assert!(xml.contains("<DOMBitmapItem name=\"Bitmap 1\""));
         assert!(xml.contains("<DOMBitmapInstance libraryItemName=\"Bitmap 1\">"));
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("stickmate-fla-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch");
+        dir
+    }
+
+    fn leftovers(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .expect("listing")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("stickmate-"))
+            .collect()
+    }
+
+    const OLD: &[u8] = b"the saved project";
+    const NEW: &[u8] = b"a newer archive";
+
+    #[test]
+    fn a_replacement_writes_the_whole_new_file() {
+        let dir = scratch("replace");
+        let target = dir.join("movie.fla");
+        fs::write(&target, OLD).expect("old");
+        write_replacing(&target, NEW).expect("write");
+        assert_eq!(fs::read(&target).expect("read"), NEW.to_vec());
+        assert_eq!(leftovers(&dir), Vec::<String>::new());
+        fs::remove_dir_all(&dir).expect("clean");
+    }
+
+    #[test]
+    fn a_folder_target_is_refused() {
+        let dir = scratch("folder");
+        let target = dir.join("movie.fla");
+        fs::create_dir(&target).expect("folder");
+        let keeper = target.join("keep.txt");
+        fs::write(&keeper, b"keep").expect("keep");
+        assert_eq!(
+            write_replacing(&target, NEW).unwrap_err(),
+            "the output path is a folder"
+        );
+        assert_eq!(fs::read(&keeper).expect("keeper"), b"keep".to_vec());
+        assert_eq!(leftovers(&dir), Vec::<String>::new());
+        fs::remove_dir_all(&dir).expect("clean");
+    }
+
+    #[test]
+    fn a_blocked_replacement_leaves_one_whole_file() {
+        let dir = scratch("blocked");
+        let target = dir.join("movie.fla");
+        fs::write(&target, OLD).expect("old");
+        let mut frozen = fs::metadata(&target).expect("metadata").permissions();
+        frozen.set_readonly(true);
+        fs::set_permissions(&target, frozen).expect("read only");
+        let outcome = write_replacing(&target, NEW);
+        let saved = fs::read(&target).expect("read");
+        assert!(
+            saved == OLD.to_vec() || saved == NEW.to_vec(),
+            "the file holds neither generation"
+        );
+        if outcome.is_err() {
+            assert_eq!(saved, OLD.to_vec());
+        }
+        assert_eq!(leftovers(&dir), Vec::<String>::new());
+        let mut thawed = fs::metadata(&target).expect("metadata").permissions();
+        thawed.set_readonly(false);
+        fs::set_permissions(&target, thawed).expect("writable");
+        fs::remove_dir_all(&dir).expect("clean");
+    }
+
+    #[test]
+    fn a_missing_folder_is_created_for_the_file() {
+        let dir = scratch("nested");
+        let target = dir.join("deep").join("deeper").join("movie.fla");
+        write_replacing(&target, NEW).expect("write");
+        assert_eq!(fs::read(&target).expect("read"), NEW.to_vec());
+        fs::remove_dir_all(&dir).expect("clean");
     }
 }
