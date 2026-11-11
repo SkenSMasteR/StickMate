@@ -271,6 +271,19 @@
         a.children.every((child, index) => mixable(child, b.children[index]))
       );
     }
+    if (a.kind === "Figure") {
+      return (
+        a.figure.bones.length === b.figure.bones.length &&
+        a.figure.bones.every((bone, index) => {
+          const other = b.figure.bones[index];
+          return (
+            bone.parent === other.parent &&
+            bone.art.length === other.art.length &&
+            bone.art.every((child, childIndex) => mixable(child, other.art[childIndex]))
+          );
+        })
+      );
+    }
     return false;
   }
 
@@ -291,6 +304,31 @@
       return {
         kind: "Group",
         children: a.children.map((child, index) => mixShape(child, b.children[index], t))
+      };
+    }
+    if (a.kind === "Figure") {
+      if (!mixable(a, b)) {
+        return a;
+      }
+      return {
+        kind: "Figure",
+        figure: {
+          x: mix(a.figure.x, b.figure.x, t),
+          y: mix(a.figure.y, b.figure.y, t),
+          rotation: mix(a.figure.rotation, b.figure.rotation, t),
+          bones: a.figure.bones.map((bone, index) => {
+            const other = b.figure.bones[index];
+            return {
+              parent: bone.parent,
+              anchor: mixPoint(bone.anchor, other.anchor, t),
+              length: mix(bone.length, other.length, t),
+              twist: mix(bone.twist, other.twist, t),
+              width: mix(bone.width, other.width, t),
+              color: mixColor(bone.color, other.color, t),
+              art: bone.art.map((child, childIndex) => mixShape(child, other.art[childIndex], t))
+            };
+          })
+        }
       };
     }
     if (a.kind === "Rect" || a.kind === "Ellipse" || a.kind === "Polygon") {
@@ -531,10 +569,57 @@
     }));
   }
 
+  function figurePlaces(figure) {
+    const root = { x: figure.x, y: figure.y };
+    const out = [];
+    for (const bone of figure.bones) {
+      const parent = bone.parent === null || bone.parent === undefined ? null : out[bone.parent];
+      const frame = parent ? parent.tip : root;
+      const parentAngle = parent ? parent.angle : (figure.rotation * Math.PI) / 180;
+      const angle = parentAngle + (bone.twist * Math.PI) / 180;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const base = {
+        x: frame.x + bone.anchor.x * cos - bone.anchor.y * sin,
+        y: frame.y + bone.anchor.x * sin + bone.anchor.y * cos
+      };
+      out.push({
+        base: base,
+        tip: { x: base.x + bone.length * cos, y: base.y + bone.length * sin },
+        angle: angle
+      });
+    }
+    return out;
+  }
+
   function drawShape(ctx, shape) {
     if (shape.kind === "Group") {
       for (const child of shape.children) {
         drawShape(ctx, child);
+      }
+      return;
+    }
+    if (shape.kind === "Figure") {
+      const places = figurePlaces(shape.figure);
+      for (let index = 0; index < shape.figure.bones.length; index += 1) {
+        const bone = shape.figure.bones[index];
+        const place = places[index];
+        ctx.save();
+        ctx.translate(place.base.x, place.base.y);
+        ctx.rotate(place.angle);
+        if (bone.length > 0) {
+          ctx.strokeStyle = bone.color;
+          ctx.lineWidth = Math.max(bone.width, 1);
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(bone.length, 0);
+          ctx.stroke();
+        }
+        for (const child of bone.art) {
+          drawShape(ctx, child);
+        }
+        ctx.restore();
       }
       return;
     }

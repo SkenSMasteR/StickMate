@@ -75,7 +75,31 @@ export type Shape =
       width: number;
       gradient?: Gradient | null;
     }
-  | { kind: "Group"; children: Shape[] };
+  | { kind: "Group"; children: Shape[] }
+  | { kind: "Figure"; figure: Figure };
+
+export interface Bone {
+  parent: number | null;
+  anchor: Point;
+  length: number;
+  twist: number;
+  width: number;
+  color: string;
+  art: Shape[];
+}
+
+export interface Figure {
+  x: number;
+  y: number;
+  rotation: number;
+  bones: Bone[];
+}
+
+export interface Place {
+  base: Point;
+  tip: Point;
+  angle: number;
+}
 
 export interface PathNode {
   point: Point;
@@ -301,6 +325,16 @@ export function shapeBounds(shape: Shape): Bounds {
       }
     );
   }
+  if (shape.kind === "Figure") {
+    return (
+      figureBounds(shape.figure) ?? {
+        x: shape.figure.x,
+        y: shape.figure.y,
+        w: 0,
+        h: 0
+      }
+    );
+  }
   return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
 }
 
@@ -386,6 +420,141 @@ export function unionBounds(shapes: Shape[], indices: number[]): Bounds | null {
     };
   }
   return box;
+}
+
+export const LIMB_WIDTH = 6;
+
+const FIGURE_INK = "#27272a";
+
+export function figurePlaces(figure: Figure): Place[] {
+  const root = { x: figure.x, y: figure.y };
+  const places: Place[] = [];
+  for (const bone of figure.bones) {
+    const parent = bone.parent === null ? undefined : places[bone.parent];
+    const frame = parent ? parent.tip : root;
+    const parentAngle = parent ? parent.angle : (figure.rotation * Math.PI) / 180;
+    const angle = parentAngle + (bone.twist * Math.PI) / 180;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const base = {
+      x: frame.x + bone.anchor.x * cos - bone.anchor.y * sin,
+      y: frame.y + bone.anchor.x * sin + bone.anchor.y * cos
+    };
+    places.push({
+      base,
+      tip: { x: base.x + bone.length * cos, y: base.y + bone.length * sin },
+      angle
+    });
+  }
+  return places;
+}
+
+export function boneMatrix(place: Place): Affine {
+  const cos = Math.cos(place.angle);
+  const sin = Math.sin(place.angle);
+  return { a: cos, b: sin, c: -sin, d: cos, e: place.base.x, f: place.base.y };
+}
+
+export function limbBounds(base: Point, tip: Point, width: number): Bounds {
+  const pad = Math.max(width, 1) / 2;
+  const x = Math.min(base.x, tip.x) - pad;
+  const y = Math.min(base.y, tip.y) - pad;
+  return {
+    x,
+    y,
+    w: Math.max(base.x, tip.x) + pad - x,
+    h: Math.max(base.y, tip.y) + pad - y
+  };
+}
+
+function boxBounds(points: Point[]): Bounds {
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+}
+
+function growBox(box: Bounds | null, item: Bounds): Bounds {
+  if (!box) {
+    return item;
+  }
+  const x = Math.min(box.x, item.x);
+  const y = Math.min(box.y, item.y);
+  return {
+    x,
+    y,
+    w: Math.max(box.x + box.w, item.x + item.w) - x,
+    h: Math.max(box.y + box.h, item.y + item.h) - y
+  };
+}
+
+export function figureBounds(figure: Figure): Bounds | null {
+  const places = figurePlaces(figure);
+  let box: Bounds | null = null;
+  places.forEach((place, index) => {
+    const bone = figure.bones[index];
+    if (bone.length > 0) {
+      box = growBox(box, limbBounds(place.base, place.tip, bone.width));
+    }
+  });
+  places.forEach((place, index) => {
+    const bone = figure.bones[index];
+    if (bone.art.length === 0) {
+      return;
+    }
+    const local = shapeBounds({ kind: "Group", children: bone.art });
+    const matrix = boneMatrix(place);
+    const corners = [
+      { x: local.x, y: local.y },
+      { x: local.x + local.w, y: local.y },
+      { x: local.x + local.w, y: local.y + local.h },
+      { x: local.x, y: local.y + local.h }
+    ].map((point) => applyAffine(matrix, point));
+    box = growBox(box, boxBounds(corners));
+  });
+  return box;
+}
+
+export function humanoidFigure(x: number, y: number, height: number): Figure {
+  const unit = height / 100;
+  const bone = (length: number, parent: number | null, twist: number): Bone => ({
+    parent,
+    anchor: { x: 0, y: 0 },
+    length: length * unit,
+    twist,
+    width: LIMB_WIDTH * unit,
+    color: FIGURE_INK,
+    art: []
+  });
+  const skull = 10 * unit;
+  const figure: Figure = {
+    x,
+    y,
+    rotation: 0,
+    bones: [bone(0, null, 0), bone(26, 0, -90), bone(4, 1, 0), bone(0, 2, 0)]
+  };
+  figure.bones[3].art = [
+    {
+      kind: "Ellipse",
+      x: 0,
+      y: -skull,
+      w: skull * 2,
+      h: skull * 2,
+      fill: FIGURE_INK,
+      stroke: "none",
+      width: 0
+    }
+  ];
+  for (const sign of [-1, 1]) {
+    const arm = figure.bones.length;
+    const leg = arm + 2;
+    figure.bones.push(bone(18, 1, 180 + 12 * sign));
+    figure.bones.push(bone(16, arm, 10 * sign));
+    figure.bones.push(bone(26, 0, 90 + 5 * sign));
+    figure.bones.push(bone(24, leg, 3 * sign));
+  }
+  return figure;
 }
 
 export interface Transform {
@@ -905,6 +1074,53 @@ export function docDraw(
   shape: Shape
 ): Promise<Document> {
   return invoke<Document>("doc_draw", { id, sceneId, layerId, frame, shape });
+}
+
+export function docAddFigure(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  x: number,
+  y: number,
+  height: number
+): Promise<Document> {
+  return invoke<Document>("doc_add_figure", { id, sceneId, layerId, frame, x, y, height });
+}
+
+export function docPoseFigure(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  index: number,
+  bone: number,
+  target: Point
+): Promise<Document> {
+  return invoke<Document>("doc_pose_figure", { id, sceneId, layerId, frame, index, bone, target });
+}
+
+export function docAttachArt(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  index: number,
+  bone: number,
+  shapes: number[]
+): Promise<Document> {
+  return invoke<Document>("doc_attach_art", { id, sceneId, layerId, frame, index, bone, shapes });
+}
+
+export function docDetachArt(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  index: number,
+  bone: number
+): Promise<Document> {
+  return invoke<Document>("doc_detach_art", { id, sceneId, layerId, frame, index, bone });
 }
 
 export function docErase(

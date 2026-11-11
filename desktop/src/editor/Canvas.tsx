@@ -6,6 +6,7 @@ import { useI18n } from "@/i18n";
 import {
   affineFrom,
   cssEffects,
+  figurePlaces,
   gradientBox,
   gradientGeometry,
   heldKey,
@@ -176,6 +177,9 @@ function isWorthwhile(shape: Shape): boolean {
   if (shape.kind === "Group") {
     return shape.children.length > 0;
   }
+  if (shape.kind === "Figure") {
+    return shape.figure.bones.length > 0;
+  }
   return shape.w > 0.5 && shape.h > 0.5;
 }
 
@@ -186,6 +190,10 @@ function sampleColor(shape: Shape): { stroke: string; fill: string } {
   if (shape.kind === "Group") {
     const first = shape.children[0];
     return first ? sampleColor(first) : { stroke: "#000000", fill: "#000000" };
+  }
+  if (shape.kind === "Figure") {
+    const color = shape.figure.bones[0]?.color ?? "#000000";
+    return { stroke: color, fill: color };
   }
   return { stroke: shape.stroke, fill: shape.fill };
 }
@@ -481,6 +489,63 @@ function ShapeNode({
             onDown={() => undefined}
           />
         ))}
+        {outline}
+      </g>
+    );
+  }
+
+  if (shape.kind === "Figure") {
+    const places = figurePlaces(shape.figure);
+    return (
+      <g data-figure onPointerDown={down} style={{ cursor: interactive ? cursor : undefined }}>
+        {interactive && (
+          <rect
+            x={box.x}
+            y={box.y}
+            width={box.w}
+            height={box.h}
+            fill="transparent"
+            stroke="transparent"
+            strokeWidth={12}
+          />
+        )}
+        {shape.figure.bones.map((bone, index) => {
+          const place = places[index];
+          if (!place) {
+            return null;
+          }
+          const degrees = (place.angle * 180) / Math.PI;
+          return (
+            <g
+              data-bone
+              key={index}
+              transform={`translate(${place.base.x} ${place.base.y}) rotate(${degrees})`}
+            >
+              {bone.length > 0 && (
+                <line
+                  x1={0}
+                  y1={0}
+                  x2={bone.length}
+                  y2={0}
+                  stroke={bone.color}
+                  strokeWidth={Math.max(bone.width, 1)}
+                  strokeLinecap="round"
+                />
+              )}
+              {bone.art.map((child, childIndex) => (
+                <ShapeNode
+                  key={childIndex}
+                  shape={child}
+                  uid={`${uid}-${index}-${childIndex}`}
+                  interactive={false}
+                  cursor={cursor}
+                  selected={false}
+                  onDown={() => undefined}
+                />
+              ))}
+            </g>
+          );
+        })}
         {outline}
       </g>
     );

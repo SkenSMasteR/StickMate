@@ -11,6 +11,7 @@ import {
   docNew,
   gradientBox,
   gradientGeometry,
+  humanoidFigure,
   linearEasing,
   polygonVertices,
   shapeGradient,
@@ -588,6 +589,86 @@ function folderFixture(): Scene[] {
   return [{ id: "s0", name: "Scene 1", layers: [art, base] }];
 }
 
+function figureFixture(): Scene[] {
+  const rig: Shape = {
+    kind: "Figure",
+    figure: {
+      x: 55,
+      y: 45,
+      rotation: 20,
+      bones: [
+        {
+          parent: null,
+          anchor: { x: 0, y: 0 },
+          length: 26,
+          twist: 0,
+          width: 4,
+          color: "#27272a",
+          art: [
+            {
+              kind: "Rect",
+              x: 6,
+              y: -4,
+              w: 12,
+              h: 8,
+              fill: "#3b82f6",
+              stroke: "#111827",
+              width: 1,
+              gradient: null
+            }
+          ]
+        },
+        {
+          parent: 0,
+          anchor: { x: 0, y: 0 },
+          length: 18,
+          twist: 45,
+          width: 3,
+          color: "#ef4444",
+          art: [
+            {
+              kind: "Ellipse",
+              x: 12,
+              y: -5,
+              w: 10,
+              h: 10,
+              fill: "#22c55e",
+              stroke: "none",
+              width: 0,
+              gradient: null
+            }
+          ]
+        },
+        {
+          parent: 1,
+          anchor: { x: 2, y: -3 },
+          length: 0,
+          twist: -30,
+          width: 2,
+          color: "#f59e0b",
+          art: [
+            {
+              kind: "Path",
+              closed: true,
+              fill: "#a855f7",
+              stroke: "#111827",
+              width: 2,
+              gradient: null,
+              nodes: [
+                { point: { x: 0, y: 0 }, handle_in: null, handle_out: { x: 5, y: -6 } },
+                { point: { x: 10, y: 0 }, handle_in: { x: 8, y: -5 }, handle_out: null },
+                { point: { x: 5, y: 7 }, handle_in: null, handle_out: null }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  };
+  const walker: Shape = { kind: "Figure", figure: humanoidFigure(150, 88, 70) };
+  return [{ id: "s0", name: "Scene 1", layers: [leafLayer("rig", "Rig", [rig, walker])] }];
+}
+
 function flat(points: Array<{ x: number; y: number }>): number[] {
   return points.flatMap((point) => [point.x, point.y]);
 }
@@ -609,7 +690,7 @@ function pathCommands(shape: Extract<Shape, { kind: "Path" }>): Array<string | n
   return out;
 }
 
-function normalShape(shape: Exclude<Shape, { kind: "Group" }>): NormalShape | null {
+function normalShape(shape: Exclude<Shape, { kind: "Group" | "Figure" }>): NormalShape | null {
   if (shape.kind === "Stroke") {
     if (shape.points.length < 2) {
       return null;
@@ -665,6 +746,21 @@ function normalShapes(shape: Shape): NormalShape[] {
   if (shape.kind === "Group") {
     return shape.children.flatMap(normalShapes);
   }
+  if (shape.kind === "Figure") {
+    return shape.figure.bones.flatMap((bone) => [
+      ...(bone.length > 0
+        ? [
+            {
+              kind: "Stroke" as const,
+              points: [0, 0, bone.length, 0],
+              color: bone.color,
+              width: Math.max(bone.width, 1)
+            }
+          ]
+        : []),
+      ...bone.art.flatMap(normalShapes)
+    ]);
+  }
   const single = normalShape(shape);
   return single ? [single] : [];
 }
@@ -716,9 +812,26 @@ function fromSvgGroup(wrapper: SVGGElement): NormalLayer {
   const filter = cssFilter(inner.getAttribute("style"));
   let shapes: NormalShape[] = [];
   const readShape = (group: Element): void => {
+    if (group.tagName.toLowerCase() === "line") {
+      shapes.push({
+        kind: "Stroke",
+        points: ["x1", "y1", "x2", "y2"].map((name) => Number(group.getAttribute(name))),
+        color: group.getAttribute("stroke") ?? "",
+        width: Number(group.getAttribute("stroke-width") ?? 0)
+      });
+      return;
+    }
     if (group.hasAttribute("data-group")) {
       for (const child of Array.from(group.children)) {
         readShape(child);
+      }
+      return;
+    }
+    if (group.hasAttribute("data-figure")) {
+      for (const bone of Array.from(group.querySelectorAll(":scope > g[data-bone]"))) {
+        for (const child of Array.from(bone.children)) {
+          readShape(child);
+        }
       }
       return;
     }
@@ -894,6 +1007,7 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
   let current: NormalLayer | NormalMask | null = null;
   let active: NormalLayer | null = null;
   let cleared: "layer" | "mask" | null = null;
+  let depth = 0;
   let textMatrix = [1, 0, 0, 1, 0, 0];
   const matrixStack: number[][] = [];
   let textSpacing = 0;
@@ -1029,20 +1143,20 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
       continue;
     }
     if (name === "translate") {
-      if (current) {
+      if (current && depth === 0) {
         current.transform[0] = args[0];
         current.transform[1] = args[1];
       }
       continue;
     }
     if (name === "rotate") {
-      if (current) {
+      if (current && depth === 0) {
         current.transform[2] = args[0];
       }
       continue;
     }
     if (name === "scale") {
-      if (current) {
+      if (current && depth === 0) {
         current.transform[3] = args[0];
       }
       continue;
@@ -1068,6 +1182,7 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
       continue;
     }
     if (name === "save") {
+      depth += 1;
       matrixStack.push(textMatrix);
       continue;
     }
@@ -1076,6 +1191,7 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
       continue;
     }
     if (name === "restore") {
+      depth -= 1;
       textMatrix = matrixStack.pop()!;
       if (capturedText) {
         current?.shapes.push({
@@ -1186,7 +1302,19 @@ function recorder(index: number): CanvasRenderingContext2D {
   return target as unknown as CanvasRenderingContext2D;
 }
 
-function payload(scale = 1, folders = false) {
+type Fixture = "shapes" | "folders" | "figure";
+
+function scenesFor(fixture: Fixture): Scene[] {
+  if (fixture === "folders") {
+    return folderFixture();
+  }
+  if (fixture === "figure") {
+    return figureFixture();
+  }
+  return fixtureScenes();
+}
+
+function payload(scale = 1, fixture: Fixture = "shapes") {
   return {
     id: "d0",
     name: "Conformance",
@@ -1194,7 +1322,7 @@ function payload(scale = 1, folders = false) {
     height: 100,
     fps: 10,
     background: "#ffffff",
-    scenes: folders ? folderFixture() : fixtureScenes(),
+    scenes: scenesFor(fixture),
     loop: false,
     scale,
     startFrame: 0,
@@ -1202,16 +1330,16 @@ function payload(scale = 1, folders = false) {
   };
 }
 
-function player(scale = 1, folders = false): Player {
+function player(scale = 1, fixture: Fixture = "shapes"): Player {
   ids = new Map();
   const canvas = document.createElement("canvas");
-  const instance = StickMate.load(payload(scale, folders));
+  const instance = StickMate.load(payload(scale, fixture));
   instance.mount(canvas);
   return instance;
 }
 
-function traceAt(frame: number, scale = 1, folders = false): NormalLayer[] {
-  const instance = player(scale, folders);
+function traceAt(frame: number, scale = 1, fixture: Fixture = "shapes"): NormalLayer[] {
+  const instance = player(scale, fixture);
   log = [];
   instance.seek(frame);
   const parsed = fromTrace(log);
@@ -1219,14 +1347,17 @@ function traceAt(frame: number, scale = 1, folders = false): NormalLayer[] {
   return parsed.layers;
 }
 
-async function mountEditor(folders = false): Promise<{ id: string; svg: SVGSVGElement }> {
+async function mountEditor(fixture: Fixture = "shapes"): Promise<{
+  id: string;
+  svg: SVGSVGElement;
+}> {
   installBackend("editor");
   const doc = await docNew("Conformance", 200, 100, 10, "#ffffff");
   const state = store.get(doc.id);
   if (!state) {
     throw new Error("document is not in the store");
   }
-  state.doc.scenes = folders ? folderFixture() : fixtureScenes();
+  state.doc.scenes = scenesFor(fixture);
   render(<App />);
   await act(async () => {
     await emit("editor-open", doc.id);
@@ -1284,12 +1415,12 @@ describe("editor and export renderer conformance", () => {
   });
 
   test("layer folders composite identically in both renderers", async () => {
-    const { id, svg } = await mountEditor(true);
+    const { id, svg } = await mountEditor("folders");
     const evaluated = await docEvaluate(id, "s0", 0, 2);
     for (const frame of evaluated) {
       const expected = fromEvaluation(frame.layers);
       expect(fromSvg(svg)).toEqual(expected);
-      expect(traceAt(frame.frame, 1, true)).toEqual(expected);
+      expect(traceAt(frame.frame, 1, "folders")).toEqual(expected);
     }
     const [art, base] = fromEvaluation(evaluated[0].layers);
     expect(art).toMatchObject({
@@ -1308,6 +1439,17 @@ describe("editor and export renderer conformance", () => {
     expect(deep.children[1].shapes).toHaveLength(1);
     expect(deep.children[1].mask?.shapes).toEqual(deep.children[0].shapes);
     expect(topOfArt.shapes).toHaveLength(1);
+  });
+
+  test("stick figures paint the same limbs and artwork in both renderers", async () => {
+    const { id, svg } = await mountEditor("figure");
+    const evaluated = await docEvaluate(id, "s0", 0, 0);
+    const expected = fromEvaluation(evaluated[0].layers);
+    expect(fromSvg(svg)).toEqual(expected);
+    expect(traceAt(0, 1, "figure")).toEqual(expected);
+    const limbs = expected[0].shapes.filter((shape) => shape.kind === "Stroke");
+    expect(limbs).toHaveLength(12);
+    expect(limbs[0]).toMatchObject({ points: [0, 0, 26, 0], color: "#27272a", width: 4 });
   });
 
   test("every shape kind survives the round trip", async () => {    const { svg } = await mountEditor();

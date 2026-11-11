@@ -44,9 +44,11 @@ import type {
   AlignReference,
   Blend,
   BoolOp,
+  Bone,
   Effect,
   Easing,
   EasingPresetId,
+  Figure,
   Gradient,
   GradientStop,
   Point,
@@ -675,6 +677,50 @@ function HandleField({
   );
 }
 
+function FigureFields({
+  figure,
+  onFigure
+}: {
+  figure: Figure;
+  onFigure: (figure: Figure) => void;
+}) {
+  const { t } = useI18n();
+  const rounded = (value: number) => Number(value.toFixed(2));
+  const editBone = (index: number, patch: Partial<Bone>) =>
+    onFigure({
+      ...figure,
+      bones: figure.bones.map((bone, i) => (i === index ? { ...bone, ...patch } : bone))
+    });
+  return (
+    <>
+      <NumberField
+        label={t("editor.rotation")}
+        value={rounded(figure.rotation)}
+        onCommit={(rotation) => onFigure({ ...figure, rotation })}
+      />
+      <p className="text-xs text-muted-foreground">{t("editor.bones")}</p>
+      {figure.bones.map((bone, index) => (
+        <div key={index} className="grid grid-cols-2 gap-2">
+          <NumberField
+            label={`${t("editor.bone")} ${index + 1}`}
+            value={rounded(bone.twist)}
+            min={-180}
+            max={180}
+            onCommit={(twist) => editBone(index, { twist })}
+          />
+          <NumberField
+            label={t("editor.length")}
+            value={rounded(bone.length)}
+            min={0}
+            step={0.5}
+            onCommit={(length) => editBone(index, { length })}
+          />
+        </div>
+      ))}
+    </>
+  );
+}
+
 function ShapeFields({
   shape,
   index,
@@ -797,6 +843,15 @@ function ShapeFields({
 
   if (shape.kind === "Group") {
     return null;
+  }
+
+  if (shape.kind === "Figure") {
+    return (
+      <FigureFields
+        figure={shape.figure}
+        onFigure={(figure) => onReplace(index, { ...shape, figure })}
+      />
+    );
   }
 
   return (

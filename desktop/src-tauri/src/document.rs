@@ -10,7 +10,7 @@ use tauri::State;
 
 use crate::boolean::{bool_history_name, combine, BoolOp};
 use crate::path::{flatten_path, PathNode};
-use crate::rig::{self, Figure};
+use crate::rig::{self, Bone, Figure};
 
 const HISTORY_LIMIT: usize = 100;
 const CHECKPOINT_NAME_LIMIT: usize = 64;
@@ -2000,6 +2000,21 @@ fn mixable(a: &Shape, b: &Shape) -> bool {
                 && children.len() == other.len()
                 && children.iter().zip(other).all(|(left, right)| mixable(left, right))
         }
+        (Shape::Figure { figure }, Shape::Figure { figure: other }) => {
+            figure.bones.len() == other.bones.len()
+                && figure
+                    .bones
+                    .iter()
+                    .zip(&other.bones)
+                    .all(|(left, right)| left.parent == right.parent && {
+                        left.art.len() == right.art.len()
+                            && left
+                                .art
+                                .iter()
+                                .zip(&right.art)
+                                .all(|(a, b)| mixable(a, b))
+                    })
+        }
         _ => false,
     }
 }
@@ -2019,6 +2034,34 @@ fn mix_shape(a: &Shape, b: &Shape, t: f64) -> Shape {
                     .zip(other)
                     .map(|(left, right)| mix_shape(left, right, t))
                     .collect(),
+            }
+        }
+        (Shape::Figure { figure }, Shape::Figure { figure: other }) if mixable(a, b) => {
+            Shape::Figure {
+                figure: Figure {
+                    x: mix(figure.x, other.x, t),
+                    y: mix(figure.y, other.y, t),
+                    rotation: mix(figure.rotation, other.rotation, t),
+                    bones: figure
+                        .bones
+                        .iter()
+                        .zip(&other.bones)
+                        .map(|(left, right)| Bone {
+                            parent: left.parent,
+                            anchor: mix_point(&left.anchor, &right.anchor, t),
+                            length: mix(left.length, right.length, t),
+                            twist: mix(left.twist, right.twist, t),
+                            width: mix(left.width, right.width, t),
+                            color: mix_color(&left.color, &right.color, t),
+                            art: left
+                                .art
+                                .iter()
+                                .zip(&right.art)
+                                .map(|(a, b)| mix_shape(a, b, t))
+                                .collect(),
+                        })
+                        .collect(),
+                },
             }
         }
         (
@@ -8924,6 +8967,73 @@ mod tests {
         let frames = tween_span(&kinds, vec![start.clone()], vec![mixed.clone()]);
         assert_eq!(frames[1].layers[0].shapes, vec![start]);
         assert_eq!(frames[2].layers[0].shapes, vec![mixed]);
+    }
+
+    fn posed_figure(twist: f64, art: f64) -> Figure {
+        Figure {
+            x: 100.0,
+            y: 200.0,
+            rotation: 0.0,
+            bones: vec![
+                Bone {
+                    parent: None,
+                    anchor: Point { x: 0.0, y: 0.0 },
+                    length: 30.0,
+                    twist,
+                    width: 4.0,
+                    color: "#27272a".to_string(),
+                    art: vec![box_shape(art, 0.0)],
+                },
+                Bone {
+                    parent: Some(0),
+                    anchor: Point { x: 0.0, y: 0.0 },
+                    length: 20.0,
+                    twist: twist / 2.0,
+                    width: 4.0,
+                    color: "#27272a".to_string(),
+                    art: Vec::new(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn tween_blends_poses_and_their_artwork() {
+        let fixture = Fixture::new("tween-figure");
+        let start = Shape::Figure {
+            figure: posed_figure(0.0, 0.0),
+        };
+        let end = Shape::Figure {
+            figure: posed_figure(30.0, 20.0),
+        };
+        let frames = tween_span(&fixture, vec![start.clone()], vec![end.clone()]);
+        match &frames[1].layers[0].shapes[0] {
+            Shape::Figure { figure } => {
+                assert_eq!(figure.bones[0].twist, 15.0);
+                assert_eq!(figure.bones[1].twist, 7.5);
+                assert_eq!(figure.bones[0].length, 30.0);
+                match &figure.bones[0].art[0] {
+                    Shape::Rect { x, .. } => assert_eq!(*x, 10.0),
+                    other => panic!("expected a rectangle, got {other:?}"),
+                }
+            }
+            other => panic!("expected a figure, got {other:?}"),
+        }
+        let mismatch = Fixture::new("tween-figure-rig");
+        let mut shorter = posed_figure(30.0, 20.0);
+        shorter.bones.pop();
+        let frames = tween_span(
+            &mismatch,
+            vec![start.clone()],
+            vec![Shape::Figure {
+                figure: shorter.clone(),
+            }],
+        );
+        assert_eq!(frames[1].layers[0].shapes, vec![start]);
+        assert_eq!(
+            frames[2].layers[0].shapes,
+            vec![Shape::Figure { figure: shorter }]
+        );
     }
 
     #[test]
