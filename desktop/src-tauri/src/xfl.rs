@@ -183,6 +183,23 @@ pub fn face(family: &str) -> String {
     mapped.to_string()
 }
 
+pub fn family(face: &str) -> String {
+    let mapped = match face.trim().to_ascii_lowercase().as_str() {
+        "arialmt" => "Arial",
+        "arialblack" => "Arial Black",
+        "timesnewromanpsmt" => "Times New Roman",
+        "couriernewpsmt" => "Courier New",
+        "verdana" => "Verdana",
+        "georgia" => "Georgia",
+        "trebuchetms" => "Trebuchet MS",
+        "comicsansms" => "Comic Sans MS",
+        "impact" => "Impact",
+        "tahoma" => "Tahoma",
+        _ => return face.trim().to_string(),
+    };
+    mapped.to_string()
+}
+
 fn place(transform: &Transform, point: &Point) -> Point {
     let matrix = transform_matrix(transform);
     apply(&matrix, point)
@@ -861,6 +878,9 @@ mod tests {
         assert_eq!(face("Arial"), "ArialMT");
         assert_eq!(face("Times New Roman"), "TimesNewRomanPSMT");
         assert_eq!(face("Helvetica Neue"), "Helvetica Neue");
+        assert_eq!(family("ArialMT"), "Arial");
+        assert_eq!(family("TimesNewRomanPSMT"), "Times New Roman");
+        assert_eq!(family("HelveticaNeue"), "HelveticaNeue");
     }
 
     #[test]
