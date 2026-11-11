@@ -539,14 +539,25 @@ fn frame_elements(key: &Keyframe, transform: &Transform) -> Vec<Element> {
 }
 
 pub fn export_scene(scene: &Scene) -> XflScene {
+    let mut flat = Vec::new();
+    flatten_layers(&scene.layers, &mut flat);
     XflScene {
         name: scene.name.clone(),
-        layers: scene
-            .layers
+        layers: flat
             .iter()
             .enumerate()
             .map(|(index, layer)| export_layer(layer, index))
             .collect(),
+    }
+}
+
+fn flatten_layers<'a>(layers: &'a [Layer], out: &mut Vec<&'a Layer>) {
+    for layer in layers {
+        if layer.folder {
+            flatten_layers(&layer.children, out);
+        } else {
+            out.push(layer);
+        }
     }
 }
 
@@ -1000,5 +1011,25 @@ mod tests {
         assert!(xml.contains("visible=\"false\""));
         assert!(xml.contains("locked=\"true\""));
         assert!(xml.contains("<DOMLayer name=\"Art\" color=\"#FF0000\" autoNamed=\"false\""));
+    }
+
+    #[test]
+    fn folders_export_their_children_as_plain_layers() {
+        let mut folder = layer(Vec::new(), 1);
+        folder.folder = true;
+        folder.children = vec![
+            layer(vec![key(0, vec![rect(0.0, 0.0, 2.0, 2.0)])], 4),
+            layer(vec![key(0, Vec::new())], 4),
+        ];
+        let scene = Scene {
+            id: "s1".to_string(),
+            name: "Scene 1".to_string(),
+            layers: vec![folder],
+        };
+        let exported = export_scene(&scene);
+        assert_eq!(exported.layers.len(), 2);
+        assert_eq!(exported.layers[0].frames.len(), 1);
+        assert_eq!(exported.layers[1].frames.len(), 1);
+        assert!(!exported.layers[0].frames[0].elements.is_empty());
     }
 }
