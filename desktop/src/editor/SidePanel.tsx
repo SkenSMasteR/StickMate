@@ -875,6 +875,37 @@ function ShapeFields({
     );
   }
 
+  if (shape.kind === "Bitmap") {
+    return (
+      <>
+        <NumberField
+          label={t("editor.x")}
+          value={rounded(shape.x)}
+          onCommit={(x) => onReplace(index, { ...shape, x })}
+        />
+        <NumberField
+          label={t("editor.y")}
+          value={rounded(shape.y)}
+          onCommit={(y) => onReplace(index, { ...shape, y })}
+        />
+        <NumberField
+          label={t("editor.width")}
+          value={rounded(shape.w)}
+          min={1}
+          max={16384}
+          onCommit={(w) => onReplace(index, { ...shape, w })}
+        />
+        <NumberField
+          label={t("editor.height")}
+          value={rounded(shape.h)}
+          min={1}
+          max={16384}
+          onCommit={(h) => onReplace(index, { ...shape, h })}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <NumberField

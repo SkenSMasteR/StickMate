@@ -1,6 +1,6 @@
 import { checkFigure, transformShape } from "../backend";
 import type { MockExtension } from "../backend";
-import { affineFrom } from "@/lib/document";
+import { affineFrom, looksLikeImage } from "@/lib/document";
 import type { Layer, Shape, Transform } from "@/lib/document";
 import type { ShapeClip } from "@/lib/shapes";
 
@@ -28,8 +28,16 @@ function checkShape(shape: Shape): void {
     shape.figure.bones.forEach((bone) => bone.art.forEach(checkShape));
     return;
   }
+  if (shape.kind === "Bitmap") {
+    const m = shape.matrix;
+    if (!looksLikeImage(shape.source)
+      || (m && ![m.a, m.b, m.c, m.d, m.e, m.f].every(Number.isFinite))) {
+      throw new Error("invalid clipboard shape");
+    }
+  }
   if (!finite(shape) || ("width" in shape && shape.width < 0)
     || ("w" in shape && (shape.w < 0 || shape.h < 0))
+    || (shape.kind === "Bitmap" && (shape.w <= 0 || shape.h <= 0 || shape.w > 16384 || shape.h > 16384))
     || (shape.kind === "Stroke" && (!shape.points.length || shape.points.length > 100_000))
     || (shape.kind === "Polygon" && (!Number.isInteger(shape.sides) || shape.sides < 3 || shape.sides > 1024))
     || (shape.kind === "Text" && (!shape.text.trim() || shape.size <= 0 || shape.text.length > 1_000_000))

@@ -203,6 +203,9 @@ function sampleColor(shape: Shape): { stroke: string; fill: string } {
     const color = shape.figure.bones[0]?.color ?? "#000000";
     return { stroke: color, fill: color };
   }
+  if (shape.kind === "Bitmap") {
+    return { stroke: "#000000", fill: "#000000" };
+  }
   return { stroke: shape.stroke, fill: shape.fill };
 }
 
@@ -415,6 +418,35 @@ function ShapeNode({
             </tspan>
           ))}
         </text>
+        {outline}
+      </g>
+    );
+  }
+
+  if (shape.kind === "Bitmap") {
+    const m = shape.matrix;
+    const transform = m ? `matrix(${m.a} ${m.b} ${m.c} ${m.d} ${m.e} ${m.f})` : undefined;
+    return (
+      <g onPointerDown={down} style={{ cursor: interactive ? cursor : undefined }}>
+        {interactive && (
+          <rect
+            x={shape.x}
+            y={shape.y}
+            width={shape.w}
+            height={shape.h}
+            fill="transparent"
+            transform={transform}
+          />
+        )}
+        <image
+          href={shape.source}
+          x={shape.x}
+          y={shape.y}
+          width={shape.w}
+          height={shape.h}
+          transform={transform}
+          preserveAspectRatio="none"
+        />
         {outline}
       </g>
     );
@@ -1070,7 +1102,7 @@ export default function Canvas() {
       actions.paintShape(index, tab.fill);
       return;
     }
-    if (tab.tool === "eyedropper") {
+    if (tab.tool === "eyedropper" && shape.kind !== "Bitmap") {
       setTab(sampleColor(shape));
       return;
     }

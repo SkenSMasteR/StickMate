@@ -75,6 +75,8 @@ function drawName(kind: Shape["kind"]): string {
       return "draw_text";
     case "Path":
       return "draw_path";
+    case "Bitmap":
+      return "draw_bitmap";
     default:
       return "update_document";
   }
@@ -121,6 +123,9 @@ function diffShapes(prev: Shape[], next: Shape[]): string | null {
       const painted =
         before.fill !== after.fill || before.stroke !== after.stroke;
       return painted ? "paint_shape" : "move_shapes";
+    }
+    if (before.kind === "Bitmap" && after.kind === "Bitmap") {
+      return before.source !== after.source ? "replace_shape" : "move_shapes";
     }
     return "replace_shape";
   }

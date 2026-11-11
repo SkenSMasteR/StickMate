@@ -54,6 +54,15 @@ export type Shape =
       gradient?: Gradient | null;
     }
   | {
+      kind: "Bitmap";
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      source: string;
+      matrix?: Affine | null;
+    }
+  | {
       kind: "Text";
       x: number;
       y: number;
@@ -274,14 +283,8 @@ export function composeAffine(outer: Affine, inner: Affine): Affine {
 }
 
 export function textCorners(shape: Extract<Shape, { kind: "Text" }>): Point[] {
-  const { x, y, matrix } = shape;
   const layout = textLayout(shape);
-  return [
-    { x, y },
-    { x: x + layout.block, y },
-    { x: x + layout.block, y: y + layout.height },
-    { x, y: y + layout.height }
-  ].map((point) => matrix ? applyAffine(matrix, point) : point);
+  return boxCorners(shape.x, shape.y, layout.block, layout.height, shape.matrix);
 }
 
 export interface Bounds {
@@ -289,6 +292,38 @@ export interface Bounds {
   y: number;
   w: number;
   h: number;
+}
+
+export function boxCorners(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  matrix?: Affine | null
+): Point[] {
+  return [
+    { x, y },
+    { x: x + w, y },
+    { x: x + w, y: y + h },
+    { x, y: y + h }
+  ].map((point) => (matrix ? applyAffine(matrix, point) : point));
+}
+
+export function bitmapCorners(shape: Extract<Shape, { kind: "Bitmap" }>): Point[] {
+  return boxCorners(shape.x, shape.y, shape.w, shape.h, shape.matrix);
+}
+
+export function looksLikeImage(source: string): boolean {
+  const prefix = "data:image/";
+  if (!source.startsWith(prefix) || source.length > 4 * 1024 * 1024 * 2) {
+    return false;
+  }
+  const rest = source.slice(prefix.length);
+  const at = rest.indexOf(";base64,");
+  if (at < 0) {
+    return false;
+  }
+  return rest.length > at + ";base64,".length && ["png", "jpeg", "gif"].includes(rest.slice(0, at));
 }
 
 function pointsBounds(points: Point[], width: number): Bounds {
@@ -314,6 +349,9 @@ export function shapeBounds(shape: Shape): Bounds {
   }
   if (shape.kind === "Text") {
     return pointsBounds(textCorners(shape), 0);
+  }
+  if (shape.kind === "Bitmap") {
+    return pointsBounds(bitmapCorners(shape), 0);
   }
   if (shape.kind === "Group") {
     return (

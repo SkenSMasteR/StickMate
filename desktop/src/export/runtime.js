@@ -247,7 +247,7 @@
     if (a.kind === "Rect" || a.kind === "Ellipse") {
       return gradientsMixable(gradientOf(a), gradientOf(b));
     }
-    if (a.kind === "Text") {
+    if (a.kind === "Text" || a.kind === "Bitmap") {
       return true;
     }
     if (a.kind === "Polygon") {
@@ -404,6 +404,20 @@
         spacing: mix(a.spacing || 0, b.spacing || 0, t),
         leading: mix(a.leading || TEXT_LEADING, b.leading || TEXT_LEADING, t),
         align: a.align || "left",
+        matrix:
+          a.matrix && b.matrix
+            ? mixAffine(a.matrix, b.matrix, t)
+            : a.matrix || b.matrix || null
+      };
+    }
+    if (a.kind === "Bitmap") {
+      return {
+        kind: "Bitmap",
+        x: mix(a.x, b.x, t),
+        y: mix(a.y, b.y, t),
+        w: mix(a.w, b.w, t),
+        h: mix(a.h, b.h, t),
+        source: a.source,
         matrix:
           a.matrix && b.matrix
             ? mixAffine(a.matrix, b.matrix, t)
@@ -592,6 +606,61 @@
     return out;
   }
 
+  const images = new Map();
+
+  function imageFor(source) {
+    const found = images.get(source);
+    if (found) {
+      return found;
+    }
+    const image = new Image();
+    image.src = source;
+    images.set(source, image);
+    return image;
+  }
+
+  function bitmapSources(shape, out) {
+    if (shape.kind === "Bitmap") {
+      out.push(shape.source);
+    } else if (shape.kind === "Group") {
+      for (const child of shape.children) {
+        bitmapSources(child, out);
+      }
+    } else if (shape.kind === "Figure") {
+      for (const bone of shape.figure.bones) {
+        for (const child of bone.art) {
+          bitmapSources(child, out);
+        }
+      }
+    }
+    return out;
+  }
+
+  function projectSources(project) {
+    const sources = [];
+    for (const scene of project.scenes) {
+      for (const layer of scene.layers) {
+        collectLayerSources(layer, sources);
+      }
+    }
+    return sources;
+  }
+
+  function collectLayerSources(layer, out) {
+    if (layer.folder) {
+      for (const child of layer.children) {
+        collectLayerSources(child, out);
+      }
+      return out;
+    }
+    for (const key of layer.keys) {
+      for (const shape of key.shapes) {
+        bitmapSources(shape, out);
+      }
+    }
+    return out;
+  }
+
   function drawShape(ctx, shape) {
     if (shape.kind === "Group") {
       for (const child of shape.children) {
@@ -684,6 +753,20 @@
       ctx.stroke();
       return;
     }
+    if (shape.kind === "Bitmap") {
+      const image = imageFor(shape.source);
+      if (!image.complete) {
+        return;
+      }
+      ctx.save();
+      if (shape.matrix) {
+        const m = shape.matrix;
+        ctx.transform(m.a, m.b, m.c, m.d, m.e, m.f);
+      }
+      ctx.drawImage(image, shape.x, shape.y, shape.w, shape.h);
+      ctx.restore();
+      return;
+    }
     ctx.fillStyle = fillStyle(ctx, shape);
     ctx.strokeStyle = shape.stroke;
     ctx.lineWidth = shape.width;
@@ -732,6 +815,12 @@
     let scratch = null;
     let sctx = null;
     const surfaces = [];
+    for (const source of projectSources(project)) {
+      const image = imageFor(source);
+      if (!image.complete) {
+        image.addEventListener("load", render);
+      }
+    }
 
     function evaluate(at) {
       let scene = scenes[0];

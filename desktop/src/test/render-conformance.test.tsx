@@ -24,6 +24,16 @@ import { flush, getCanvas, press } from "./utils";
 
 runInThisContext(source);
 
+class StubImage {
+  src = "";
+  complete = true;
+  naturalWidth = 64;
+  naturalHeight = 32;
+  addEventListener(): void {}
+}
+
+globalThis.Image = StubImage as unknown as typeof Image;
+
 interface Player {
   mount(canvas: HTMLCanvasElement): void;
   seek(frame: number): void;
@@ -120,6 +130,7 @@ type NormalShape =
       matrix: number[];
       lines: Array<{ text: string; at: number[] }>;
     }
+  | { kind: "Bitmap"; box: number[]; href: string; matrix: number[] }
   | { kind: "Rect"; box: number[]; paint: Paint }
   | { kind: "Ellipse"; box: number[]; paint: Paint }
   | { kind: "Polygon"; points: number[]; paint: Paint }
@@ -250,6 +261,15 @@ function fixtureShapes(): Shape[] {
     {
       kind: "Text", x: 96, y: 66, text: "wide line\nrow", size: 8, family: "monospace", color: "#111827",
       spacing: -1, leading: 1.5, align: "right", matrix: null
+    },
+    {
+      kind: "Bitmap", x: 150, y: 60, w: 40, h: 30,
+      source: "data:image/png;base64,iVBORw0KGgo="
+    },
+    {
+      kind: "Bitmap", x: 10, y: 90, w: 24, h: 12,
+      source: "data:image/jpeg;base64,/9j/4AAQ",
+      matrix: affineFrom({ x: 22, y: 96 }, 3, -2, 1.5, 1.5, 40)
     }
   ];
 }
@@ -312,7 +332,8 @@ function tweenStart(): Shape[] {
       ],
       color: "#ef4444",
       width: 3
-    }
+    },
+    { kind: "Bitmap", x: 10, y: 80, w: 20, h: 10, source: "data:image/png;base64,iVBORw0KGgo=" }
   ];
 }
 
@@ -358,6 +379,7 @@ function tweenEnd(): Shape[] {
       color: "#0ea5e9",
       width: 5
     },
+    { kind: "Bitmap", x: 60, y: 80, w: 40, h: 20, source: "data:image/png;base64,iVBORw0KGgo=" },
     { kind: "Text", x: 10, y: 92, text: "End", size: 16, family: "sans-serif", color: "#111827", matrix: null }
   ];
 }
@@ -636,6 +658,14 @@ function figureFixture(): Scene[] {
               stroke: "none",
               width: 0,
               gradient: null
+            },
+            {
+              kind: "Bitmap",
+              x: -6,
+              y: 3,
+              w: 14,
+              h: 7,
+              source: "data:image/gif;base64,R0lGODdhAA=="
             }
           ]
         },
@@ -709,6 +739,14 @@ function normalShape(shape: Exclude<Shape, { kind: "Group" | "Figure" }>): Norma
         text: line.text,
         at: [line.x, line.y]
       })),
+      matrix: shape.matrix ? [shape.matrix.a, shape.matrix.b, shape.matrix.c, shape.matrix.d, shape.matrix.e, shape.matrix.f] : [1, 0, 0, 1, 0, 0]
+    };
+  }
+  if (shape.kind === "Bitmap") {
+    return {
+      kind: "Bitmap",
+      box: [shape.x, shape.y, shape.w, shape.h],
+      href: shape.source,
       matrix: shape.matrix ? [shape.matrix.a, shape.matrix.b, shape.matrix.c, shape.matrix.d, shape.matrix.e, shape.matrix.f] : [1, 0, 0, 1, 0, 0]
     };
   }
@@ -835,7 +873,7 @@ function fromSvgGroup(wrapper: SVGGElement): NormalLayer {
       }
       return;
     }
-    const painted = group.querySelector("polyline, text, polygon, path, rect, ellipse");
+    const painted = group.querySelector("polyline, text, polygon, path, rect, ellipse, image");
     if (!painted) {
       return;
     }
@@ -863,6 +901,20 @@ function fromSvgGroup(wrapper: SVGGElement): NormalLayer {
         color: painted.getAttribute("fill") ?? "",
         spacing: Number(painted.getAttribute("letter-spacing")),
         lines,
+        matrix: painted.hasAttribute("transform") ? numbers(painted.getAttribute("transform")) : [1, 0, 0, 1, 0, 0]
+      });
+      return;
+    }
+    if (tag === "image") {
+      shapes.push({
+        kind: "Bitmap",
+        box: [
+          Number(painted.getAttribute("x")),
+          Number(painted.getAttribute("y")),
+          Number(painted.getAttribute("width")),
+          Number(painted.getAttribute("height"))
+        ],
+        href: painted.getAttribute("href") ?? "",
         matrix: painted.hasAttribute("transform") ? numbers(painted.getAttribute("transform")) : [1, 0, 0, 1, 0, 0]
       });
       return;
@@ -1008,7 +1060,7 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
   let active: NormalLayer | null = null;
   let cleared: "layer" | "mask" | null = null;
   let depth = 0;
-  let textMatrix = [1, 0, 0, 1, 0, 0];
+  let shapeMatrix = [1, 0, 0, 1, 0, 0];
   const matrixStack: number[][] = [];
   let textSpacing = 0;
   let pendingLines: Array<{ text: string; at: number[] }> = [];
@@ -1110,6 +1162,17 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
       continue;
     }
     const inScratch = index === 2;
+    if (name === "drawImage" && args.length === 5) {
+      if (current) {
+        current.shapes.push({
+          kind: "Bitmap",
+          box: args.slice(1),
+          href: String((entry[2] as HTMLImageElement).src),
+          matrix: shapeMatrix
+        });
+      }
+      continue;
+    }
     if (inScratch && (name === "drawImage" || name === "set:globalCompositeOperation")) {
       continue;
     }
@@ -1183,16 +1246,16 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
     }
     if (name === "save") {
       depth += 1;
-      matrixStack.push(textMatrix);
+      matrixStack.push(shapeMatrix);
       continue;
     }
     if (name === "transform") {
-      textMatrix = args;
+      shapeMatrix = args;
       continue;
     }
     if (name === "restore") {
       depth -= 1;
-      textMatrix = matrixStack.pop()!;
+      shapeMatrix = matrixStack.pop()!;
       if (capturedText) {
         current?.shapes.push({
           kind: "Text",
@@ -1212,7 +1275,7 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
           family: font.slice(font.indexOf("px ") + 3),
           color: tracePaintFill(fill),
           spacing: textSpacing,
-          matrix: textMatrix
+          matrix: shapeMatrix
         };
       }
       pendingLines.push({ text: String(entry[2]), at: [args[1], args[2]] });
@@ -1463,7 +1526,9 @@ describe("editor and export renderer conformance", () => {
       "Path",
       "Path",
       "Text",
-      "Text"
+      "Text",
+      "Bitmap",
+      "Bitmap"
     ]);
   });
 
@@ -1511,7 +1576,7 @@ describe("editor and export renderer conformance", () => {
     expect(evaluated[0].layers[2].shapes).toEqual(tweenStart());
     expect(evaluated[2].layers[1].shapes).toEqual(tweenEnd());
     const middle = evaluated[1].layers[2].shapes;
-    expect(middle).toHaveLength(5);
+    expect(middle).toHaveLength(6);
     expect(middle[0]).toMatchObject({
       kind: "Rect",
       x: 20,
@@ -1545,6 +1610,35 @@ describe("editor and export renderer conformance", () => {
       ]
     });
     expect(middle[4]).toMatchObject({ kind: "Stroke", color: "#ef4444", width: 3 });
+    expect(middle[5]).toMatchObject({
+      kind: "Bitmap",
+      x: 35,
+      y: 80,
+      w: 30,
+      h: 15,
+      source: "data:image/png;base64,iVBORw0KGgo="
+    });
+  });
+
+  test("placed images carry the same box and turn into both renderers", async () => {
+    const { id, svg } = await mountEditor();
+    const evaluated = await docEvaluate(id, "s0", 0, 0);
+    const expected = fromEvaluation(evaluated[0].layers);
+    const svgImages = fromSvg(svg)[0].shapes.filter(
+      (shape): shape is Extract<NormalShape, { kind: "Bitmap" }> => shape.kind === "Bitmap"
+    );
+    const traceImages = traceAt(0)[0].shapes.filter(
+      (shape): shape is Extract<NormalShape, { kind: "Bitmap" }> => shape.kind === "Bitmap"
+    );
+    expect(svgImages).toHaveLength(2);
+    expect(traceImages).toEqual(svgImages);
+    expect(svgImages).toEqual(expected[0].shapes.filter((shape) => shape.kind === "Bitmap"));
+    const [flat, turned] = svgImages;
+    expect(flat.box).toEqual([150, 60, 40, 30]);
+    expect(flat.matrix).toEqual([1, 0, 0, 1, 0, 0]);
+    expect(turned.href).toBe("data:image/jpeg;base64,/9j/4AAQ");
+    expect(turned.matrix.length).toBe(6);
+    expect(turned.box).toEqual([10, 90, 24, 12]);
   });
 
   test("a non linear curve moves both renderers the same amount", async () => {

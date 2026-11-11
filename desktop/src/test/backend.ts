@@ -4,6 +4,7 @@ import type { BoolOp } from "@/lib/boolean";
 import {
   affineFrom,
   applyAffine,
+  bitmapCorners,
   blends,
   boneMatrix,
   clampEasing,
@@ -13,6 +14,7 @@ import {
   flattenPath,
   humanoidFigure,
   linearEasing,
+  looksLikeImage,
   polygonVertices,
   shapeBounds,
   shapeGradient,
@@ -447,6 +449,15 @@ function shapeHit(shape: Shape, p: Point, radius: number): boolean {
       (shape.closed && insidePolygon(p, outline))
     );
   }
+  if (shape.kind === "Bitmap") {
+    const vertices = bitmapCorners(shape);
+    return (
+      insidePolygon(p, vertices) ||
+      vertices.some((a, index) =>
+        nearSegment(p, a, vertices[(index + 1) % vertices.length], radius)
+      )
+    );
+  }
   const vertices = textCorners(shape);
   return (
     insidePolygon(p, vertices) ||
@@ -501,6 +512,30 @@ function validateShape(shape: Shape): void {
   }
   if (shape.kind === "Polygon" && shape.sides < 3) {
     throw new Error("polygon needs at least 3 sides");
+  }
+  if (shape.kind === "Bitmap") {
+    if (!Number.isFinite(shape.x) || !Number.isFinite(shape.y)) {
+      throw new Error("bitmap coordinates must be finite");
+    }
+    if (
+      !Number.isFinite(shape.w) ||
+      !Number.isFinite(shape.h) ||
+      shape.w <= 0 ||
+      shape.h <= 0 ||
+      shape.w > 16384 ||
+      shape.h > 16384
+    ) {
+      throw new Error("bitmap size must be between 1 and 16384");
+    }
+    if (!looksLikeImage(shape.source)) {
+      throw new Error("bitmap must be an embedded png, jpeg or gif");
+    }
+    if (shape.matrix) {
+      const m = shape.matrix;
+      if (![m.a, m.b, m.c, m.d, m.e, m.f].every(Number.isFinite)) {
+        throw new Error("bitmap matrix must be finite");
+      }
+    }
   }
   if (shape.kind === "Text") {
     if (shape.text.trim() === "") {
@@ -579,7 +614,7 @@ function paintFill(shape: Shape, color: string): Shape {
       }
     };
   }
-  if (shape.kind === "Stroke" || shape.kind === "Text") {
+  if (shape.kind === "Stroke" || shape.kind === "Text" || shape.kind === "Bitmap") {
     return shape;
   }
   return { ...shape, fill: color, gradient: null };
@@ -696,6 +731,21 @@ export function transformShape(
         y: q.y,
         size: shape.size * sx,
         spacing: (shape.spacing ?? 0) * sx
+      };
+    }
+    return { ...shape, matrix: shape.matrix ? composeAffine(matrix, shape.matrix) : matrix };
+  }
+  if (shape.kind === "Bitmap") {
+    if (!shape.matrix && rotation === 0 && sx === sy) {
+      const scale = Math.sqrt(matrix.a * matrix.d - matrix.b * matrix.c);
+      const corner = applyAffine(matrix, { x: shape.x, y: shape.y });
+      return {
+        kind: "Bitmap",
+        x: corner.x,
+        y: corner.y,
+        w: shape.w * scale,
+        h: shape.h * scale,
+        source: shape.source
       };
     }
     return { ...shape, matrix: shape.matrix ? composeAffine(matrix, shape.matrix) : matrix };
@@ -1206,7 +1256,7 @@ function mixable(a: Shape, b: Shape): boolean {
   if (a.kind === "Rect" || a.kind === "Ellipse") {
     return fills;
   }
-  if (a.kind === "Text") {
+  if (a.kind === "Text" || a.kind === "Bitmap") {
     return true;
   }
   if (a.kind === "Polygon" && b.kind === "Polygon") {
@@ -1373,6 +1423,20 @@ function mixShape(a: Shape, b: Shape, t: number): Shape {
       spacing: mix(a.spacing ?? 0, b.spacing ?? 0, t),
       leading: mix(a.leading ?? TEXT_LEADING, b.leading ?? TEXT_LEADING, t),
       align: a.align ?? "left",
+      matrix:
+        a.matrix && b.matrix
+          ? mixAffine(a.matrix, b.matrix, t)
+          : a.matrix ?? b.matrix ?? null
+    };
+  }
+  if (a.kind === "Bitmap" && b.kind === "Bitmap") {
+    return {
+      kind: "Bitmap",
+      x: mix(a.x, b.x, t),
+      y: mix(a.y, b.y, t),
+      w: mix(a.w, b.w, t),
+      h: mix(a.h, b.h, t),
+      source: a.source,
       matrix:
         a.matrix && b.matrix
           ? mixAffine(a.matrix, b.matrix, t)
