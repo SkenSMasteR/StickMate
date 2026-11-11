@@ -225,14 +225,6 @@ fn lerp(a: &Point, b: &Point, t: f64) -> Point {
     }
 }
 
-fn cubic_point(a: &Point, one: &Point, two: &Point, b: &Point, t: f64) -> Point {
-    let u = 1.0 - t;
-    Point {
-        x: u * u * u * a.x + 3.0 * u * u * t * one.x + 3.0 * u * t * t * two.x + t * t * t * b.x,
-        y: u * u * u * a.y + 3.0 * u * u * t * one.y + 3.0 * u * t * t * two.y + t * t * t * b.y,
-    }
-}
-
 fn quadratic_control(start: &Point, one: &Point, two: &Point, end: &Point) -> Point {
     Point {
         x: (3.0 * (one.x + two.x) - start.x - end.x) / 4.0,
@@ -468,12 +460,17 @@ fn ink_of(shape: &Shape, scale: f64, opacity: f64) -> (Option<(String, f64)>, Op
     }
 }
 
-/// Glyph size, spacing and box stay unscaled because the exported matrix carries the scale.
 fn frame_elements(key: &Keyframe, transform: &Transform) -> Vec<Element> {
     let matrix = transform_matrix(transform);
     let mut out = Vec::new();
-    for shape in &key.shapes {
+    push_elements(&key.shapes, &matrix, transform, &mut out);
+    out
+}
+
+fn push_elements(shapes: &[Shape], matrix: &Affine, transform: &Transform, out: &mut Vec<Element>) {
+    for shape in shapes {
         match shape {
+            Shape::Group { children } => push_elements(children, matrix, transform, out),
             Shape::Text {
                 x,
                 y,
@@ -535,7 +532,6 @@ fn frame_elements(key: &Keyframe, transform: &Transform) -> Vec<Element> {
             }
         }
     }
-    out
 }
 
 pub fn export_scene(scene: &Scene) -> XflScene {
@@ -886,6 +882,14 @@ mod tests {
         assert!(worst < 0.06, "max deviation {worst}");
     }
 
+    fn cubic_point(a: &Point, one: &Point, two: &Point, b: &Point, t: f64) -> Point {
+        let u = 1.0 - t;
+        Point {
+            x: u * u * u * a.x + 3.0 * u * u * t * one.x + 3.0 * u * t * t * two.x + t * t * t * b.x,
+            y: u * u * u * a.y + 3.0 * u * u * t * one.y + 3.0 * u * t * t * two.y + t * t * t * b.y,
+        }
+    }
+
     fn quadratic_at(start: &Point, segments: &[Segment], t: f64) -> Point {
         let count = segments.len() as f64;
         let index = ((t * count).floor() as usize).min(segments.len() - 1);
@@ -1031,5 +1035,16 @@ mod tests {
         assert_eq!(exported.layers[0].frames.len(), 1);
         assert_eq!(exported.layers[1].frames.len(), 1);
         assert!(!exported.layers[0].frames[0].elements.is_empty());
+    }
+
+    #[test]
+    fn groups_export_their_children_as_plain_elements() {
+        let group = Shape::Group {
+            children: vec![rect(0.0, 0.0, 2.0, 2.0), rect(3.0, 3.0, 1.0, 1.0)],
+        };
+        let xml = layer_xml(&export_layer(&layer(vec![key(0, vec![group])], 1), 0), "", false);
+        assert_eq!(xml.matches("<DOMShape").count(), 2);
+        assert!(xml.contains("!0 0"));
+        assert!(xml.contains("!60 60"));
     }
 }
