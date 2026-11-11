@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import en from "@/i18n/en.json";
 import mk from "@/i18n/mk.json";
 import { usePrefs } from "@/lib/prefs";
-import { authRefresh, checkForUpdate, installUpdate, tokenLoad } from "@/lib/tauri";
+import { authRefresh, checkForUpdate, installUpdate, onUpdateProgress, tokenLoad } from "@/lib/tauri";
 import logoDark from "@/assets/logo-dark.png";
 import "./splash.css";
 
@@ -13,6 +13,7 @@ export default function Splash() {
   const { prefs } = usePrefs();
   const [failure, setFailure] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [percent, setPercent] = useState<number | null>(null);
   const catalog = prefs.language === "mk" ? mk : en;
 
   useEffect(() => {
@@ -25,7 +26,14 @@ export default function Splash() {
       try {
         const version = await checkForUpdate();
         if (version) {
-          await installUpdate();
+          setPercent(0);
+          const unlisten = await onUpdateProgress(setPercent);
+          try {
+            await installUpdate();
+          } finally {
+            unlisten();
+            setPercent(null);
+          }
         }
       } catch {
         void 0;
@@ -57,6 +65,7 @@ export default function Splash() {
 
   const retry = () => {
     setFailure(null);
+    setPercent(null);
     setAttempt((value) => value + 1);
   };
 
@@ -71,7 +80,19 @@ export default function Splash() {
         />
       </div>
       {failure === null ? (
-        <span className="loader" />
+        percent === null ? (
+          <span className="loader" />
+        ) : (
+          <span
+            className="progress"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percent}
+          >
+            <span className="progress-value" style={{ width: `${percent}%` }} />
+          </span>
+        )
       ) : (
         <div className="flex flex-col items-center gap-2 px-4 pb-4 text-center">
           <p className="text-xs text-white">{catalog["splash.failed"]}</p>

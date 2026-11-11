@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { Window } from "@tauri-apps/api/window";
+import { emit } from "@tauri-apps/api/event";
 import App from "@/App";
 import { installBackend } from "./backend";
 import { flush } from "./utils";
@@ -9,6 +10,7 @@ const state = vi.hoisted(() => ({
   available: true,
   showFails: false,
   showGate: null as Promise<void> | null,
+  installGate: null as Promise<void> | null,
   show: vi.fn(),
   setFocus: vi.fn(),
   update: null as string | null,
@@ -52,6 +54,9 @@ vi.mock("@/lib/tauri", async (importOriginal) => {
     },
     installUpdate: async () => {
       state.installs += 1;
+      if (state.installGate) {
+        await state.installGate;
+      }
       return null;
     },
     tokenLoad: async (kind: string) => (kind === "refresh" ? "mock-refresh" : null),
@@ -66,6 +71,10 @@ vi.mock("@/lib/tauri", async (importOriginal) => {
 
 function loader(): Element | null {
   return document.querySelector(".loader");
+}
+
+function bar(): Element | null {
+  return document.querySelector(".progress");
 }
 
 function hidden(): ReturnType<typeof vi.spyOn> {
@@ -83,6 +92,7 @@ beforeEach(() => {
   state.available = true;
   state.showFails = false;
   state.showGate = null;
+  state.installGate = null;
   state.update = null;
   state.updateFails = false;
   state.installs = 0;
@@ -124,6 +134,49 @@ describe("splash", () => {
     await mount();
     await waitFor(() => expect(state.show).toHaveBeenCalledTimes(1));
     expect(state.installs).toBe(1);
+    vi.restoreAllMocks();
+  });
+
+  test("swaps the bouncing loader for a progress bar while updating", async () => {
+    state.update = "0.2.0";
+    let release = () => {};
+    state.installGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const hide = hidden();
+    await mount();
+    await waitFor(() => expect(screen.getByRole("progressbar")).toBeTruthy());
+    expect(loader()).toBeNull();
+    expect(bar()).not.toBeNull();
+    expect(bar()?.getAttribute("aria-valuenow")).toBe("0");
+    await act(async () => {
+      await emit("update-progress", 45);
+    });
+    expect(bar()?.getAttribute("aria-valuenow")).toBe("45");
+    expect((bar()?.firstElementChild as HTMLElement).style.width).toBe("45%");
+    await act(async () => {
+      await emit("update-progress", 100);
+    });
+    expect(bar()?.getAttribute("aria-valuenow")).toBe("100");
+    release();
+    await flush();
+    await waitFor(() => expect(hide).toHaveBeenCalledTimes(1));
+    expect(bar()).toBeNull();
+    vi.restoreAllMocks();
+  });
+
+  test("keeps the bouncing loader when there is no update", async () => {
+    let release = () => {};
+    state.showGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    hidden();
+    await mount();
+    expect(loader()).not.toBeNull();
+    expect(bar()).toBeNull();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    release();
+    await flush();
     vi.restoreAllMocks();
   });
 

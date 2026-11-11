@@ -84,8 +84,6 @@
   "settings.updatePrompt": "Подготвена за инсталирање верзија",
   "settings.updateInstall": "Инсталирај и рестартирај",
   "settings.updateLater": "Подоцна",
-  "settings.installing": "Се инсталира ажурирањето",
-  "settings.downloading": "Се презема",
   "settings.version": "Верзија",
   "auth.title": "Најавете се на StickMate",
   "auth.subtitle": "Најавете се со вашата GitHub сметка.",

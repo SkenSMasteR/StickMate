@@ -84,8 +84,6 @@
   "settings.updatePrompt": "Ready to install version",
   "settings.updateInstall": "Install and restart",
   "settings.updateLater": "Later",
-  "settings.installing": "Installing update",
-  "settings.downloading": "Downloading",
   "settings.version": "Version",
   "auth.title": "Sign in to StickMate",
   "auth.subtitle": "Sign in with your GitHub account.",

@@ -225,11 +225,18 @@ export default function Settings({
             </DialogDescription>
           </DialogHeader>
           {installing && (
-            <p className="text-sm text-muted-foreground">
-              {percent < 100
-                ? `${t("settings.downloading")} ${percent}%`
-                : t("settings.installing")}
-            </p>
+            <div
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={percent}
+              className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+            >
+              <div
+                className="h-full bg-primary transition-[width] duration-150 ease-linear"
+                style={{ width: `${percent}%` }}
+              />
+            </div>
           )}
           {error && <p className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
