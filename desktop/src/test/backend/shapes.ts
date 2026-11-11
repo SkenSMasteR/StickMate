@@ -1,4 +1,4 @@
-import { transformShape } from "../backend";
+import { checkFigure, transformShape } from "../backend";
 import type { MockExtension } from "../backend";
 import { affineFrom } from "@/lib/document";
 import type { Layer, Shape, Transform } from "@/lib/document";
@@ -21,6 +21,11 @@ function checkShape(shape: Shape): void {
   if (shape.kind === "Group") {
     if (!shape.children.length) throw new Error("invalid clipboard shape");
     shape.children.forEach(checkShape);
+    return;
+  }
+  if (shape.kind === "Figure") {
+    checkFigure(shape.figure);
+    shape.figure.bones.forEach((bone) => bone.art.forEach(checkShape));
     return;
   }
   if (!finite(shape) || ("width" in shape && shape.width < 0)

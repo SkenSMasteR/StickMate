@@ -5,10 +5,13 @@ import {
   affineFrom,
   applyAffine,
   blends,
+  boneMatrix,
   clampEasing,
   composeAffine,
   easeProgress,
+  figurePlaces,
   flattenPath,
+  humanoidFigure,
   linearEasing,
   polygonVertices,
   shapeBounds,
@@ -29,11 +32,13 @@ import type {
   Easing,
   EvalFrame,
   EvalLayer,
+  Figure,
   Gradient,
   GradientStop,
   Keyframe,
   Layer,
   PathNode,
+  Place,
   Point,
   Scene,
   Shape,
@@ -158,6 +163,174 @@ function insidePolygon(p: Point, vertices: Point[]): boolean {
   return inside;
 }
 
+function finiteShape(value: unknown): boolean {
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (Array.isArray(value)) {
+    return value.every(finiteShape);
+  }
+  if (value && typeof value === "object") {
+    return Object.values(value).every(finiteShape);
+  }
+  return true;
+}
+
+export function checkFigure(figure: Figure): void {
+  if (
+    !Number.isFinite(figure.x) ||
+    !Number.isFinite(figure.y) ||
+    !Number.isFinite(figure.rotation) ||
+    figure.bones.length === 0 ||
+    figure.bones.length > 1000
+  ) {
+    throw new Error("invalid clipboard shape");
+  }
+  figure.bones.forEach((bone, index) => {
+    if (
+      (bone.parent !== null && bone.parent >= index) ||
+      !Number.isFinite(bone.length) ||
+      bone.length < 0 ||
+      !Number.isFinite(bone.twist) ||
+      Math.abs(bone.twist) > 3600 ||
+      !Number.isFinite(bone.width) ||
+      bone.width < 0 ||
+      bone.width > 1000 ||
+      !finiteShape(bone.anchor) ||
+      bone.color.length > 1024 ||
+      bone.art.length > 10000 ||
+      !bone.art.every(finiteShape)
+    ) {
+      throw new Error("invalid clipboard shape");
+    }
+  });
+}
+
+function invertAffine(matrix: Affine): Affine | null {
+  const det = matrix.a * matrix.d - matrix.b * matrix.c;
+  if (Math.abs(det) < 1e-9) {
+    return null;
+  }
+  return {
+    a: matrix.d / det,
+    b: -matrix.b / det,
+    c: -matrix.c / det,
+    d: matrix.a / det,
+    e: (matrix.c * matrix.f - matrix.d * matrix.e) / det,
+    f: (matrix.b * matrix.e - matrix.a * matrix.f) / det
+  };
+}
+
+function flattenedEllipse(shape: Extract<Shape, { kind: "Ellipse" }>): Shape {
+  const step = (Math.PI * 2) / 16;
+  const k = (4 / 3) * Math.tan(step / 4);
+  return {
+    kind: "Path",
+    closed: true,
+    fill: shape.fill,
+    stroke: shape.stroke,
+    width: shape.width,
+    gradient: shape.gradient ?? null,
+    nodes: Array.from({ length: 16 }, (_, index) => {
+      const angle = index * step;
+      const point = {
+        x: shape.x + shape.w / 2 + (shape.w / 2) * Math.cos(angle),
+        y: shape.y + shape.h / 2 + (shape.h / 2) * Math.sin(angle)
+      };
+      const dx = -(shape.w / 2) * Math.sin(angle) * k;
+      const dy = (shape.h / 2) * Math.cos(angle) * k;
+      return {
+        point,
+        handle_in: { x: point.x - dx, y: point.y - dy },
+        handle_out: { x: point.x + dx, y: point.y + dy }
+      };
+    })
+  };
+}
+
+function convertedShape(shape: Shape, matrix: Affine, scale: number, rotation: number): Shape {
+  const source =
+    shape.kind === "Ellipse" && rotation % 90 !== 0 ? flattenedEllipse(shape) : shape;
+  const result = transformShape(source, matrix, scale, scale, rotation);
+  if ("width" in result) {
+    result.width *= scale;
+  }
+  if (!finiteShape(result)) {
+    throw new Error("invalid clipboard shape");
+  }
+  return result;
+}
+
+function artWorld(shape: Shape, place: Place): Shape {
+  return convertedShape(shape, boneMatrix(place), 1, (place.angle * 180) / Math.PI);
+}
+
+function artLocal(shape: Shape, place: Place): Shape {
+  const matrix = invertAffine(boneMatrix(place));
+  if (!matrix) {
+    throw new Error("bone has no inverse");
+  }
+  return convertedShape(shape, matrix, 1, -(place.angle * 180) / Math.PI);
+}
+
+function figurePlace(figure: Figure, bone: number): Place {
+  const place = figurePlaces(figure)[bone];
+  if (!place) {
+    throw new Error("no such bone");
+  }
+  return place;
+}
+
+function artShapes(figure: Figure): Shape[] {
+  const out: Shape[] = [];
+  figurePlaces(figure).forEach((place, index) => {
+    for (const shape of figure.bones[index].art) {
+      try {
+        out.push(artWorld(shape, place));
+      } catch {
+        continue;
+      }
+    }
+  });
+  return out;
+}
+
+function swingFigure(figure: Figure, bone: number, target: Point): void {
+  const places = figurePlaces(figure);
+  const place = places[bone];
+  if (!place) {
+    throw new Error("no such bone");
+  }
+  const parent = figure.bones[bone].parent;
+  const found = parent === null ? undefined : places[parent];
+  const parentAngle = found ? found.angle : (figure.rotation * Math.PI) / 180;
+  const dx = target.x - place.base.x;
+  const dy = target.y - place.base.y;
+  if (Math.hypot(dx, dy) < 0.001) {
+    throw new Error("the pointer is on the joint");
+  }
+  figure.bones[bone].twist = ((Math.atan2(dy, dx) - parentAngle) * 180) / Math.PI;
+}
+
+function placeArt(figure: Figure, bone: number, shapes: Shape[]): void {
+  const place = figurePlace(figure, bone);
+  for (const shape of shapes) {
+    figure.bones[bone].art.push(artLocal(shape, place));
+  }
+}
+
+function detachArt(figure: Figure, bone: number): Shape[] {
+  const place = figurePlace(figure, bone);
+  return figure.bones[bone].art.map((shape) => artWorld(shape, place));
+}
+
+function figureOf(shape: Shape): Figure {
+  if (shape.kind !== "Figure") {
+    throw new Error("shape is not a figure");
+  }
+  return shape.figure;
+}
+
 function shapeHit(shape: Shape, p: Point, radius: number): boolean {
   if (shape.kind === "Group") {
     const box = shapeBounds(shape);
@@ -166,6 +339,16 @@ function shapeHit(shape: Shape, p: Point, radius: number): boolean {
       p.x <= box.x + box.w + radius &&
       p.y >= box.y - radius &&
       p.y <= box.y + box.h + radius
+    );
+  }
+  if (shape.kind === "Figure") {
+    return (
+      figurePlaces(shape.figure).some((place, index) => {
+        const reach = radius + shape.figure.bones[index].width / 2;
+        return (
+          nearSegment(p, place.base, place.tip, reach) || within(p, place.tip, reach)
+        );
+      }) || artShapes(shape.figure).some((item) => shapeHit(item, p, radius))
     );
   }
   if (shape.kind === "Stroke") {
@@ -260,6 +443,10 @@ function validateShape(shape: Shape): void {
     }
     return;
   }
+  if (shape.kind === "Figure") {
+    checkFigure(shape.figure);
+    return;
+  }
   const gradient = shapeGradient(shape);
   if (gradient) {
     validateGradient(gradient);
@@ -331,6 +518,19 @@ function paintFill(shape: Shape, color: string): Shape {
       children: shape.children.map((child) => paintFill(child, color))
     };
   }
+  if (shape.kind === "Figure") {
+    return {
+      kind: "Figure",
+      figure: {
+        ...shape.figure,
+        bones: shape.figure.bones.map((bone) => ({
+          ...bone,
+          color,
+          art: bone.art.map((item) => paintFill(item, color))
+        }))
+      }
+    };
+  }
   if (shape.kind === "Stroke" || shape.kind === "Text") {
     return shape;
   }
@@ -398,6 +598,29 @@ export function transformShape(
     return {
       kind: "Group",
       children: shape.children.map((child) => transformShape(child, matrix, sx, sy, rotation))
+    };
+  }
+  if (shape.kind === "Figure") {
+    if (Math.abs(sx - sy) > 0.0001) {
+      throw new Error("a figure cannot be stretched in one direction");
+    }
+    const scale = Math.sqrt(matrix.a * matrix.d - matrix.b * matrix.c);
+    const grown: Affine = { a: scale, b: 0, c: 0, d: scale, e: 0, f: 0 };
+    const moved = applyAffine(matrix, { x: shape.figure.x, y: shape.figure.y });
+    return {
+      kind: "Figure",
+      figure: {
+        x: moved.x,
+        y: moved.y,
+        rotation: shape.figure.rotation + rotation,
+        bones: shape.figure.bones.map((bone) => ({
+          ...bone,
+          anchor: { x: bone.anchor.x * scale, y: bone.anchor.y * scale },
+          length: bone.length * scale,
+          width: bone.width * scale,
+          art: bone.art.map((item) => transformShape(item, grown, scale, scale, 0))
+        }))
+      }
     };
   }
   if (shape.kind === "Stroke") {
@@ -956,6 +1179,19 @@ function mixable(a: Shape, b: Shape): boolean {
       a.children.every((child, index) => mixable(child, b.children[index]))
     );
   }
+  if (a.kind === "Figure" && b.kind === "Figure") {
+    return (
+      a.figure.bones.length === b.figure.bones.length &&
+      a.figure.bones.every((bone, index) => {
+        const other = b.figure.bones[index];
+        return (
+          bone.parent === other.parent &&
+          bone.art.length === other.art.length &&
+          bone.art.every((item, position) => mixable(item, other.art[position]))
+        );
+      })
+    );
+  }
   return false;
 }
 
@@ -970,6 +1206,28 @@ function mixShape(a: Shape, b: Shape, t: number): Shape {
     return {
       kind: "Group",
       children: a.children.map((child, index) => mixShape(child, b.children[index], t))
+    };
+  }
+  if (a.kind === "Figure" && b.kind === "Figure" && mixable(a, b)) {
+    return {
+      kind: "Figure",
+      figure: {
+        x: mix(a.figure.x, b.figure.x, t),
+        y: mix(a.figure.y, b.figure.y, t),
+        rotation: mix(a.figure.rotation, b.figure.rotation, t),
+        bones: a.figure.bones.map((bone, index) => {
+          const other = b.figure.bones[index];
+          return {
+            parent: bone.parent,
+            anchor: mixPoint(bone.anchor, other.anchor, t),
+            length: mix(bone.length, other.length, t),
+            twist: mix(bone.twist, other.twist, t),
+            width: mix(bone.width, other.width, t),
+            color: mixColor(bone.color, other.color, t),
+            art: bone.art.map((item, position) => mixShape(item, other.art[position], t))
+          };
+        })
+      }
     };
   }
   if (a.kind === "Rect" && b.kind === "Rect") {
@@ -1690,6 +1948,81 @@ mockIPC(
             throw new Error("unknown shape");
           }
           key.shapes.splice(index, 1);
+        });
+      case "doc_add_figure": {
+        const figure: Shape = {
+          kind: "Figure",
+          figure: humanoidFigure(a.x as number, a.y as number, a.height as number)
+        };
+        validateShape(figure);
+        return edit(a.id as string, (doc) => {
+          const target = layer(doc, a.sceneId as string, a.layerId as string);
+          writable(target);
+          target.keys[keyAt(target, a.frame as number)].shapes.push(figure);
+        });
+      }
+      case "doc_pose_figure":
+        return edit(a.id as string, (doc) => {
+          const target = layer(doc, a.sceneId as string, a.layerId as string);
+          writable(target);
+          const key = target.keys[keyAt(target, a.frame as number)];
+          const shape = key.shapes[a.index as number];
+          if (!shape) {
+            throw new Error("unknown shape");
+          }
+          swingFigure(figureOf(shape), a.bone as number, a.target as Point);
+          validateShape(shape);
+        });
+      case "doc_attach_art": {
+        const wanted = a.shapes as number[];
+        if (wanted.length === 0) {
+          throw new Error("no shapes selected");
+        }
+        return edit(a.id as string, (doc) => {
+          const target = layer(doc, a.sceneId as string, a.layerId as string);
+          writable(target);
+          const key = target.keys[keyAt(target, a.frame as number)];
+          const index = a.index as number;
+          const taken = [...new Set(wanted)].sort((x, y) => x - y);
+          for (const item of taken) {
+            if (item === index || item >= key.shapes.length) {
+              throw new Error("unknown shape");
+            }
+          }
+          const holder = key.shapes[index];
+          if (!holder) {
+            throw new Error("unknown shape");
+          }
+          figureOf(holder);
+          const moved: Shape[] = [];
+          for (const item of [...taken].reverse()) {
+            moved.push(key.shapes.splice(item, 1)[0]);
+          }
+          moved.reverse();
+          const shift = taken.filter((item) => item < index).length;
+          const shape = key.shapes[index - shift];
+          placeArt(figureOf(shape), a.bone as number, moved);
+          validateShape(shape);
+        });
+      }
+      case "doc_detach_art":
+        return edit(a.id as string, (doc) => {
+          const target = layer(doc, a.sceneId as string, a.layerId as string);
+          writable(target);
+          const key = target.keys[keyAt(target, a.frame as number)];
+          const index = a.index as number;
+          const shape = key.shapes[index];
+          if (!shape) {
+            throw new Error("unknown shape");
+          }
+          const figure = figureOf(shape);
+          const world = detachArt(figure, a.bone as number);
+          if (world.length === 0) {
+            throw new Error("that bone carries no artwork");
+          }
+          world.forEach((item) => validateShape(item));
+          figure.bones[a.bone as number].art = [];
+          key.shapes.push(...world);
         });
       case "doc_transform_shapes": {
         const indices = a.indices as number[];
