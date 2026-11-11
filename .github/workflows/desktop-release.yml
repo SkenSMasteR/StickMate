@@ -14,6 +14,7 @@ jobs:
   build:
     name: Build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -29,8 +30,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+          apt="sudo apt-get -o Acquire::Retries=10 -o Acquire::http::Timeout=20"
+          pkgs="libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev"
+          $apt update
+          tries=0
+          until $apt install -y $pkgs; do
+            tries=$((tries + 1))
+            if [ "$tries" -ge 3 ]; then
+              exit 1
+            fi
+            sleep 20
+          done
       - name: Install app dependencies
         shell: bash
         working-directory: desktop
