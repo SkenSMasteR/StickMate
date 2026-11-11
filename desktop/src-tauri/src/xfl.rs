@@ -166,6 +166,23 @@ pub fn solid_present(value: &str) -> bool {
     value.trim().starts_with('#') && !matches!(value.trim()[1..].to_ascii_lowercase().as_str(), "" | "none")
 }
 
+pub fn face(family: &str) -> String {
+    let mapped = match family.trim().to_ascii_lowercase().as_str() {
+        "arial" => "ArialMT",
+        "arial black" => "ArialBlack",
+        "times new roman" => "TimesNewRomanPSMT",
+        "courier new" => "CourierNewPSMT",
+        "verdana" => "Verdana",
+        "georgia" => "Georgia",
+        "trebuchet ms" => "TrebuchetMS",
+        "comic sans ms" => "ComicSansMS",
+        "impact" => "Impact",
+        "tahoma" => "Tahoma",
+        _ => return family.trim().to_string(),
+    };
+    mapped.to_string()
+}
+
 fn place(transform: &Transform, point: &Point) -> Point {
     let matrix = transform_matrix(transform);
     apply(&matrix, point)
@@ -581,7 +598,7 @@ pub fn render(model: &XflDocument) -> String {
     let (background, _) = color_alpha(&model.background);
     let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
     out.push_str(&format!(
-        "<DOMDocument xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns=\"http://ns.adobe.com/xfl/2008/\" backgroundColor=\"{background}\" width=\"{}\" height=\"{}\" currentTimeline=\"1\" xflVersion=\"2.01\" creatorInfo=\"StickMate\" platform=\"Windows\" versionInfo=\"Saved by StickMate\" majorVersion=\"20\" buildNumber=\"0\" frameRate=\"{:.4}\" nextSceneIdentifier=\"{}\" playOptionsPlayLoop=\"false\" playOptionsPlayPages=\"false\" playOptionsPlayFrameActions=\"false\">\n",
+        "<DOMDocument xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns=\"http://ns.adobe.com/xfl/2008/\" backgroundColor=\"{background}\" width=\"{}\" height=\"{}\" currentTimeline=\"1\" xflVersion=\"2.971\" creatorInfo=\"StickMate\" platform=\"Windows\" versionInfo=\"Saved by StickMate\" majorVersion=\"20\" buildNumber=\"0\" frameRate=\"{:.4}\" nextSceneIdentifier=\"{}\" playOptionsPlayLoop=\"false\" playOptionsPlayPages=\"false\" playOptionsPlayFrameActions=\"false\">\n",
         model.width.max(1),
         model.height.max(1),
         model.fps as f64,
@@ -720,7 +737,7 @@ fn text_xml(text: &XflText, indent: &str) -> String {
         escape(&text.text).replace('\n', "&#xd;"),
         num((text.size * text.leading).max(text.size)),
         num(text.size),
-        escape(&text.family),
+        escape(&face(&text.family)),
         text.color,
         text.align,
         num(text.spacing),
@@ -833,6 +850,13 @@ mod tests {
     }
 
     #[test]
+    fn fonts_use_the_postscript_names_animate_expects() {
+        assert_eq!(face("Arial"), "ArialMT");
+        assert_eq!(face("Times New Roman"), "TimesNewRomanPSMT");
+        assert_eq!(face("Helvetica Neue"), "Helvetica Neue");
+    }
+
+    #[test]
     fn quadratics_track_the_cubic() {
         let start = Point { x: 0.0, y: 0.0 };
         let one = Point { x: 0.0, y: 60.0 };
@@ -900,6 +924,7 @@ mod tests {
         assert!(xml.contains("<Edge fillStyle1=\"1\" edges=\"!0 0|40 0!40 0|40 40!40 40|0 40!0 40|0 0\"/>"));
         assert!(xml.contains("<SolidColor color=\"#ff0000\" />"));
         assert!(xml.contains("frameRate=\"24.0000\""));
+        assert!(xml.contains("xflVersion=\"2.971\""));
         assert!(xml.contains("backgroundColor=\"#ffffff\""));
     }
 
@@ -960,7 +985,7 @@ mod tests {
         let held = layer(vec![key(0, vec![shape])], 1);
         let xml = frame_xml(&export_frames(&held)[0], "");
         assert!(xml.contains("<characters>hi&#xd;there</characters>"));
-        assert!(xml.contains("face=\"Arial\""));
+        assert!(xml.contains("face=\"ArialMT\""));
         assert!(xml.contains("fillColor=\"#616161\""));
         assert!(xml.contains("textAlign=\"center\""));
         assert!(xml.contains("tx=\"4\" ty=\"6\""));
