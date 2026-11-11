@@ -193,6 +193,8 @@ pub fn archive_members(doc: &Document) -> Vec<(String, Vec<u8>)> {
     vec![
         (format!("{stem}.xfl"), b"PROXY-CS5".to_vec()),
         (xfl::LIBRARY_FOLDER.to_string(), Vec::new()),
+        ("META-INF/".to_string(), Vec::new()),
+        ("publishtemplates/".to_string(), Vec::new()),
         (xfl::METADATA.to_string(), Vec::new()),
         (
             xfl::DOM_DOCUMENT.to_string(),
@@ -414,6 +416,8 @@ mod tests {
             vec![
                 "Balloon Game.xfl",
                 "LIBRARY/",
+                "META-INF/",
+                "publishtemplates/",
                 "META-INF/metadata.xml",
                 "DOMDocument.xml",
                 "PublishSettings.xml"
