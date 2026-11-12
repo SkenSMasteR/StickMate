@@ -1472,6 +1472,12 @@ pub fn ease_progress(t: f64, easing: Easing) -> f64 {
     cubic_value(easing.y1, easing.y2, u)
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct FrameRun {
+    pub shapes: Vec<Shape>,
+    pub span: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Keyframe {
     pub frame: u32,
@@ -3125,6 +3131,36 @@ impl DocStore {
         })
     }
 
+    pub fn set_frames(
+        &self,
+        id: &str,
+        scene_id: &str,
+        layer_id: &str,
+        frame: u32,
+        run: Vec<FrameRun>,
+    ) -> Result<Document, String> {
+        for step in &run {
+            if step.span == 0 {
+                return Err("a frame must last at least one frame".to_string());
+            }
+            for shape in &step.shapes {
+                validate(shape)?;
+            }
+        }
+        self.edit_named(id, "place_animation", |doc| {
+            let layer = doc.leaf_mut(scene_id, layer_id)?;
+            layer.writable()?;
+            let mut at = frame;
+            for step in &run {
+                let index = layer.key_at(at);
+                layer.keys[index].shapes = step.shapes.clone();
+                layer.length = layer.length.max(at + step.span);
+                at += step.span;
+            }
+            Ok(())
+        })
+    }
+
     pub fn erase(
         &self,
         id: &str,
@@ -4272,6 +4308,18 @@ pub fn doc_set_keyframes(
     run: Vec<Vec<Shape>>,
 ) -> Result<Document, String> {
     store.set_keyframes(&id, &scene_id, &layer_id, frame, run)
+}
+
+#[tauri::command]
+pub fn doc_set_frames(
+    store: State<'_, DocStore>,
+    id: String,
+    scene_id: String,
+    layer_id: String,
+    frame: u32,
+    run: Vec<FrameRun>,
+) -> Result<Document, String> {
+    store.set_frames(&id, &scene_id, &layer_id, frame, run)
 }
 
 #[tauri::command]
@@ -10237,6 +10285,111 @@ mod tests {
             .draw(id, &fixture.scene, &fixture.layer, 0, shape.clone())
             .expect("draw");
         assert_eq!(fixture.target(&drawn).keys[0].shapes, vec![shape]);
+    }
+
+    #[test]
+    fn an_animation_holds_each_frame_for_its_span() {
+        let fixture = Fixture::new("animation-frames");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        let run = vec![
+            FrameRun {
+                shapes: vec![image(0.0, 0.0)],
+                span: 3,
+            },
+            FrameRun {
+                shapes: vec![image(40.0, 0.0)],
+                span: 2,
+            },
+        ];
+        let placed = store
+            .set_frames(id, &fixture.scene, &fixture.layer, 1, run)
+            .expect("animation");
+        let target = fixture.target(&placed);
+        assert_eq!(
+            target
+                .keys
+                .iter()
+                .map(|key| (key.frame, key.shapes.clone()))
+                .collect::<Vec<_>>(),
+            vec![(0, Vec::new()), (1, vec![image(0.0, 0.0)]), (4, vec![image(40.0, 0.0)])]
+        );
+        assert_eq!(target.length, 6);
+        assert_eq!(
+            store.history(id).expect("history").last().expect("step").name,
+            "place_animation"
+        );
+        let undone = store.undo(id).expect("undo");
+        assert_eq!(fixture.target(&undone).keys.len(), 1);
+        assert_eq!(fixture.target(&undone).length, 1);
+    }
+
+    #[test]
+    fn an_animation_refuses_spans_shapes_and_locks() {
+        let fixture = Fixture::new("animation-refuse");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        assert_eq!(
+            store
+                .set_frames(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    vec![FrameRun {
+                        shapes: vec![image(0.0, 0.0)],
+                        span: 0,
+                    }]
+                )
+                .unwrap_err(),
+            "a frame must last at least one frame"
+        );
+        assert_eq!(
+            store
+                .set_frames(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    vec![FrameRun {
+                        shapes: vec![picture(0.0, 0.0, 0.0, 4.0)],
+                        span: 2,
+                    }]
+                )
+                .unwrap_err(),
+            "bitmap size must be between 1 and 16384"
+        );
+        store
+            .set_layer(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                None,
+                None,
+                Some(true),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("lock");
+        let before = store.history(id).expect("history").len();
+        assert_eq!(
+            store
+                .set_frames(
+                    id,
+                    &fixture.scene,
+                    &fixture.layer,
+                    0,
+                    vec![FrameRun {
+                        shapes: vec![image(0.0, 0.0)],
+                        span: 2,
+                    }]
+                )
+                .unwrap_err(),
+            "layer is locked"
+        );
+        assert_eq!(store.history(id).expect("history").len(), before);
     }
 
     #[test]

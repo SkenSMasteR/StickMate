@@ -1,6 +1,7 @@
 import {
   Brush,
   Circle,
+  Clapperboard,
   Download,
   Eraser,
   Film,
@@ -60,6 +61,7 @@ export default function ToolsPanel({
   const bottom = [
     { id: "media.importImage", icon: ImagePlus, run: actions.importImage },
     { id: "media.importSequence", icon: Film, run: actions.importSequence },
+    { id: "media.importGif", icon: Clapperboard, run: actions.importGif },
     { id: "view.export", icon: Download, run: onExport },
     ...(onPalette ? [{ id: "view.palette", icon: Search, run: onPalette }] : []),
     { id: "view.shortcuts", icon: Keyboard, run: onShortcuts }

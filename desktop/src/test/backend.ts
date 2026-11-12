@@ -35,6 +35,7 @@ import type {
   EvalFrame,
   EvalLayer,
   Figure,
+  FrameRun,
   Gradient,
   GradientStop,
   Keyframe,
@@ -2002,6 +2003,31 @@ mockIPC(
             });
           },
           "place_image_sequence"
+        );
+      }
+      case "doc_set_frames": {
+        const run = a.run as FrameRun[];
+        for (const step of run) {
+          if (step.span < 1) {
+            throw new Error("a frame must last at least one frame");
+          }
+          for (const shape of step.shapes) {
+            validateShape(shape);
+          }
+        }
+        return edit(
+          a.id as string,
+          (doc) => {
+            const target = layer(doc, a.sceneId as string, a.layerId as string);
+            writable(target);
+            let at = a.frame as number;
+            for (const step of run) {
+              target.keys[keyAt(target, at)].shapes = structuredClone(step.shapes);
+              target.length = Math.max(target.length, at + step.span);
+              at += step.span;
+            }
+          },
+          "place_animation"
         );
       }
       case "doc_erase": {

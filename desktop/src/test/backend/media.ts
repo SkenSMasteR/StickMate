@@ -1,4 +1,4 @@
-import type { MediaInfo } from "@/lib/media";
+import type { AnimationFrame, MediaInfo } from "@/lib/media";
 import type { MockExtension } from "../backend";
 
 const SOURCES: Record<string, string> = {
@@ -18,11 +18,20 @@ interface Numbered {
 let width = 24;
 let height = 12;
 let sequence: string[] = [];
+let frames = 1;
+let delay = 100;
 
 export function reset(): void {
   width = 24;
   height = 12;
   sequence = [];
+  frames = 1;
+  delay = 100;
+}
+
+export function nextFrames(count: number, ms: number): void {
+  frames = count;
+  delay = ms;
 }
 
 export function nextSize(w: number, h: number): void {
@@ -92,5 +101,18 @@ export const handlers: MockExtension = () => ({
     return run
       .sort((a, b) => a.number - b.number)
       .map((item) => info(item.path, item.number));
+  },
+
+  media_gif: (args): AnimationFrame[] => {
+    const image = info(String(args.path));
+    if (image.kind !== "gif") {
+      throw new Error("the file is not a readable GIF animation");
+    }
+    return Array.from({ length: frames }, (_, index) => ({
+      source: `data:image/png;base64,iVBORw0KGgo=${index}`,
+      width: image.width,
+      height: image.height,
+      delay
+    }));
   }
 });

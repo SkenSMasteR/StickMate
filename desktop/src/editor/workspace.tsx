@@ -12,8 +12,8 @@ import { useI18n } from "@/i18n";
 import { useConfirm } from "@/lib/confirm";
 import { usePrefs } from "@/lib/prefs";
 import type { ViewPrefs } from "@/lib/view";
-import { askImageOpen, mediaRead, mediaSequence } from "@/lib/media";
-import type { MediaInfo } from "@/lib/media";
+import { askGifOpen, askImageOpen, mediaGif, mediaRead, mediaSequence } from "@/lib/media";
+import type { AnimationFrame, MediaInfo } from "@/lib/media";
 import {
   docAddFolder,
   docAddFigure,
@@ -47,6 +47,7 @@ import {
   docReorderShapes,
   docReachFigure,
   docReplaceShape,
+  docSetFrames,
   docSetKeyframes,
   docSetLabel,
   docSetLayer,
@@ -180,7 +181,11 @@ function clamp(value: number, low: number, high: number): number {
   return Math.min(Math.max(value, low), high);
 }
 
-function bitmapAt(stageWidth: number, stageHeight: number, image: MediaInfo): Shape {
+function bitmapAt(
+  stageWidth: number,
+  stageHeight: number,
+  image: { source: string; width: number; height: number }
+): Shape {
   const scale = Math.min(1, stageWidth / image.width, stageHeight / image.height);
   const w = image.width * scale;
   const h = image.height * scale;
@@ -264,6 +269,7 @@ export interface Actions {
   drawFigure: (x: number, y: number) => void;
   importImage: () => void;
   importSequence: () => void;
+  importGif: () => void;
   poseFigure: (index: number, bone: number, target: Point) => void;
   reachFigure: (index: number, bone: number, target: Point) => void;
   attachArt: () => void;
@@ -794,6 +800,35 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       void askImageOpen()
         .then((path) => (path === null ? null : mediaSequence(path)))
         .then((images) => (images === null ? Promise.resolve(false) : place(images)))
+        .then((ok) => {
+          if (ok) {
+            setTab({ selected: [0], selectedBone: null, selectedNode: null, pivot: null });
+          }
+        })
+        .catch((error) => {
+          toast.error(String(error));
+        });
+    },
+    importGif: () => {
+      if (!doc || !layer || layer.locked) {
+        return;
+      }
+      const place = (frames: AnimationFrame[]) =>
+        edit((d, s, l) =>
+          docSetFrames(
+            d.id,
+            s.id,
+            l.id,
+            frame,
+            frames.map((image) => ({
+              shapes: [bitmapAt(d.width, d.height, image)],
+              span: Math.max(1, Math.round((image.delay * d.fps) / 1000))
+            }))
+          )
+        );
+      void askGifOpen()
+        .then((path) => (path === null ? null : mediaGif(path)))
+        .then((frames) => (frames === null ? Promise.resolve(false) : place(frames)))
         .then((ok) => {
           if (ok) {
             setTab({ selected: [0], selectedBone: null, selectedNode: null, pivot: null });

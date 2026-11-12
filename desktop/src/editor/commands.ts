@@ -647,6 +647,12 @@ export function buildCommands(
       keys: "ctrl+shift+j",
       run: actions.importSequence
     },
+    {
+      id: "media.importGif",
+      label: t("command.importGif"),
+      keys: "ctrl+shift+k",
+      run: actions.importGif
+    },
     { id: "playback.toggle", label: t("command.play"), keys: "space", run: actions.togglePlay },
     { id: "playback.back", label: t("command.stepBack"), keys: ",", run: () => actions.step(-1) },
     { id: "playback.forward", label: t("command.stepForward"), keys: ".", run: () => actions.step(1) },

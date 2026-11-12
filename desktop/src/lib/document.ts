@@ -1214,6 +1214,21 @@ export function docSetKeyframes(
   return invoke<Document>("doc_set_keyframes", { id, sceneId, layerId, frame, run });
 }
 
+export interface FrameRun {
+  shapes: Shape[];
+  span: number;
+}
+
+export function docSetFrames(
+  id: string,
+  sceneId: string,
+  layerId: string,
+  frame: number,
+  run: FrameRun[]
+): Promise<Document> {
+  return invoke<Document>("doc_set_frames", { id, sceneId, layerId, frame, run });
+}
+
 export function docAddFigure(
   id: string,
   sceneId: string,

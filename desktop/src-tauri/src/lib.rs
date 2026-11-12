@@ -95,6 +95,7 @@ pub fn run() {
             document::doc_set_label,
             document::doc_draw,
             document::doc_set_keyframes,
+            document::doc_set_frames,
             document::doc_erase,
             document::doc_paint_shape,
             document::doc_replace_shape,
