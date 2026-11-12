@@ -49,6 +49,7 @@ pub struct XflBitmap {
     pub href: String,
     pub width: u32,
     pub height: u32,
+    pub item_id: String,
 }
 
 pub struct XflBitmapInstance {
@@ -78,6 +79,7 @@ impl Library {
             href: format!("Bitmap {}.{extension}", index + 1),
             width: info.width,
             height: info.height,
+            item_id: item_id(source),
         });
         self.files.push(bytes);
         self.seen.insert(source.to_string(), index);
@@ -830,8 +832,9 @@ fn media_xml(items: &[XflBitmap]) -> String {
     let mut out = String::from("     <media>\n");
     for item in items {
         out.push_str(&format!(
-            "          <DOMBitmapItem name=\"{}\" allowSmoothing=\"true\" originalCompressionType=\"lossless\" quality=\"50\" href=\"{}\" frameRight=\"{}\" frameBottom=\"{}\"/>\n",
+            "          <DOMBitmapItem name=\"{}\" itemID=\"{}\" allowSmoothing=\"true\" originalCompressionType=\"lossless\" quality=\"50\" href=\"{}\" frameRight=\"{}\" frameBottom=\"{}\"/>\n",
             escape(&item.name),
+            item.item_id,
             escape(&item.href),
             twips(item.width as f64),
             twips(item.height as f64)
@@ -839,6 +842,14 @@ fn media_xml(items: &[XflBitmap]) -> String {
     }
     out.push_str("     </media>\n");
     out
+}
+
+fn item_id(source: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in source.as_bytes() {
+        hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:08x}-{:08x}", hash >> 32, hash as u32)
 }
 
 fn layer_xml(layer: &XflLayer, indent: &str, current: bool) -> String {
@@ -1390,7 +1401,7 @@ mod tests {
         let xml = document_xml(&doc);
         assert_eq!(xml.matches("<DOMBitmapItem").count(), 2);
         assert_eq!(xml.matches("<DOMBitmapInstance").count(), 3);
-        assert!(xml.contains("name=\"Bitmap 1\" allowSmoothing=\"true\""));
+        assert!(xml.contains("name=\"Bitmap 1\" itemID=\""));
         assert!(xml.contains("href=\"Bitmap 1.png\" frameRight=\"400\" frameBottom=\"200\""));
         assert!(xml.contains("href=\"Bitmap 2.png\" frameRight=\"600\" frameBottom=\"300\""));
         assert!(xml.find("<media>").expect("media") < xml.find("<symbols/>").expect("symbols"));
@@ -1400,6 +1411,30 @@ mod tests {
                 ("LIBRARY/Bitmap 1.png".to_string(), png(20, 10)),
                 ("LIBRARY/Bitmap 2.png".to_string(), png(30, 15)),
             ]
+        );
+    }
+
+    fn item_ids(xml: &str) -> Vec<String> {
+        xml.split("itemID=\"")
+            .skip(1)
+            .map(|rest| rest[..rest.find('"').unwrap_or(0)].to_string())
+            .collect()
+    }
+
+    #[test]
+    fn library_items_keep_their_identity_between_saves() {
+        let shared = crate::media::data_url("png", &png(20, 10));
+        let other = crate::media::data_url("png", &png(30, 15));
+        let first = document_xml(&book(vec![image(0.0, 0.0, 40.0, 20.0, &shared)]));
+        let again = document_xml(&book(vec![image(0.0, 0.0, 40.0, 20.0, &shared)]));
+        let changed = document_xml(&book(vec![image(0.0, 0.0, 40.0, 20.0, &other)]));
+        let ids = item_ids(&first);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids, item_ids(&again));
+        assert_ne!(ids, item_ids(&changed));
+        assert_eq!(
+            ids[0].chars().filter(|value| value.is_ascii_hexdigit()).count(),
+            16
         );
     }
 
