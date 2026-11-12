@@ -1,9 +1,17 @@
 import type { Document } from "@/lib/document";
 
-export type PanelId = "tools" | "scenes" | "timeline" | "side" | "history" | "view";
+export type PanelId = "tools" | "scenes" | "timeline" | "side" | "history" | "view" | "report";
 export type ZoneId = "left" | "top" | "bottom" | "right";
 
-export const PANEL_IDS: PanelId[] = ["tools", "scenes", "timeline", "side", "history", "view"];
+export const PANEL_IDS: PanelId[] = [
+  "tools",
+  "scenes",
+  "timeline",
+  "side",
+  "history",
+  "view",
+  "report"
+];
 export const ZONE_IDS: ZoneId[] = ["left", "top", "bottom", "right"];
 
 export const WORKSPACE_ICONS = [
@@ -67,10 +75,10 @@ export const defaultLayout: DockLayout = {
     left: ["tools"],
     top: ["scenes"],
     bottom: ["timeline"],
-    right: ["side", "history", "view"]
+    right: ["side", "history", "view", "report"]
   },
   sizes: { left: 40, right: 264, bottom: 220 },
-  hidden: ["history"],
+  hidden: ["history", "report"],
   detached: [],
   windows: {}
 };

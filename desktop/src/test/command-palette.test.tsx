@@ -61,7 +61,9 @@ function Host({ docId }: { docId: string }) {
       openPalette,
       confirm,
       activate,
-      close
+      close,
+      importAnimate: () => {},
+      exportAnimate: () => {}
     }
   );
 

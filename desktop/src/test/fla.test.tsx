@@ -1,15 +1,19 @@
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
 import Projects from "@/app/hub/Projects";
 import { Toaster } from "@/components/ui/sonner";
 import { WorkspaceProvider } from "@/editor/workspace";
 import { I18nProvider } from "@/i18n";
+import en from "@/i18n/en.json";
 import { ConfirmProvider } from "@/lib/confirm";
 import type { Document, Keyframe, Layer, Scene, Shape } from "@/lib/document";
+import { clearFlaReport, getFlaReport } from "@/lib/fla-report";
 import { PrefsProvider } from "@/lib/prefs";
 import { store } from "./backend";
 import { nextImport, written } from "./backend/fla";
 import { nextOpenPath, nextSavePath } from "./backend/dialog";
+import { flush, getCanvas, renderEditor } from "./utils";
 
 function keyframe(shapes: Shape[], tween = false): Keyframe {
   return {
@@ -65,14 +69,14 @@ function seed(doc: Document): void {
   store.set(doc.id, { doc, undo: [], redo: [], updated_at: Date.now() });
 }
 
-function mount(): void {
+function mount(onReport = () => {}): void {
   render(
     <I18nProvider language="en" onLanguageChange={() => {}}>
       <ConfirmProvider>
         <PrefsProvider>
           <WorkspaceProvider>
             <Toaster />
-            <Projects onOpened={() => {}} />
+            <Projects onOpened={() => {}} onReport={onReport} />
           </WorkspaceProvider>
         </PrefsProvider>
       </ConfirmProvider>
@@ -93,6 +97,11 @@ async function exportButton(name: string): Promise<HTMLButtonElement> {
 }
 
 describe("animate project exchange", () => {
+  beforeEach(() => {
+    clearFlaReport();
+    toast.dismiss();
+  });
+
   test("exports the picked project to the chosen path", async () => {
     seed({
       id: "p1",
@@ -111,7 +120,7 @@ describe("animate project exchange", () => {
     );
   });
 
-  test("reports the constructs the export flattened", async () => {
+  test("keeps the constructs the export flattened in the report", async () => {
     seed({
       id: "p2",
       name: "Flat",
@@ -127,24 +136,57 @@ describe("animate project exchange", () => {
         }
       ]
     });
+    const onReport = vi.fn();
     nextSavePath("C:/Users/Test/Downloads/Flat.fla");
-    mount();
+    mount(onReport);
     fireEvent.click(await exportButton("Flat"));
     await waitFor(() =>
       expect(written.get("C:/Users/Test/Downloads/Flat.fla")).toBe("Flat")
     );
-    expect(await screen.findByText("gradient fills are exported as flat colours")).toBeTruthy();
-    expect(screen.getByText("blend modes are not exported")).toBeTruthy();
-    expect(screen.getByText("tweens are exported as keyframes that hold until the next key")).toBeTruthy();
+    const entry = await screen.findByText("Open report");
+    expect(getFlaReport()).toHaveLength(1);
+    expect(getFlaReport()[0].kind).toBe("export");
+    expect(getFlaReport()[0].lines).toEqual([
+      "gradient fills are exported as flat colours",
+      "blend modes are not exported",
+      "tweens are exported as keyframes that hold until the next key"
+    ]);
+    expect(screen.queryByText("blend modes are not exported")).toBeNull();
+    fireEvent.click(entry);
+    expect(onReport).toHaveBeenCalledOnce();
   });
 
   test("imports an animate file as a new project", async () => {
     mount();
     nextOpenPath("C:/Users/Test/Downloads/tut.fla");
-    nextImport({ name: "Tut", notes: ["symbol instances were skipped"] });
+    nextImport({ name: "Tut", notes: ["6577 library symbols were not imported"] });
     fireEvent.click(screen.getByText("Import"));
     expect(await screen.findByText("Tut")).toBeTruthy();
-    expect(await screen.findByText("symbol instances were skipped")).toBeTruthy();
+    expect(getFlaReport()).toHaveLength(1);
+    expect(getFlaReport()[0].kind).toBe("import");
+    expect(getFlaReport()[0].name).toBe("C:/Users/Test/Downloads/tut.fla");
+    expect(getFlaReport()[0].lines).toEqual(["6577 library symbols were not imported"]);
+    expect(screen.queryByText("6577 library symbols were not imported")).toBeNull();
+  });
+
+  test("keeps the report empty when nothing was flattened", async () => {
+    seed({
+      id: "p4",
+      name: "Clean",
+      width: 320,
+      height: 240,
+      fps: 24,
+      background: "#ffffff",
+      scenes: [{ id: "s0", name: "Scene 1", layers: [layer()] }]
+    });
+    nextSavePath("C:/Users/Test/Downloads/Clean.fla");
+    mount();
+    fireEvent.click(await exportButton("Clean"));
+    await waitFor(() =>
+      expect(written.get("C:/Users/Test/Downloads/Clean.fla")).toBe("Clean")
+    );
+    expect(getFlaReport()).toHaveLength(0);
+    expect(screen.queryByText("Open report")).toBeNull();
   });
 
   test("does nothing when the save dialog is cancelled", async () => {
@@ -165,4 +207,44 @@ describe("animate project exchange", () => {
     });
     expect(written.size).toBe(0);
   });
+});
+
+describe("animate exchange in the editor", () => {
+  beforeEach(() => {
+    clearFlaReport();
+    toast.dismiss();
+  });
+
+  async function openFileMenu(): Promise<void> {
+    fireEvent.pointerDown(screen.getByRole("button", { name: en["menu.file"] }), {
+      button: 0
+    });
+    await flush();
+  }
+
+  test("the file menu imports an animate file into the report panel", async () => {
+    await renderEditor();
+    nextOpenPath("C:/Users/Test/Downloads/tut.fla");
+    nextImport({ name: "Tut", notes: ["6577 library symbols were not imported"] });
+    await openFileMenu();
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: en["command.importAnimate"] })
+    );
+    await waitFor(() => expect(getCanvas(640, 360)).toBeTruthy());
+    expect(screen.getByRole("tab", { name: en["panel.report"] })).toBeTruthy();
+    expect(screen.getByText("library symbols were not imported")).toBeTruthy();
+    expect(screen.getByText("6577")).toBeTruthy();
+  }, 30000);
+
+  test("the file menu exports the open project through the same command", async () => {
+    const { doc } = await renderEditor();
+    nextSavePath("C:/Users/Test/Downloads/Test.fla");
+    await openFileMenu();
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: en["command.exportAnimate"] })
+    );
+    await waitFor(() => expect(written.get("C:/Users/Test/Downloads/Test.fla")).toBe(doc.name));
+    expect(getFlaReport()).toHaveLength(0);
+    expect(screen.queryByRole("tab", { name: en["panel.report"] })).toBeNull();
+  }, 30000);
 });

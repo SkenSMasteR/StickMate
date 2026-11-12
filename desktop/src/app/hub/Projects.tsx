@@ -9,7 +9,7 @@ import { useWorkspace } from "@/editor/workspace";
 import { useI18n } from "@/i18n";
 import { docList, docRecoveryReport } from "@/lib/document";
 import type { ProjectSummary } from "@/lib/document";
-import { askFlaOpen, askFlaSave, exportFla, importFla } from "@/lib/fla";
+import { exportAnimate, importAnimate } from "@/lib/fla";
 
 const pinKey = "stickmate.pins";
 
@@ -38,7 +38,13 @@ function formatUpdated(timestamp: number, language: string): string {
   }
 }
 
-export default function Projects({ onOpened }: { onOpened: (id: string) => void }) {
+export default function Projects({
+  onOpened,
+  onReport
+}: {
+  onOpened: (id: string) => void;
+  onReport: () => void;
+}) {
   const { t, language } = useI18n();
   const { open, remove } = useWorkspace();
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -79,16 +85,21 @@ export default function Projects({ onOpened }: { onOpened: (id: string) => void 
     }
   };
 
-  const exportProject = async (project: ProjectSummary) => {
-    const path = await askFlaSave(project.name);
-    if (!path) {
+  const announce = (name: string, lines: string[]) => {
+    if (lines.length === 0) {
+      toast.success(name);
       return;
     }
+    toast.warning(name, {
+      action: { label: t("report.open"), onClick: onReport }
+    });
+  };
+
+  const exportProject = async (project: ProjectSummary) => {
     try {
-      const result = await exportFla(project.id, path);
-      toast.success(result.path);
-      for (const warning of result.warnings) {
-        toast.warning(warning);
+      const result = await exportAnimate(project.id, project.name);
+      if (result) {
+        announce(result.path, result.warnings);
       }
     } catch (error) {
       toast.error(String(error));
@@ -96,17 +107,13 @@ export default function Projects({ onOpened }: { onOpened: (id: string) => void 
   };
 
   const importProject = async () => {
-    const path = await askFlaOpen();
-    if (!path) {
-      return;
-    }
     try {
-      const result = await importFla(path);
-      await refresh();
-      toast.success(result.name);
-      for (const note of result.notes) {
-        toast.warning(note);
+      const result = await importAnimate();
+      if (!result) {
+        return;
       }
+      await refresh();
+      announce(result.name, result.notes);
     } catch (error) {
       toast.error(String(error));
     }

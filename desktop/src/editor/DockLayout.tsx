@@ -33,8 +33,14 @@ interface DockValue {
 
 const DockContext = createContext<DockValue | null>(null);
 
+export interface PanelFocus {
+  panel: PanelId;
+  token: number;
+}
+
 export function DockProvider({
   layout,
+  focus,
   onChange,
   onDetach,
   onHide,
@@ -42,6 +48,7 @@ export function DockProvider({
   children
 }: {
   layout: DockLayout;
+  focus: PanelFocus | null;
   onChange: (next: DockLayout) => void;
   onDetach: (panel: PanelId) => void;
   onHide: (panel: PanelId) => void;
@@ -61,6 +68,15 @@ export function DockProvider({
   const dragRef = useRef<PanelId | null>(null);
   const dropRef = useRef<DropTarget | null>(null);
   const previousZones = useRef(layout.zones);
+  const [focused, setFocused] = useState<number | null>(null);
+
+  if (focus && focus.token !== focused) {
+    setFocused(focus.token);
+    const zone = ZONE_IDS.find((id) => layout.zones[id].includes(focus.panel));
+    if (zone) {
+      setActiveState((current) => ({ ...current, [zone]: focus.panel }));
+    }
+  }
 
   useEffect(() => {
     const previous = previousZones.current;

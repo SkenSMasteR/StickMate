@@ -28,8 +28,11 @@ import {
 import Canvas from "./Canvas";
 import CommandPalette from "./CommandPalette";
 import { DockProvider, DockZone } from "./DockLayout";
+import type { PanelFocus } from "./DockLayout";
 import ExportDialog from "./ExportDialog";
+import FileMenu from "./FileMenu";
 import HistoryPanel from "./HistoryPanel";
+import ReportPanel from "./ReportPanel";
 import ScenesBar from "./ScenesBar";
 import ShortcutsDialog from "./ShortcutsDialog";
 import SidePanel from "./SidePanel";
@@ -38,6 +41,7 @@ import ToolsPanel from "./ToolsPanel";
 import ViewPanel from "./ViewPanel";
 import WorkspacePresetsDialog, { WorkspaceMenu } from "./WorkspacePresetsDialog";
 import { buildCommands, useCommandKeys } from "./commands";
+import { useAnimateExchange } from "./animate-exchange";
 import { useWorkspace } from "./workspace";
 
 interface Resize {
@@ -62,6 +66,7 @@ export default function Editor() {
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteCommand, setPaletteCommand] = useState<string | null>(null);
+  const [reportFocus, setReportFocus] = useState<PanelFocus | null>(null);
   const resizeRef = useRef<Resize | null>(null);
   const origins = useRef(new Map<PanelId, { zone: ZoneId; index: number }>());
   const layoutRef = useRef(layout);
@@ -79,6 +84,18 @@ export default function Editor() {
     setPaletteOpen(true);
   }, []);
 
+  const revealReport = useCallback(() => {
+    setLayout((prev) => setPanelVisible(prev, "report", true));
+    setReportFocus((prev) => ({ panel: "report", token: (prev?.token ?? 0) + 1 }));
+  }, []);
+
+  const { importFlow, exportFlow } = useAnimateExchange({
+    activeId,
+    name: doc?.name ?? null,
+    open,
+    reveal: revealReport
+  });
+
   const commands = buildCommands(
     actions,
     t,
@@ -90,7 +107,9 @@ export default function Editor() {
       openPalette,
       confirm,
       activate,
-      close
+      close,
+      importAnimate: () => void importFlow(),
+      exportAnimate: () => void exportFlow()
     }
   );
 
@@ -328,6 +347,9 @@ export default function Editor() {
     if (panel === "view") {
       return <ViewPanel />;
     }
+    if (panel === "report") {
+      return <ReportPanel />;
+    }
     return <SidePanel />;
   };
 
@@ -339,12 +361,14 @@ export default function Editor() {
     <div className="flex min-h-0 flex-1 flex-col bg-background">
       <DockProvider
         layout={layout}
+        focus={reportFocus}
         onChange={setLayout}
         onDetach={detach}
         onHide={hide}
         onMove={move}
       >
         <div className="flex shrink-0 items-stretch">
+          <FileMenu commands={commands} />
           <div className="min-w-0 flex-1">
             <DockZone zone="top" render={renderPanel} />
           </div>

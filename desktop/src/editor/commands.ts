@@ -54,6 +54,8 @@ export interface CommandContext {
   confirm: (options: ConfirmOptions) => Promise<boolean>;
   activate: (id: string) => void;
   close: (id: string) => void;
+  importAnimate: () => void;
+  exportAnimate: () => void;
 }
 
 type CommandDef = Omit<Command, "defaultKeys">;
@@ -689,7 +691,21 @@ export function buildCommands(
     { id: "view.palette", label: t("command.palette"), keys: "ctrl+k", run: () => context?.openPalette(), disabled: !context },
     { id: "layer.add", label: t("command.addLayer"), keys: "ctrl+alt+n", run: () => actions.addLayer() },
     { id: "folder.add", label: t("command.addFolder"), keys: "ctrl+alt+shift+n", run: () => actions.addFolder() },
-    { id: "scene.add", label: t("command.addScene"), keys: "ctrl+shift+n", run: actions.addScene }
+    { id: "scene.add", label: t("command.addScene"), keys: "ctrl+shift+n", run: actions.addScene },
+    {
+      id: "project.importAnimate",
+      label: t("command.importAnimate"),
+      keys: null,
+      run: () => context?.importAnimate(),
+      disabled: !context
+    },
+    {
+      id: "project.exportAnimate",
+      label: t("command.exportAnimate"),
+      keys: null,
+      run: () => context?.exportAnimate(),
+      disabled: !context
+    }
   ];
   for (const [direction, dx, dy] of [
     ["left", -1, 0], ["right", 1, 0], ["up", 0, -1], ["down", 0, 1]

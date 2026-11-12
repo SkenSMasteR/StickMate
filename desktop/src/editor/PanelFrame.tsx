@@ -18,7 +18,8 @@ export const PANEL_TITLE_KEYS: Record<PanelId, string> = {
   timeline: "panel.timeline",
   side: "panel.side",
   history: "panel.history",
-  view: "panel.view"
+  view: "panel.view",
+  report: "panel.report"
 };
 
 const menuItem = "rounded-none text-xs";

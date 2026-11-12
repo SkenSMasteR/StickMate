@@ -155,6 +155,7 @@ function mount(): RenderResult {
               onOpened={(id) => {
                 opened.push(id);
               }}
+              onReport={() => {}}
             />
           </WorkspaceProvider>
         </PrefsProvider>

@@ -117,7 +117,9 @@ function makeContext(doc: Document): CommandContext {
     openPalette: vi.fn(),
     confirm: vi.fn(() => Promise.resolve(true)),
     activate: vi.fn(),
-    close: vi.fn()
+    close: vi.fn(),
+    importAnimate: vi.fn(),
+    exportAnimate: vi.fn()
   };
 }
 
@@ -130,9 +132,10 @@ function tick(): Promise<void> {
 describe("command model", () => {
   test("the five argument call keeps only zero argument commands", () => {
     const commands = buildCommands(stubActions(), t, {}, vi.fn(), vi.fn());
-    expect(commands.length).toBe(72);
+    expect(commands.length).toBe(74);
     expect(commands.every((item) => item.args === undefined)).toBe(true);
     expect(commands.find((item) => item.id === "view.palette")?.disabled).toBe(true);
+    expect(commands.find((item) => item.id === "project.exportAnimate")?.disabled).toBe(true);
     expect(commands.some((item) => item.id === "layer.rename")).toBe(false);
     expect(commands.some((item) => item.id === "align.left")).toBe(true);
     expect(commands.find((item) => item.id === "edit.group")?.defaultKeys).toBe("ctrl+g");
@@ -196,11 +199,15 @@ describe("command model", () => {
       "scene.remove",
       "project.rename",
       "project.activate",
-      "project.close"
+      "project.close",
+      "project.importAnimate",
+      "project.exportAnimate"
     ]) {
       expect(ids, id).toContain(id);
     }
-    expect(commands.length).toBe(106);
+    expect(commands.length).toBe(108);
+    expect(commands.find((item) => item.id === "project.importAnimate")?.disabled).toBe(false);
+    expect(commands.find((item) => item.id === "project.exportAnimate")?.disabled).toBe(false);
     for (const command of commands) {
       if (command.args) {
         expect(typeof command.runArgs, command.id).toBe("function");

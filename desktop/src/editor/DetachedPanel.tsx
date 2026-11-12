@@ -13,9 +13,11 @@ import {
 } from "@/lib/windows";
 import CommandPalette from "./CommandPalette";
 import { buildCommands, useCommandKeys } from "./commands";
+import { useAnimateExchange } from "./animate-exchange";
 import ExportDialog from "./ExportDialog";
 import HistoryPanel from "./HistoryPanel";
 import PanelFrame, { PANEL_TITLE_KEYS } from "./PanelFrame";
+import ReportPanel from "./ReportPanel";
 import ScenesBar from "./ScenesBar";
 import ShortcutsDialog from "./ShortcutsDialog";
 import SidePanel from "./SidePanel";
@@ -57,6 +59,12 @@ export default function DetachedPanel() {
     setPaletteOpen(true);
   }, []);
 
+  const { importFlow, exportFlow } = useAnimateExchange({
+    activeId,
+    name: doc?.name ?? null,
+    open
+  });
+
   const commands = buildCommands(
     actions,
     t,
@@ -68,7 +76,9 @@ export default function DetachedPanel() {
       openPalette,
       confirm,
       activate,
-      close
+      close,
+      importAnimate: () => void importFlow(),
+      exportAnimate: () => void exportFlow()
     }
   );
 
@@ -187,6 +197,7 @@ export default function DetachedPanel() {
           {panel === "side" && <SidePanel />}
           {panel === "history" && <HistoryPanel />}
           {panel === "view" && <ViewPanel />}
+          {panel === "report" && <ReportPanel />}
         </PanelFrame>
       </div>
       <ShortcutsDialog

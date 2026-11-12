@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { CSSProperties } from "react";
 import {
+  ClipboardList,
   FolderOpen,
   LayoutTemplate,
   FilePlus2,
@@ -23,6 +24,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "next-themes";
+import ReportPanel from "@/editor/ReportPanel";
 import { useWorkspace } from "@/editor/workspace";
 import { useI18n } from "@/i18n";
 import logoDark from "@/assets/logo-dark.png";
@@ -33,7 +35,7 @@ import Projects from "./Projects";
 import Templates from "./Templates";
 import Settings from "./Settings";
 
-type Destination = "new" | "projects" | "templates" | "settings";
+type Destination = "new" | "projects" | "templates" | "report" | "settings";
 
 const providerStyle = { "--sidebar-width": "18rem" } as CSSProperties;
 
@@ -53,13 +55,15 @@ export default function Hub({
     [
       { id: "new", label: t("sidebar.new"), icon: FilePlus2 },
       { id: "projects", label: t("sidebar.projects"), icon: FolderOpen },
-      { id: "templates", label: t("sidebar.templates"), icon: LayoutTemplate }
+      { id: "templates", label: t("sidebar.templates"), icon: LayoutTemplate },
+      { id: "report", label: t("sidebar.report"), icon: ClipboardList }
     ];
 
   const titles: Record<Destination, string> = {
     new: t("new.title"),
     projects: t("projects.title"),
     templates: t("templates.title"),
+    report: t("report.title"),
     settings: t("settings.title")
   };
 
@@ -153,11 +157,15 @@ export default function Hub({
               <New onOpened={(id) => onOpenEditor(id)} />
             )}
             {destination === "projects" && (
-              <Projects onOpened={(id) => onOpenEditor(id)} />
+              <Projects
+                onOpened={(id) => onOpenEditor(id)}
+                onReport={() => setDestination("report")}
+              />
             )}
             {destination === "templates" && (
               <Templates onOpened={(id) => onOpenEditor(id)} />
             )}
+            {destination === "report" && <ReportPanel />}
             {destination === "settings" && (
               <Settings onSignInRequest={onSignInRequest} />
             )}
