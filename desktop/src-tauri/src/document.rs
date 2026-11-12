@@ -1260,6 +1260,7 @@ pub(crate) fn validate(shape: &Shape) -> Result<(), String> {
         Shape::Path {
             nodes,
             closed,
+            stroke,
             width,
             ..
         } => {
@@ -1280,7 +1281,7 @@ pub(crate) fn validate(shape: &Shape) -> Result<(), String> {
                     }
                 }
             }
-            if !(0.5..=200.0).contains(width) {
+            if *stroke != "none" && !(0.5..=200.0).contains(width) {
                 return Err("width must be between 0.5 and 200".to_string());
             }
             Ok(())
@@ -7259,6 +7260,24 @@ mod tests {
                 .expect_err("shrunk"),
             "path needs at least 2 nodes"
         );
+        fixture
+            .store
+            .replace_shape(
+                id,
+                &fixture.scene,
+                &fixture.layer,
+                0,
+                0,
+                Shape::Path {
+                    nodes: curve_nodes(),
+                    closed: false,
+                    fill: "#ff0000".to_string(),
+                    stroke: "none".to_string(),
+                    width: 0.0,
+                    gradient: None,
+                }
+            )
+            .expect("unstroked");
         assert_eq!(fixture.target(&fixture.store.get(id).expect("get")).keys[0].shapes.len(), 1);
     }
 

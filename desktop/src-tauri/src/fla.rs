@@ -365,14 +365,24 @@ pub fn project_import_fla(store: State<'_, DocStore>, path: String) -> Result<Fl
     } else {
         (bytes, Vec::new())
     };
-    let text = String::from_utf8(body)
-        .map_err(|_| "DOMDocument.xml is not readable text".to_string())?;
     let stem = source
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("Imported project");
-    let import = xfl_read::parse(&text, &archive_stem(stem), &members)?;
+    import_members(&store, stem, &body, &members)
+}
+
+fn import_members(
+    store: &DocStore,
+    stem: &str,
+    body: &[u8],
+    members: &[(String, Vec<u8>)],
+) -> Result<FlaImportResult, String> {
+    let text = String::from_utf8(body.to_vec())
+        .map_err(|_| "DOMDocument.xml is not readable text".to_string())?;
+    let import = xfl_read::parse(&text, &archive_stem(stem), members)?;
     let mut doc = import.doc;
+    validate_import(&doc)?;
     let created = store.create(
         doc.name.clone(),
         doc.width,
@@ -381,7 +391,7 @@ pub fn project_import_fla(store: State<'_, DocStore>, path: String) -> Result<Fl
         doc.background.clone(),
     )?;
     doc.id = created.id.clone();
-    store.edit(&created.id, move |target| {
+    store.edit_named(&created.id, "import_fla", move |target| {
         *target = doc;
         Ok(())
     })?;
@@ -390,6 +400,25 @@ pub fn project_import_fla(store: State<'_, DocStore>, path: String) -> Result<Fl
         name: created.name,
         notes: import.notes,
     })
+}
+
+fn validate_import(doc: &Document) -> Result<(), String> {
+    for scene in &doc.scenes {
+        validate_import_layers(&scene.layers)?;
+    }
+    Ok(())
+}
+
+fn validate_import_layers(layers: &[Layer]) -> Result<(), String> {
+    for layer in layers {
+        for key in &layer.keys {
+            for shape in &key.shapes {
+                crate::document::validate(shape)?;
+            }
+        }
+        validate_import_layers(&layer.children)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -521,6 +550,35 @@ mod tests {
             crate::xfl_read::parse(&loose, "Loose", &[]).expect("loose parse").doc.name,
             "Loose"
         );
+    }
+
+    #[test]
+    fn import_lands_the_document_under_its_own_history_step() {
+        let dir = scratch("ingest");
+        let store = DocStore::load(dir.clone());
+        let members = archive_members(&document("Study"));
+        let body = member_bytes(&members, xfl::DOM_DOCUMENT).expect("body");
+        let import = import_members(&store, "Study", &body, &members).expect("import");
+        assert_eq!(store.get(&import.id).expect("stored").name, "Study");
+        let steps = store.history(&import.id).expect("history");
+        let last = steps.last().expect("step");
+        assert_eq!(last.name, "import_fla");
+        assert_eq!(last.kind, "current");
+        fs::remove_dir_all(&dir).expect("clean");
+    }
+
+    #[test]
+    fn import_refuses_shapes_the_editor_cannot_hold() {
+        let dir = scratch("refuse");
+        let store = DocStore::load(dir.clone());
+        let body = "<DOMDocument xmlns=\"http://ns.adobe.com/xfl/2008/\" width=\"640\" height=\"360\" frameRate=\"12.0000\"><timelines><DOMTimeline name=\"Scene 1\"><layers><DOMLayer name=\"Art\"><frames><DOMFrame index=\"0\" duration=\"1\" keyMode=\"9728\"><elements><DOMShape><fills><FillStyle index=\"1\"><SolidColor color=\"#ff0000\"/></FillStyle></fills><edges><Edge fillStyle1=\"1\" edges=\"!0 0|100 0\"/></edges></DOMShape></elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>";
+        let outcome = import_members(&store, "Broken", body.as_bytes(), &[]);
+        match outcome {
+            Ok(_) => panic!("a document the editor cannot hold must not import"),
+            Err(error) => assert_eq!(error, "closed path needs at least 3 nodes"),
+        }
+        assert_eq!(store.list().expect("list").len(), 0);
+        fs::remove_dir_all(&dir).expect("clean");
     }
 
     fn plain_layer() -> Layer {

@@ -921,7 +921,7 @@ fn strokes(el: &Element, notes: &mut Notes) -> Vec<(usize, Option<(String, f64)>
                 }
                 Some(_) => None,
             };
-            out.push((index, ink.map(|(color, width)| (color, width.max(0.1)))));
+            out.push((index, ink.map(|(color, width)| (color, width.max(0.5)))));
         }
     }
     out
@@ -1118,7 +1118,7 @@ fn text(el: &Element) -> Vec<Shape> {
         size: (size * scale).max(1.0),
         family: xfl::family(attrs.attr("face").unwrap_or("Arial")),
         color,
-        spacing: spacing * scale,
+        spacing: (spacing * scale).clamp(-500.0, 500.0),
         leading: (line / size).clamp(0.2, 10.0),
         align: align_of(attrs),
         matrix: if uniform { None } else { Some(place) },
@@ -1364,6 +1364,32 @@ mod tests {
     }
 
     #[test]
+    fn hairline_strokes_land_on_the_editors_minimum() {
+        let body = "<DOMShape><strokes><StrokeStyle index=\"1\"><SolidStroke scaleMode=\"none\" caps=\"none\" w=\"2\"><SolidColor color=\"#000000\"/></SolidStroke></StrokeStyle></strokes><edges><Edge strokeStyle=\"1\" edges=\"!0 0|100 0\"/></edges></DOMShape>";
+        let doc = parsed(&stage_xml(&art(&plain(0, 1, body))));
+        let shape = &doc.scenes[0].layers[0].keys[0].shapes[0];
+        match shape {
+            Shape::Path { width, .. } => assert_eq!(*width, 0.5),
+            other => panic!("expected a path, got {other:?}"),
+        }
+        crate::document::validate(shape).expect("hairline");
+    }
+
+    #[test]
+    fn filled_paths_without_a_stroke_stay_valid() {
+        let doc = parsed(&stage_xml(&art(&plain(0, 1, &square(0.0)))));
+        let shape = &doc.scenes[0].layers[0].keys[0].shapes[0];
+        match shape {
+            Shape::Path { stroke, width, .. } => {
+                assert_eq!(stroke, "none");
+                assert_eq!(*width, 0.0);
+            }
+            other => panic!("expected a path, got {other:?}"),
+        }
+        crate::document::validate(shape).expect("filled");
+    }
+
+    #[test]
     fn text_restores_breaks_and_font() {
         let body = "<DOMStaticText width=\"120\" height=\"30\" autoExpand=\"true\"><matrix><Matrix tx=\"4\" ty=\"6\"/></matrix><textRuns><DOMTextRun><characters>hi&#xd;there</characters><textAttrs><DOMTextAttrs aliasText=\"false\" lineHeight=\"21.6\" size=\"18\" face=\"ArialMT\" fillColor=\"#616161\" textAlign=\"center\" letterSpacing=\"1\" fontJustification=\"LEFT\"/></textAttrs></DOMTextRun></textRuns></DOMStaticText>";
         let doc = parsed(&stage_xml(&art(&plain(0, 1, body))));
@@ -1392,6 +1418,18 @@ mod tests {
             }
             other => panic!("expected text, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn letter_spacing_stays_in_the_editors_range() {
+        let body = "<DOMStaticText><textRuns><DOMTextRun><characters>go</characters><textAttrs><DOMTextAttrs size=\"12\" letterSpacing=\"900\"/></textAttrs></DOMTextRun></textRuns></DOMStaticText>";
+        let doc = parsed(&stage_xml(&art(&plain(0, 1, body))));
+        let shape = &doc.scenes[0].layers[0].keys[0].shapes[0];
+        match shape {
+            Shape::Text { spacing, .. } => assert_eq!(*spacing, 500.0),
+            other => panic!("expected text, got {other:?}"),
+        }
+        crate::document::validate(shape).expect("spacing");
     }
 
     #[test]
