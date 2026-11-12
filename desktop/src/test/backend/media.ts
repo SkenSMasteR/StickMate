@@ -5,7 +5,8 @@ const SOURCES: Record<string, string> = {
   png: "data:image/png;base64,iVBORw0KGgo=",
   jpg: "data:image/jpeg;base64,/9j/4AAQ",
   jpeg: "data:image/jpeg;base64,/9j/4AAQ",
-  gif: "data:image/gif;base64,R0lGODdhAA=="
+  gif: "data:image/gif;base64,R0lGODdhAA==",
+  svg: "data:image/svg+xml;base64,PHN2Zy8+"
 };
 
 interface Numbered {
@@ -52,7 +53,7 @@ function info(path: string, number = 0): MediaInfo {
   const extension = split(nameOf(path))[1].toLowerCase();
   const source = SOURCES[extension];
   if (!source) {
-    throw new Error("the file is not a PNG, JPEG or GIF image");
+    throw new Error("the file is not a PNG, JPEG, GIF or SVG image");
   }
   return {
     source,

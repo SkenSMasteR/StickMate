@@ -528,7 +528,7 @@ function validateShape(shape: Shape): void {
       throw new Error("bitmap size must be between 1 and 16384");
     }
     if (!looksLikeImage(shape.source)) {
-      throw new Error("bitmap must be an embedded png, jpeg or gif");
+      throw new Error("bitmap must be an embedded png, jpeg, gif or svg");
     }
     if (shape.matrix) {
       const m = shape.matrix;

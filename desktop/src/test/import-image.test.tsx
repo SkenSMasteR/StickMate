@@ -9,6 +9,7 @@ import { nextSize } from "./backend/media";
 import { flush, getCanvas, press, renderEditor } from "./utils";
 
 const PNG = "data:image/png;base64,iVBORw0KGgo=";
+const SVG = "data:image/svg+xml;base64,PHN2Zy8+";
 
 function listed(id: string): Shape[] {
   const found = store.get(id);
@@ -94,11 +95,20 @@ describe("import image", () => {
     expect(steps(doc.id)).toBe(0);
   }, 20000);
 
+  test("places a chosen svg drawing as vector artwork", async () => {
+    const { doc } = await renderEditor();
+    nextOpenPath("C:/Users/Test/Pictures/balloon.svg");
+    await pickImport();
+    await waitFor(() => expect(listed(doc.id)).toHaveLength(1));
+    expect(box(listed(doc.id)[0])).toEqual([388, 294, 24, 12]);
+    expect(getCanvas().querySelector("image")?.getAttribute("href")).toBe(SVG);
+  }, 20000);
+
   test("reports a file the reader refuses", async () => {
     const { doc } = await renderEditor();
     nextOpenPath("C:/Users/Test/Notes/plan.txt");
     await pickImport();
-    expect(await screen.findByText(/the file is not a PNG, JPEG or GIF image/)).toBeTruthy();
+    expect(await screen.findByText(/the file is not a PNG, JPEG, GIF or SVG image/)).toBeTruthy();
     expect(listed(doc.id)).toHaveLength(0);
     expect(steps(doc.id)).toBe(0);
   }, 20000);

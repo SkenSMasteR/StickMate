@@ -1157,7 +1157,7 @@ fn align_of(el: &Element) -> TextAlign {
 mod tests {
     use super::*;
     use crate::document::{Blend, Layer, Scene};
-    use crate::media::png;
+    use crate::media::{png, svg};
     use crate::xfl;
 
     fn stage_xml(layers: &str) -> String {
@@ -1616,6 +1616,23 @@ mod tests {
         let members = xfl::library_members(&doc);
         assert_eq!(members[0].0, "LIBRARY/Bitmap 1.png".to_string());
         let import = parse(&xml, "Round trip", &members).expect("parse");
+        assert!(import.notes.is_empty(), "{:?}", import.notes);
+        assert_eq!(
+            import.doc.scenes[0].layers[0].keys[0].shapes,
+            doc.scenes[0].layers[0].keys[0].shapes
+        );
+    }
+
+    #[test]
+    fn a_placed_svg_round_trips_through_the_library() {
+        let mut doc = image_book(0.0, 0.0, 80.0, 40.0);
+        let Shape::Bitmap { source, .. } = &mut doc.scenes[0].layers[0].keys[0].shapes[0] else {
+            panic!("expected a bitmap")
+        };
+        *source = crate::media::data_url("svg", &svg(40, 20));
+        let members = xfl::library_members(&doc);
+        assert_eq!(members[0].0, "LIBRARY/Bitmap 1.svg".to_string());
+        let import = parse(&xfl::document_xml(&doc), "Round trip", &members).expect("parse");
         assert!(import.notes.is_empty(), "{:?}", import.notes);
         assert_eq!(
             import.doc.scenes[0].layers[0].keys[0].shapes,

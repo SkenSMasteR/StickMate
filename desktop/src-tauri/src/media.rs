@@ -20,9 +20,101 @@ pub fn kind_of(bytes: &[u8]) -> Option<&'static str> {
         Some("jpeg")
     } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
         Some("gif")
+    } else if svg_root(bytes).is_some() {
+        Some("svg")
     } else {
         None
     }
+}
+
+fn svg_root(bytes: &[u8]) -> Option<&str> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut rest = text.strip_prefix('\u{feff}').unwrap_or(text);
+    loop {
+        rest = rest.trim_start();
+        if let Some(after) = rest.strip_prefix("<?") {
+            rest = after.split_once("?>")?.1;
+            continue;
+        }
+        if let Some(after) = rest.strip_prefix("<!") {
+            rest = match after.strip_prefix("--") {
+                Some(body) => body.split_once("-->")?.1,
+                None => after.split_once('>')?.1,
+            };
+            continue;
+        }
+        let after = rest.strip_prefix('<')?;
+        let named = after
+            .find(|letter: char| !(letter.is_ascii_alphabetic() || letter == '-' || letter == ':'))
+            .unwrap_or(after.len());
+        if !after[..named].eq_ignore_ascii_case("svg") {
+            return None;
+        }
+        let tail = &after[named..];
+        return Some(&tail[..tail.find('>')?]);
+    }
+}
+
+fn svg_attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let bytes = tag.as_bytes();
+    let mut from = 0;
+    while let Some(found) = tag[from..].find(name) {
+        let start = from + found;
+        let after = start + name.len();
+        from = after;
+        if start > 0 && !bytes[start - 1].is_ascii_whitespace() {
+            continue;
+        }
+        let Some(equals) = tag[after..].trim_start().strip_prefix('=') else {
+            continue;
+        };
+        let value = equals.trim_start();
+        if value.starts_with('"') || value.starts_with('\'') {
+            let body = &value[1..];
+            return body.find(['"', '\'']).map(|end| &body[..end]);
+        }
+        let end = value
+            .find(|letter: char| letter.is_whitespace() || letter == '>' || letter == '/')
+            .unwrap_or(value.len());
+        if end > 0 {
+            return Some(&value[..end]);
+        }
+    }
+    None
+}
+
+fn svg_pixels(value: &str) -> Option<u32> {
+    let digits = value.trim_end_matches("px").trim_end_matches("PX");
+    if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let size = digits.parse::<u32>().ok()?;
+    if size == 0 {
+        return None;
+    }
+    Some(size)
+}
+
+fn svg_view_box(value: &str) -> Option<(u32, u32)> {
+    let numbers: Vec<f64> = value
+        .split(|split| split == ' ' || split == ',' || split == '\n' || split == '\t')
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<f64>().ok())
+        .collect();
+    if numbers.len() != 4 {
+        return None;
+    }
+    box_size(numbers[2].round() as u32, numbers[3].round() as u32)
+}
+
+fn svg_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    let tag = svg_root(bytes)?;
+    let width = svg_attribute(tag, "width").and_then(svg_pixels);
+    let height = svg_attribute(tag, "height").and_then(svg_pixels);
+    if let (Some(width), Some(height)) = (width, height) {
+        return box_size(width, height);
+    }
+    svg_attribute(tag, "viewBox").and_then(svg_view_box)
 }
 
 fn be16(bytes: &[u8], at: usize) -> Option<u32> {
@@ -96,6 +188,7 @@ pub fn size_of(kind: &str, bytes: &[u8]) -> Option<(u32, u32)> {
         "png" => png_size(bytes),
         "jpeg" => jpeg_size(bytes),
         "gif" => gif_size(bytes),
+        "svg" => svg_size(bytes),
         _ => None,
     }
 }
@@ -107,7 +200,8 @@ pub fn inspect(bytes: &[u8]) -> Result<MediaInfo, String> {
     if bytes.len() > LIMIT {
         return Err("the image is larger than 4 MB".to_string());
     }
-    let kind = kind_of(bytes).ok_or_else(|| "the file is not a PNG, JPEG or GIF image".to_string())?;
+    let kind = kind_of(bytes)
+        .ok_or_else(|| "the file is not a PNG, JPEG, GIF or SVG image".to_string())?;
     let (width, height) = size_of(kind, bytes)
         .ok_or_else(|| "the image size could not be read".to_string())?;
     Ok(MediaInfo {
@@ -126,7 +220,7 @@ pub fn looks_like_image(source: &str) -> bool {
         return false;
     };
     match rest.split_once(";base64,") {
-        Some((kind, payload)) => !payload.is_empty() && matches!(kind, "png" | "jpeg" | "gif"),
+        Some((kind, payload)) => !payload.is_empty() && source_kind(kind).is_some(),
         None => false,
     }
 }
@@ -134,10 +228,15 @@ pub fn looks_like_image(source: &str) -> bool {
 pub fn kind_of_source(source: &str) -> Option<&'static str> {
     let rest = source.strip_prefix("data:image/")?;
     let (kind, _) = rest.split_once(";base64,")?;
+    source_kind(kind)
+}
+
+fn source_kind(kind: &str) -> Option<&'static str> {
     match kind {
         "png" => Some("png"),
         "jpeg" => Some("jpeg"),
         "gif" => Some("gif"),
+        "svg+xml" => Some("svg"),
         _ => None,
     }
 }
@@ -149,7 +248,8 @@ pub fn payload(source: &str) -> Option<Vec<u8>> {
 }
 
 pub fn data_url(kind: &str, bytes: &[u8]) -> String {
-    format!("data:image/{};base64,{}", kind, STANDARD.encode(bytes))
+    let mime = if kind == "svg" { "svg+xml" } else { kind };
+    format!("data:image/{};base64,{}", mime, STANDARD.encode(bytes))
 }
 
 #[tauri::command]
@@ -237,6 +337,12 @@ pub(crate) fn png(width: u32, height: u32) -> Vec<u8> {
 }
 
 #[cfg(test)]
+pub(crate) fn svg(width: u32, height: u32) -> Vec<u8> {
+    format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"></svg>"#)
+        .into_bytes()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -262,6 +368,10 @@ mod tests {
         bytes
     }
 
+    fn svg_tag(attribs: &str) -> Vec<u8> {
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg" {attribs}></svg>"#).into_bytes()
+    }
+
     #[test]
     fn reads_the_header_of_each_supported_format() {
         assert_eq!(size_of("png", &png(120, 60)), Some((120, 60)));
@@ -285,11 +395,79 @@ mod tests {
     }
 
     #[test]
+    fn an_svg_box_comes_from_its_size_or_its_view_box() {
+        assert_eq!(kind_of(&svg_tag(r#"width="12" height="6""#)), Some("svg"));
+        assert_eq!(size_of("svg", &svg_tag(r#"width="12" height="6""#)), Some((12, 6)));
+        assert_eq!(size_of("svg", &svg_tag(r#"width="12px" height="6px""#)), Some((12, 6)));
+        assert_eq!(size_of("svg", &svg_tag("width=12 height='6'")), Some((12, 6)));
+        assert_eq!(size_of("svg", &svg_tag(r#"viewBox="0 0 12 6""#)), Some((12, 6)));
+        assert_eq!(size_of("svg", &svg_tag(r#"viewBox="-3 -3,12,6""#)), Some((12, 6)));
+        assert_eq!(
+            size_of("svg", &svg_tag(r#"stroke-width="9" width="12" height="6""#)),
+            Some((12, 6))
+        );
+        assert_eq!(
+            size_of("svg", &svg_tag(r#"width="100%" height="100%" viewBox="0 0 24 40""#)),
+            Some((24, 40))
+        );
+    }
+
+    #[test]
+    fn markup_before_the_svg_tag_is_skipped() {
+        let body = svg_tag(r#"width="8" height="4""#);
+        for head in [
+            r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+            "<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">",
+            "<!-- Generator: some editor -->",
+            "\u{feff}",
+            "\n  ",
+        ] {
+            let mut bytes = head.as_bytes().to_vec();
+            bytes.extend_from_slice(&body);
+            assert_eq!(kind_of(&bytes), Some("svg"));
+            assert_eq!(size_of("svg", &bytes), Some((8, 4)));
+        }
+    }
+
+    #[test]
+    fn an_svg_reads_as_an_embedded_source() {
+        let bytes = svg_tag(r#"viewBox="0 0 40 20""#);
+        let info = inspect(&bytes).expect("svg");
+        assert_eq!((info.width, info.height, info.kind), (40, 20, "svg"));
+        assert!(info.source.starts_with("data:image/svg+xml;base64,"));
+        assert!(looks_like_image(&info.source));
+        assert_eq!(kind_of_source(&info.source), Some("svg"));
+        assert_eq!(payload(&info.source), Some(bytes));
+    }
+
+    #[test]
+    fn refuses_markup_it_cannot_place() {
+        assert_eq!(kind_of(b"<html><body></body></html>"), None);
+        assert_eq!(kind_of(b"<svg"), None);
+        assert_eq!(
+            inspect(&svg_tag(r#"width="4""#)).unwrap_err(),
+            "the image size could not be read"
+        );
+        assert_eq!(
+            inspect(&svg_tag(r#"viewBox="0 0 20000 10""#)).unwrap_err(),
+            "the image size could not be read"
+        );
+        assert_eq!(
+            inspect(&svg_tag(r#"width="0" height="8""#)).unwrap_err(),
+            "the image size could not be read"
+        );
+        assert_eq!(
+            inspect(&svg_tag(r#"viewBox="0 0""#)).unwrap_err(),
+            "the image size could not be read"
+        );
+    }
+
+    #[test]
     fn refuses_files_it_cannot_place() {
         assert_eq!(inspect(b"").unwrap_err(), "the file is empty");
         assert_eq!(
             inspect(b"not an image at all").unwrap_err(),
-            "the file is not a PNG, JPEG or GIF image"
+            "the file is not a PNG, JPEG, GIF or SVG image"
         );
         assert_eq!(
             inspect(&png(0, 10)).unwrap_err(),

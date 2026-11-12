@@ -8,7 +8,7 @@ export interface MediaInfo {
   kind: string;
 }
 
-const FILTERS = [{ name: "Image", extensions: ["png", "jpg", "jpeg", "gif"] }];
+const FILTERS = [{ name: "Image", extensions: ["png", "jpg", "jpeg", "gif", "svg"] }];
 
 export function mediaRead(path: string): Promise<MediaInfo> {
   return invoke<MediaInfo>("media_read", { path });

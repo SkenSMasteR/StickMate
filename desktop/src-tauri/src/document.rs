@@ -1301,7 +1301,7 @@ pub(crate) fn validate(shape: &Shape) -> Result<(), String> {
                 return Err("bitmap size must be between 1 and 16384".to_string());
             }
             if !crate::media::looks_like_image(source) {
-                return Err("bitmap must be an embedded png, jpeg or gif".to_string());
+                return Err("bitmap must be an embedded png, jpeg, gif or svg".to_string());
             }
             if let Some(m) = matrix {
                 if [m.a, m.b, m.c, m.d, m.e, m.f]
@@ -10175,7 +10175,7 @@ mod tests {
             }
             assert_eq!(
                 validate(&shape).unwrap_err(),
-                "bitmap must be an embedded png, jpeg or gif"
+                "bitmap must be an embedded png, jpeg, gif or svg"
             );
         }
         for size in [0.0, -1.0, f64::NAN, f64::INFINITY, 20_000.0] {
@@ -10221,6 +10221,22 @@ mod tests {
             "bitmap matrix must be finite"
         );
         assert_eq!(store.history(id).expect("history").len(), before);
+    }
+
+    #[test]
+    fn an_svg_picture_can_be_placed() {
+        let fixture = Fixture::new("bitmap-svg");
+        let store = &fixture.store;
+        let id = &fixture.doc.id;
+        let mut shape = picture(12.0, 8.0, 40.0, 20.0);
+        if let Shape::Bitmap { source, .. } = &mut shape {
+            *source = crate::media::data_url("svg", &crate::media::svg(40, 20));
+        }
+        validate(&shape).expect("svg bitmap");
+        let drawn = store
+            .draw(id, &fixture.scene, &fixture.layer, 0, shape.clone())
+            .expect("draw");
+        assert_eq!(fixture.target(&drawn).keys[0].shapes, vec![shape]);
     }
 
     #[test]

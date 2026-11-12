@@ -323,7 +323,10 @@ export function looksLikeImage(source: string): boolean {
   if (at < 0) {
     return false;
   }
-  return rest.length > at + ";base64,".length && ["png", "jpeg", "gif"].includes(rest.slice(0, at));
+  return (
+    rest.length > at + ";base64,".length &&
+    ["png", "jpeg", "gif", "svg+xml"].includes(rest.slice(0, at))
+  );
 }
 
 function pointsBounds(points: Point[], width: number): Bounds {

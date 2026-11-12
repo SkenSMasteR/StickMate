@@ -138,7 +138,7 @@ describe("bitmap backend commands", () => {
     ]) {
       await expect(
         docDraw(id, sceneId, layerId, 0, { ...picture(0, 0, 40, 20), source })
-      ).rejects.toThrow("bitmap must be an embedded png, jpeg or gif");
+      ).rejects.toThrow("bitmap must be an embedded png, jpeg, gif or svg");
     }
     for (const size of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 20_000]) {
       await expect(
