@@ -108,6 +108,7 @@ pub enum Element {
 pub struct XflFrame {
     pub index: u32,
     pub duration: u32,
+    pub label: Option<String>,
     pub elements: Vec<Element>,
 }
 
@@ -754,6 +755,7 @@ pub fn export_frames(layer: &Layer, library: &mut Library) -> Vec<XflFrame> {
             frames.push(XflFrame {
                 index: 0,
                 duration: key.frame,
+                label: None,
                 elements: Vec::new(),
             });
         }
@@ -765,6 +767,7 @@ pub fn export_frames(layer: &Layer, library: &mut Library) -> Vec<XflFrame> {
         frames.push(XflFrame {
             index: key.frame,
             duration: end.saturating_sub(key.frame).max(1),
+            label: key.label.clone(),
             elements: frame_elements(key, &key.transform, library),
         });
     }
@@ -910,8 +913,12 @@ fn frame_xml(frame: &XflFrame, indent: &str) -> String {
         inner.push_str(&format!("{indent}     </elements>\n"));
         inner
     };
+    let label = match &frame.label {
+        Some(name) => format!("{indent}     <FrameLabel name=\"{}\"/>\n", escape(name)),
+        None => String::new(),
+    };
     format!(
-        "{indent}<DOMFrame index=\"{}\" duration=\"{}\" keyMode=\"{KEY_MODE}\">\n{elements}{indent}</DOMFrame>\n",
+        "{indent}<DOMFrame index=\"{}\" duration=\"{}\" keyMode=\"{KEY_MODE}\">\n{elements}{label}{indent}</DOMFrame>\n",
         frame.index,
         frame.duration.max(1)
     )
@@ -1200,6 +1207,37 @@ mod tests {
         assert_eq!(frames.len(), 2);
         assert_eq!((frames[0].index, frames[0].duration), (0, 3));
         assert!(frames[0].elements.is_empty());
+    }
+
+    #[test]
+    fn frame_labels_are_written_and_read_back() {
+        let mut start = key(0, vec![rect(0.0, 0.0, 2.0, 2.0)]);
+        start.label = Some("wind up".to_string());
+        let mut hit = key(4, vec![rect(1.0, 1.0, 2.0, 2.0)]);
+        hit.label = Some("hit & run".to_string());
+        let held = layer(vec![start, hit, key(8, Vec::new())], 10);
+        let mut doc = book(Vec::new());
+        doc.scenes[0].layers = vec![held];
+        let xml = document_xml(&doc);
+        assert_eq!(xml.matches("<FrameLabel").count(), 2);
+        assert!(xml.contains("<FrameLabel name=\"wind up\"/>"));
+        assert!(xml.contains("<FrameLabel name=\"hit &amp; run\"/>"));
+        let import = crate::xfl_read::parse(&xml, "Book", &[]).expect("parse");
+        let imported = &import.doc.scenes[0].layers[0];
+        let labels = imported
+            .keys
+            .iter()
+            .map(|key| key.label.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            vec![
+                Some("wind up".to_string()),
+                Some("hit & run".to_string()),
+                None
+            ]
+        );
+        assert!(import.notes.is_empty());
     }
 
     #[test]
