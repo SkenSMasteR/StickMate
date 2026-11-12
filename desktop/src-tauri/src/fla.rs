@@ -212,8 +212,6 @@ struct Gaps {
     gradient: bool,
     blend: bool,
     effect: bool,
-    mask: bool,
-    folder: bool,
     opacity: bool,
     tween: bool,
     figure: bool,
@@ -221,8 +219,6 @@ struct Gaps {
 
 fn scan_layers(layers: &[Layer], gaps: &mut Gaps) {
     for layer in layers {
-        gaps.folder |= layer.folder;
-        gaps.mask |= layer.masked;
         gaps.blend |= layer.blend != Blend::Normal;
         gaps.effect |= !layer.effects.is_empty();
         gaps.opacity |= layer.opacity < 0.999;
@@ -271,12 +267,6 @@ pub fn export_warnings(doc: &Document) -> Vec<String> {
     }
     if gaps.effect {
         warnings.push("layer effects are not exported".to_string());
-    }
-    if gaps.mask {
-        warnings.push("layer masks are not exported".to_string());
-    }
-    if gaps.folder {
-        warnings.push("layer folders are exported as plain layers".to_string());
     }
     if gaps.opacity {
         warnings.push("layer and keyframe opacity are exported as shape transparency".to_string());

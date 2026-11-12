@@ -117,7 +117,7 @@ struct Notes {
     masks: usize,
     blend: usize,
     guides: usize,
-    folders: usize,
+    types: usize,
     camera: usize,
     morphs: usize,
     easing: usize,
@@ -195,9 +195,9 @@ impl Notes {
         );
         said(
             &mut out,
-            self.folders,
-            "layer folder was imported as a plain layer",
-            "layer folders were imported as plain layers",
+            self.types,
+            "layer type was imported as a normal layer",
+            "layer types were imported as normal layers",
         );
         said(
             &mut out,
@@ -478,7 +478,7 @@ fn background(root: &Element) -> String {
 fn scene(timeline: &Element, index: usize, media: &Media, notes: &mut Notes) -> Scene {
     let mut layers = Vec::new();
     if let Some(holder) = child(timeline, "layers") {
-        collect_layers(holder, media, notes, &mut layers);
+        layers = scene_layers(holder, media, notes);
     }
     if layers.is_empty() {
         layers.push(blank_layer("Layer 1"));
@@ -522,40 +522,153 @@ fn blank_layer(name: &str) -> Layer {
     }
 }
 
-fn collect_layers(holder: &Element, media: &Media, notes: &mut Notes, out: &mut Vec<Layer>) {
+struct Parsed {
+    layer: Layer,
+    parent: Option<usize>,
+    mask: bool,
+    masked: bool,
+}
+
+fn collect_layers(holder: &Element, media: &Media, notes: &mut Notes) -> Vec<Option<Parsed>> {
+    let mut out = Vec::new();
     for item in &holder.children {
         match item.name.as_str() {
-            "DOMLayerFolder" => {
-                notes.folders += 1;
-                collect_layers(item, media, notes, out);
-            }
-            "DOMLayer" => {
-                if let Some(layer) = layer(item, media, notes) {
-                    out.push(layer);
-                }
-            }
+            "layers" => out.extend(collect_layers(item, media, notes)),
+            "DOMLayer" => out.push(parsed(item, media, notes)),
             _ => {}
         }
     }
+    out
 }
 
-fn layer(el: &Element, media: &Media, notes: &mut Notes) -> Option<Layer> {
+fn scene_layers(holder: &Element, media: &Media, notes: &mut Notes) -> Vec<Layer> {
+    let slots = collect_layers(holder, media, notes);
+    let members: Vec<usize> = (0..slots.len()).filter(|index| slots[*index].is_some()).collect();
+    let clipped = mask_groups(&slots, &members, notes);
+    let mut kids: Vec<Vec<usize>> = vec![Vec::new(); slots.len()];
+    let mut placed = vec![false; slots.len()];
+    for index in members.iter().copied() {
+        if let Some(at) = folder_parent(&slots, index) {
+            placed[index] = true;
+            kids[at].push(index);
+        }
+    }
+    let roots: Vec<usize> = members.iter().copied().filter(|index| !placed[*index]).collect();
+    assembled(&slots, &kids, &clipped, &roots, notes)
+}
+
+fn folder_parent(slots: &[Option<Parsed>], index: usize) -> Option<usize> {
+    let at = slots[index].as_ref()?.parent?;
+    if at >= index {
+        return None;
+    }
+    slots[at].as_ref().filter(|entry| entry.layer.folder).map(|_| at)
+}
+
+fn mask_groups(slots: &[Option<Parsed>], members: &[usize], notes: &mut Notes) -> Vec<usize> {
+    let mut out = vec![usize::MAX; slots.len()];
+    let provider = |at: usize| {
+        slots
+            .get(at)
+            .map_or(false, |entry| entry.as_ref().is_some_and(|parsed| parsed.mask))
+    };
+    for (position, index) in members.iter().copied().enumerate() {
+        let Some(entry) = slots[index].as_ref() else {
+            continue;
+        };
+        if entry.mask {
+            continue;
+        }
+        let above = if position == 0 {
+            None
+        } else {
+            Some(members[position - 1])
+        };
+        let claimed = above.filter(|at| provider(*at) && out[*at] == usize::MAX);
+        let at = entry
+            .parent
+            .filter(|value| *value < index && provider(*value))
+            .or(claimed);
+        match at {
+            Some(at) if out[at] == usize::MAX => out[at] = index,
+            Some(_) => notes.masks += 1,
+            None if entry.masked => notes.masks += 1,
+            None => {}
+        }
+    }
+    for index in members {
+        if provider(*index) && out[*index] == usize::MAX {
+            notes.masks += 1;
+        }
+    }
+    out
+}
+
+fn assembled(
+    slots: &[Option<Parsed>],
+    kids: &[Vec<usize>],
+    clipped: &[usize],
+    members: &[usize],
+    notes: &mut Notes,
+) -> Vec<Layer> {
+    let mut out = Vec::new();
+    for (position, index) in members.iter().enumerate() {
+        let Some(entry) = slots[*index].as_ref() else {
+            continue;
+        };
+        let mut layer = entry.layer.clone();
+        if layer.folder {
+            layer.children = assembled(slots, kids, clipped, &kids[*index], notes);
+            out.push(layer);
+            continue;
+        }
+        layer.masked = position > 0 && clipped[members[position - 1]] == *index;
+        out.push(layer);
+    }
+    out
+}
+
+fn parsed(el: &Element, media: &Media, notes: &mut Notes) -> Option<Parsed> {
     let kind = el
         .attr("layerType")
         .or_else(|| el.attr("type"))
         .unwrap_or("normal")
-        .to_ascii_lowercase();
+        .to_ascii_lowercase()
+        .replace(' ', "");
+    let parent = usize::try_from(el.number("parentLayerIndex", -1.0) as i64).ok();
+    let mask = kind == "mask";
+    let masked = kind == "masked" || el.flag("masked", false);
     if kind == "camera" {
         notes.camera += 1;
         return None;
     }
-    if matches!(kind.as_str(), "guide" | "motionguide" | "guidedlayer") || el.flag("guide", false)
-    {
+    if matches!(kind.as_str(), "guide" | "motionguide" | "guidedlayer") || el.flag("guide", false) {
         notes.guides += 1;
         return None;
     }
-    if kind == "mask" || el.flag("masked", false) {
-        notes.masks += 1;
+    if !matches!(kind.as_str(), "normal" | "mask" | "masked" | "folder") {
+        notes.types += 1;
+    }
+    if kind == "folder" {
+        return Some(Parsed {
+            layer: Layer {
+                id: new_id("l"),
+                name: el.attr("name").unwrap_or("Folder").to_string(),
+                visible: el.flag("visible", true),
+                locked: el.flag("locked", false),
+                opacity: 1.0,
+                blend: Blend::Normal,
+                effects: Vec::new(),
+                masked: false,
+                length: 1,
+                keys: Vec::new(),
+                folder: true,
+                children: Vec::new(),
+            },
+            parent,
+            mask: false,
+            masked: false,
+        });
     }
     if matches!(el.attr("blendMode"), Some(value) if value != "normal") {
         notes.blend += 1;
@@ -575,19 +688,24 @@ fn layer(el: &Element, media: &Media, notes: &mut Notes) -> Option<Layer> {
     }
     let last = keys.last().map_or(0, |key| key.frame);
     length = length.max(last.saturating_add(1)).max(1);
-    Some(Layer {
-        id: new_id("l"),
-        name: el.attr("name").unwrap_or("Layer").to_string(),
-        visible: el.flag("visible", true),
-        locked: el.flag("locked", false),
-        opacity: 1.0,
-        blend: Blend::Normal,
-        effects: Vec::new(),
-        masked: false,
-        length,
-        keys,
-        folder: false,
-        children: Vec::new(),
+    Some(Parsed {
+        layer: Layer {
+            id: new_id("l"),
+            name: el.attr("name").unwrap_or("Layer").to_string(),
+            visible: el.flag("visible", true),
+            locked: el.flag("locked", false),
+            opacity: 1.0,
+            blend: Blend::Normal,
+            effects: Vec::new(),
+            masked: false,
+            length,
+            keys,
+            folder: false,
+            children: Vec::new(),
+        },
+        parent,
+        mask,
+        masked,
     })
 }
 
@@ -1528,14 +1646,104 @@ mod tests {
             .map(|layer| layer.name.as_str())
             .collect();
         assert_eq!(names, vec!["Clip", "Music"]);
+        assert!(import.doc.scenes[0].layers[1].masked);
         assert!(import.notes.contains(&"1 guide layer was skipped".to_string()));
-        assert!(import
+        assert!(!import
             .notes
-            .contains(&"1 mask layer was imported as a plain layer".to_string()));
+            .iter()
+            .any(|note| note.contains("mask layer")));
         assert!(import
             .notes
             .contains(&"1 blend mode was imported as normal".to_string()));
         assert!(import.notes.contains(&"1 frame sound was skipped".to_string()));
+    }
+
+    fn holder(name: &str, attrs: &str) -> String {
+        format!("<DOMLayer name=\"{name}\" {attrs}><frames><DOMFrame index=\"0\" duration=\"1\" keyMode=\"9728\"><elements/></DOMFrame></frames></DOMLayer>")
+    }
+
+    #[test]
+    fn a_mask_layer_clips_the_layer_below_it() {
+        let layers = format!(
+            "{}{}{}",
+            holder("Clip", "layerType=\"mask\" parentLayerIndex=\"-1\""),
+            holder("Art", "layerType=\"masked\" parentLayerIndex=\"0\""),
+            holder("Back", "")
+        );
+        let import = parse(&stage_xml(&layers), "Imported", &[]).expect("parse");
+        let scene = &import.doc.scenes[0];
+        assert_eq!(
+            scene.layers.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
+            vec!["Clip", "Art", "Back"]
+        );
+        assert!(!scene.layers[0].masked);
+        assert!(scene.layers[1].masked);
+        assert!(!scene.layers[2].masked);
+        assert!(import.notes.is_empty());
+    }
+
+    #[test]
+    fn extra_layers_behind_one_mask_are_reported() {
+        let layers = format!(
+            "{}{}{}{}",
+            holder("Clip", "layerType=\"mask\""),
+            holder("Art", "parentLayerIndex=\"0\""),
+            holder("More", "parentLayerIndex=\"0\""),
+            holder("Back", "parentLayerIndex=\"-1\"")
+        );
+        let import = parse(&stage_xml(&layers), "Imported", &[]).expect("parse");
+        let scene = &import.doc.scenes[0];
+        assert!(scene.layers[1].masked);
+        assert!(!scene.layers[2].masked);
+        assert_eq!(
+            import.notes,
+            vec!["1 mask layer was imported as a plain layer".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_mask_without_a_layer_to_clip_is_reported() {
+        let layers = format!(
+            "{}{}",
+            holder("Art", ""),
+            holder("Clip", "layerType=\"mask\" parentLayerIndex=\"-1\"")
+        );
+        let import = parse(&stage_xml(&layers), "Imported", &[]).expect("parse");
+        assert_eq!(import.doc.scenes[0].layers.len(), 2);
+        assert!(!import.doc.scenes[0].layers.iter().any(|l| l.masked));
+        assert_eq!(
+            import.notes,
+            vec!["1 mask layer was imported as a plain layer".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_folder_layer_keeps_the_layers_below_it() {
+        let layers = format!(
+            "{}{}{}{}{}",
+            holder("Group", "layerType=\"folder\" parentLayerIndex=\"-1\""),
+            holder("Art", "parentLayerIndex=\"0\""),
+            holder("Inner", "layerType=\"folder\" parentLayerIndex=\"0\""),
+            holder("Deep", "parentLayerIndex=\"2\""),
+            holder("Back", "parentLayerIndex=\"-1\"")
+        );
+        let import = parse(&stage_xml(&layers), "Imported", &[]).expect("parse");
+        let scene = &import.doc.scenes[0];
+        assert_eq!(
+            scene.layers.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
+            vec!["Group", "Back"]
+        );
+        assert!(scene.layers[0].folder);
+        assert_eq!(
+            scene.layers[0]
+                .children
+                .iter()
+                .map(|l| l.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Art", "Inner"]
+        );
+        assert_eq!(scene.layers[0].children[1].children[0].name, "Deep");
+        assert!(import.notes.is_empty());
     }
 
     #[test]

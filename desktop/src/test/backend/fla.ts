@@ -22,12 +22,6 @@ function gaps(flags: Set<string>, layer: Layer) {
   if (layer.effects.length > 0) {
     flags.add("effect");
   }
-  if (layer.masked) {
-    flags.add("mask");
-  }
-  if (layer.folder) {
-    flags.add("folder");
-  }
   if (layer.opacity !== 1) {
     flags.add("opacity");
   }
@@ -57,13 +51,11 @@ const TEXTS: Record<string, string> = {
   gradient: "gradient fills are exported as flat colours",
   blend: "blend modes are not exported",
   effect: "layer effects are not exported",
-  mask: "layer masks are not exported",
-  folder: "layer folders are exported as plain layers",
   opacity: "layer and keyframe opacity are exported as shape transparency",
   tween: "tweens are exported as keyframes that hold until the next key"
 };
 
-const ORDER = ["gradient", "blend", "effect", "mask", "folder", "opacity", "tween"];
+const ORDER = ["gradient", "blend", "effect", "opacity", "tween"];
 
 export const handlers: MockExtension = (context) => ({
   project_export_fla: (args): FlaExportResult => {

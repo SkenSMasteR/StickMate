@@ -114,6 +114,8 @@ pub struct XflLayer {
     pub color: String,
     pub visible: bool,
     pub locked: bool,
+    pub kind: String,
+    pub parent: Option<usize>,
     pub frames: Vec<XflFrame>,
 }
 
@@ -689,24 +691,44 @@ fn push_elements(
 }
 
 pub fn export_scene(scene: &Scene, library: &mut Library) -> XflScene {
-    let mut flat = Vec::new();
-    flatten_layers(&scene.layers, &mut flat);
+    let mut flat: Vec<(&Layer, Option<usize>)> = Vec::new();
+    flatten_layers(&scene.layers, None, &mut flat);
     XflScene {
         name: scene.name.clone(),
         layers: flat
             .iter()
             .enumerate()
-            .map(|(index, layer)| export_layer(layer, index, library))
+            .map(|(index, (layer, parent))| {
+                let mut out = export_layer(layer, index, library);
+                if layer.folder {
+                    out.kind = "folder".to_string();
+                } else if flat
+                    .get(index + 1)
+                    .is_some_and(|(next, _)| next.masked && !next.folder)
+                {
+                    out.kind = "mask".to_string();
+                }
+                out.parent = match parent {
+                    Some(at) => Some(*at),
+                    None if layer.masked && index > 0 => Some(index - 1),
+                    None => None,
+                };
+                out
+            })
             .collect(),
     }
 }
 
-fn flatten_layers<'a>(layers: &'a [Layer], out: &mut Vec<&'a Layer>) {
+fn flatten_layers<'a>(
+    layers: &'a [Layer],
+    folder: Option<usize>,
+    out: &mut Vec<(&'a Layer, Option<usize>)>,
+) {
     for layer in layers {
+        let at = out.len();
+        out.push((layer, folder));
         if layer.folder {
-            flatten_layers(&layer.children, out);
-        } else {
-            out.push(layer);
+            flatten_layers(&layer.children, Some(at), out);
         }
     }
 }
@@ -717,6 +739,8 @@ pub fn export_layer(layer: &Layer, index: usize, library: &mut Library) -> XflLa
         color: layer_color(index),
         visible: layer.visible,
         locked: layer.locked,
+        kind: "normal".to_string(),
+        parent: None,
         frames: export_frames(layer, library),
     }
 }
@@ -824,6 +848,12 @@ fn layer_xml(layer: &XflLayer, indent: &str, current: bool) -> String {
     }
     if layer.locked {
         flags.push_str(" locked=\"true\"");
+    }
+    if layer.kind != "normal" {
+        flags.push_str(&format!(" layerType=\"{}\"", escape(&layer.kind)));
+    }
+    if let Some(parent) = layer.parent {
+        flags.push_str(&format!(" parentLayerIndex=\"{parent}\""));
     }
     if current {
         flags.push_str(" current=\"true\" isSelected=\"true\"");
@@ -1257,7 +1287,7 @@ mod tests {
     }
 
     #[test]
-    fn folders_export_their_children_as_plain_layers() {
+    fn folders_export_their_children_under_a_parent_index() {
         let mut folder = layer(Vec::new(), 1);
         folder.folder = true;
         folder.children = vec![
@@ -1270,10 +1300,67 @@ mod tests {
             layers: vec![folder],
         };
         let exported = export_scene(&scene, &mut bits());
-        assert_eq!(exported.layers.len(), 2);
-        assert_eq!(exported.layers[0].frames.len(), 1);
-        assert_eq!(exported.layers[1].frames.len(), 1);
-        assert!(!exported.layers[0].frames[0].elements.is_empty());
+        assert_eq!(exported.layers.len(), 3);
+        assert_eq!(exported.layers[0].kind, "folder");
+        assert_eq!(exported.layers[1].parent, Some(0));
+        assert_eq!(exported.layers[2].parent, Some(0));
+        assert!(!exported.layers[1].frames[0].elements.is_empty());
+        assert!(layer_xml(&exported.layers[0], "", false).contains("layerType=\"folder\""));
+        assert!(layer_xml(&exported.layers[1], "", false).contains("parentLayerIndex=\"0\""));
+    }
+
+    #[test]
+    fn a_masked_layer_pairs_with_the_layer_above_it() {
+        let mut clip = layer(vec![key(0, vec![rect(0.0, 0.0, 2.0, 2.0)])], 1);
+        let mut art = layer(vec![key(0, Vec::new())], 1);
+        art.masked = true;
+        let scene = Scene {
+            id: "s1".to_string(),
+            name: "Scene 1".to_string(),
+            layers: vec![clip, art],
+        };
+        let exported = export_scene(&scene, &mut bits());
+        assert_eq!(exported.layers[0].kind, "mask");
+        assert_eq!(exported.layers[1].kind, "normal");
+        assert_eq!(exported.layers[1].parent, Some(0));
+        let xml = layer_xml(&exported.layers[0], "", false);
+        assert!(xml.contains("layerType=\"mask\""));
+        let clipped = layer_xml(&exported.layers[1], "", false);
+        assert!(clipped.contains("parentLayerIndex=\"0\""));
+        assert!(!clipped.contains("layerType"));
+    }
+
+    #[test]
+    fn folders_and_masks_survive_a_round_trip() {
+        let mut clip = layer(vec![key(0, vec![rect(0.0, 0.0, 2.0, 2.0)])], 1);
+        clip.name = "Clip".to_string();
+        let mut art = layer(vec![key(0, vec![rect(1.0, 1.0, 2.0, 2.0)])], 1);
+        art.name = "Art".to_string();
+        art.masked = true;
+        let mut folder = layer(Vec::new(), 1);
+        folder.name = "Group".to_string();
+        folder.folder = true;
+        folder.children = vec![clip, art];
+        let mut doc = book(Vec::new());
+        doc.scenes[0].layers = vec![folder];
+        let import = crate::xfl_read::parse(&document_xml(&doc), "Book", &[]).expect("parse");
+        let layers = &import.doc.scenes[0].layers;
+        assert_eq!(
+            layers.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
+            vec!["Group"]
+        );
+        assert!(layers[0].folder);
+        assert_eq!(
+            layers[0]
+                .children
+                .iter()
+                .map(|l| l.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Clip", "Art"]
+        );
+        assert!(!layers[0].children[0].masked);
+        assert!(layers[0].children[1].masked);
+        assert!(import.notes.is_empty());
     }
 
     #[test]
