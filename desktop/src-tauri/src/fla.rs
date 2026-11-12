@@ -400,7 +400,7 @@ fn import_members(
     })
 }
 
-fn validate_import(doc: &Document) -> Result<(), String> {
+pub fn validate_import(doc: &Document) -> Result<(), String> {
     for scene in &doc.scenes {
         validate_import_layers(&scene.layers)?;
     }

@@ -56,6 +56,7 @@ NOTE 2206 library symbols were not imported
 NOTE 1 frame sound was skipped
 NOTE 1 shape tween was imported as a keyframe
 NOTE 1 brush stroke was imported as a plain stroke
+VALID imported ok
 COVERAGE library_symbols 2213 0 2
 COVERAGE placements 28 0 3
 COVERAGE layers 19 4 2
@@ -135,6 +136,7 @@ NOTE 22 symbol instances were skipped
 NOTE 210 library symbols were not imported
 NOTE 1 frame sound was skipped
 NOTE 1 camera layer was skipped
+VALID imported ok
 COVERAGE library_symbols 216 0 2
 COVERAGE placements 117 0 3
 COVERAGE layers 28 6 2
@@ -215,6 +217,7 @@ NOTE 22 symbol instances were skipped
 NOTE 210 library symbols were not imported
 NOTE 1 frame sound was skipped
 NOTE 1 camera layer was skipped
+VALID imported ok
 COVERAGE library_symbols 214 0 2
 COVERAGE placements 214 0 3
 COVERAGE layers 36 6 2

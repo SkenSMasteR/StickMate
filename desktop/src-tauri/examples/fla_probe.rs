@@ -381,6 +381,10 @@ fn report(path: &Path) -> Vec<String> {
     for note in &import.notes {
         out.push(format!("NOTE {note}"));
     }
+    match fla::validate_import(&import.doc) {
+        Ok(()) => out.push("VALID imported ok".to_string()),
+        Err(error) => out.push(format!("VALID imported rejected {error}")),
+    }
     let rows = coverage_rows(&census, &metrics);
     for (row, total, landed, weight) in &rows {
         out.push(format!("COVERAGE {row} {total} {landed} {weight}"));
