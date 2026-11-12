@@ -35,6 +35,7 @@ secrets/
 *.sqlite3-wal
 *.fla
 *.xfl
+!desktop/src-tauri/tests/fixtures/fla/*.fla
 recovery/
 checkpoints/
 *.log
