@@ -134,6 +134,7 @@ pub fn run() {
             templates::templates_open,
             media::media_read,
             media::media_sequence,
+            media::media_gif,
             export::export_web,
             fla::project_export_fla,
             fla::project_import_fla,

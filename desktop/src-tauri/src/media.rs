@@ -3,6 +3,8 @@ use serde::Serialize;
 
 const LIMIT: usize = 4 * 1024 * 1024;
 const SEQUENCE_LIMIT: usize = 600;
+const FRAME_LIMIT: usize = 600;
+const FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -323,6 +325,160 @@ pub fn media_sequence(path: String) -> Result<Vec<MediaInfo>, String> {
     Ok(run)
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnimationFrame {
+    pub source: String,
+    pub width: u32,
+    pub height: u32,
+    pub delay: u32,
+}
+
+fn png_of(width: usize, height: usize, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width as u32, height as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let unreadable = || "the animation could not be turned into PNG images".to_string();
+    let mut writer = encoder.write_header().map_err(|_| unreadable())?;
+    writer.write_image_data(rgba).map_err(|_| unreadable())?;
+    writer.finish().map_err(|_| unreadable())?;
+    Ok(out)
+}
+
+fn screen_of(frame: &gif::Frame, width: usize, height: usize) -> (usize, usize, usize, usize) {
+    let left = frame.left as usize;
+    let top = frame.top as usize;
+    let right = (left + frame.width as usize).min(width);
+    let bottom = (top + frame.height as usize).min(height);
+    if right <= left || bottom <= top {
+        return (0, 0, 0, 0);
+    }
+    (left, top, right - left, bottom - top)
+}
+
+fn grab(canvas: &[u8], width: usize, left: usize, top: usize, w: usize, h: usize) -> Vec<u8> {
+    if w == 0 || h == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(w * h * 4);
+    for row in 0..h {
+        let at = ((top + row) * width + left) * 4;
+        out.extend_from_slice(&canvas[at..at + w * 4]);
+    }
+    out
+}
+
+fn lay(canvas: &mut [u8], width: usize, left: usize, top: usize, pixels: &[u8], w: usize, h: usize) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    for row in 0..h {
+        let at = ((top + row) * width + left) * 4;
+        canvas[at..at + w * 4].copy_from_slice(&pixels[row * w * 4..(row + 1) * w * 4]);
+    }
+}
+
+fn paint(
+    canvas: &mut [u8],
+    width: usize,
+    left: usize,
+    top: usize,
+    row_bytes: usize,
+    pixels: &[u8],
+    w: usize,
+    h: usize,
+) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    for row in 0..h {
+        let from = row * row_bytes;
+        for column in 0..w {
+            let pixel = &pixels[from + column * 4..from + column * 4 + 4];
+            if pixel[3] == 0 {
+                continue;
+            }
+            let at = ((top + row) * width + left + column) * 4;
+            canvas[at..at + 4].copy_from_slice(pixel);
+        }
+    }
+}
+
+pub fn gif_frames(bytes: &[u8]) -> Result<Vec<AnimationFrame>, String> {
+    let unreadable = || "the file is not a readable GIF animation".to_string();
+    if kind_of(bytes) != Some("gif") {
+        return Err(unreadable());
+    }
+    let mut options = gif::DecodeOptions::new();
+    options.set_color_output(gif::ColorOutput::RGBA);
+    let decoder = options
+        .read_info(std::io::Cursor::new(bytes))
+        .map_err(|_| unreadable())?;
+    let width = decoder.width() as usize;
+    let height = decoder.height() as usize;
+    if width == 0 || height == 0 || width > 2048 || height > 2048 {
+        return Err("the animation is larger than 2048 by 2048 pixels".to_string());
+    }
+    let mut canvas = vec![0u8; width * height * 4];
+    let mut run: Vec<AnimationFrame> = Vec::new();
+    let mut total = 0usize;
+    let mut carried: Option<(usize, usize, usize, usize, Vec<u8>, gif::DisposalMethod)> = None;
+    for frame in decoder.into_iter() {
+        let frame = frame.map_err(|_| unreadable())?;
+        if run.len() == FRAME_LIMIT {
+            return Err("an animation can hold up to 600 frames".to_string());
+        }
+        if let Some((left, top, w, h, before, dispose)) = &carried {
+            match dispose {
+                gif::DisposalMethod::Background => {
+                    let clear = vec![0u8; w * h * 4];
+                    lay(&mut canvas, width, *left, *top, &clear, *w, *h);
+                }
+                gif::DisposalMethod::Previous => lay(&mut canvas, width, *left, *top, before, *w, *h),
+                _ => {}
+            }
+        }
+        let (left, top, w, h) = screen_of(&frame, width, height);
+        let before = grab(&canvas, width, left, top, w, h);
+        paint(
+            &mut canvas,
+            width,
+            left,
+            top,
+            frame.width as usize * 4,
+            frame.buffer.as_ref(),
+            w,
+            h,
+        );
+        carried = Some((left, top, w, h, before, frame.dispose));
+        let png = png_of(width, height, &canvas)?;
+        if png.len() > LIMIT {
+            return Err("a frame of the animation is larger than 4 MB".to_string());
+        }
+        total += png.len();
+        if total > FRAME_BYTES {
+            return Err("the animation decodes to more than 64 MB of images".to_string());
+        }
+        run.push(AnimationFrame {
+            source: data_url("png", &png),
+            width: width as u32,
+            height: height as u32,
+            delay: frame.delay as u32 * 10,
+        });
+    }
+    if run.is_empty() {
+        return Err(unreadable());
+    }
+    Ok(run)
+}
+
+#[tauri::command]
+pub fn media_gif(path: String) -> Result<Vec<AnimationFrame>, String> {
+    let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+    gif_frames(&bytes)
+}
+
 #[cfg(test)]
 pub(crate) fn png(width: u32, height: u32) -> Vec<u8> {
     let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
@@ -515,6 +671,156 @@ mod tests {
         assert_eq!(payload("data:image/png;base64,!!!!"), None);
         assert_eq!(payload("data:image/png"), None);
         assert_eq!(payload(""), None);
+    }
+
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    const GREEN: [u8; 4] = [0, 255, 0, 255];
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
+    const CLEAR: [u8; 4] = [0, 0, 0, 0];
+
+    fn fill(pixels: &[[u8; 4]]) -> Vec<u8> {
+        pixels.iter().copied().flatten().collect()
+    }
+
+    fn animated(width: u16, height: u16, frames: &[(Vec<u8>, u16, gif::DisposalMethod)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut encoder = gif::Encoder::new(&mut out, width, height, &[]).expect("encoder");
+            for (pixels, delay, dispose) in frames {
+                let mut data = pixels.clone();
+                let mut frame = gif::Frame::from_rgba_speed(width, height, &mut data, 1);
+                frame.delay = *delay;
+                frame.dispose = *dispose;
+                encoder.write_frame(&frame).expect("frame");
+            }
+        }
+        out
+    }
+
+    fn decoded(source: &str) -> Vec<u8> {
+        let bytes = payload(source).expect("payload");
+        let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+            .read_info()
+            .expect("png");
+        let mut buffer = vec![0u8; reader.output_buffer_size().expect("size")];
+        reader.next_frame(&mut buffer).expect("pixels");
+        buffer
+    }
+
+    fn sizes(run: &[AnimationFrame]) -> Vec<(u32, u32, u32)> {
+        run.iter().map(|f| (f.width, f.height, f.delay)).collect()
+    }
+
+    #[test]
+    fn an_animated_gif_becomes_one_png_frame_per_step() {
+        let bytes = animated(
+            2,
+            2,
+            &[
+                (fill(&[RED; 4]), 10, gif::DisposalMethod::Keep),
+                (fill(&[BLUE, CLEAR, CLEAR, CLEAR]), 20, gif::DisposalMethod::Keep),
+            ],
+        );
+        let run = gif_frames(&bytes).expect("animation");
+        assert_eq!(sizes(&run), vec![(2, 2, 100), (2, 2, 200)]);
+        assert_eq!(decoded(&run[0].source), fill(&[RED; 4]));
+        assert_eq!(decoded(&run[1].source), fill(&[BLUE, RED, RED, RED]));
+        assert!(run.iter().all(|f| looks_like_image(&f.source)));
+    }
+
+    #[test]
+    fn a_disposal_method_decides_what_a_frame_is_drawn_on() {
+        let cleared = animated(
+            2,
+            2,
+            &[
+                (fill(&[RED; 4]), 1, gif::DisposalMethod::Background),
+                (fill(&[BLUE, CLEAR, CLEAR, CLEAR]), 1, gif::DisposalMethod::Keep),
+            ],
+        );
+        let run = gif_frames(&cleared).expect("background disposal");
+        assert_eq!(decoded(&run[1].source), fill(&[BLUE, CLEAR, CLEAR, CLEAR]));
+
+        let restored = animated(
+            2,
+            2,
+            &[
+                (fill(&[RED; 4]), 1, gif::DisposalMethod::Keep),
+                (fill(&[GREEN; 4]), 1, gif::DisposalMethod::Previous),
+                (fill(&[CLEAR; 4]), 1, gif::DisposalMethod::Keep),
+            ],
+        );
+        let run = gif_frames(&restored).expect("previous disposal");
+        assert_eq!(decoded(&run[1].source), fill(&[GREEN; 4]));
+        assert_eq!(decoded(&run[2].source), fill(&[RED; 4]));
+    }
+
+    #[test]
+    fn a_still_gif_is_a_single_frame() {
+        let bytes = animated(1, 1, &[(fill(&[RED]), 0, gif::DisposalMethod::Keep)]);
+        let run = gif_frames(&bytes).expect("still");
+        assert_eq!(sizes(&run), vec![(1, 1, 0)]);
+    }
+
+    #[test]
+    fn refuses_what_is_not_an_animation() {
+        assert_eq!(
+            gif_frames(b"not a gif").unwrap_err(),
+            "the file is not a readable GIF animation"
+        );
+        assert_eq!(
+            gif_frames(&png(4, 2)).unwrap_err(),
+            "the file is not a readable GIF animation"
+        );
+        assert_eq!(
+            gif_frames(b"GIF89a").unwrap_err(),
+            "the file is not a readable GIF animation"
+        );
+        let mut huge = Vec::new();
+        {
+            let mut encoder = gif::Encoder::new(&mut huge, 3000, 1, &[]).expect("encoder");
+            let mut frame = gif::Frame::from_rgba_speed(1, 1, &mut fill(&[RED]), 1);
+            frame.delay = 1;
+            encoder.write_frame(&frame).expect("frame");
+        }
+        assert_eq!(
+            gif_frames(&huge).unwrap_err(),
+            "the animation is larger than 2048 by 2048 pixels"
+        );
+    }
+
+    #[test]
+    fn an_animation_stops_at_six_hundred_frames() {
+        let frames: Vec<(Vec<u8>, u16, gif::DisposalMethod)> = (0..601)
+            .map(|_| (fill(&[RED; 4]), 1, gif::DisposalMethod::Keep))
+            .collect();
+        let bytes = animated(2, 2, &frames);
+        assert_eq!(
+            gif_frames(&bytes).unwrap_err(),
+            "an animation can hold up to 600 frames"
+        );
+    }
+
+    #[test]
+    fn reads_an_animation_from_disk() {
+        let dir = sequence_dir("gif");
+        let file = dir.join("blink.gif");
+        std::fs::write(
+            &file,
+            animated(
+                2,
+                1,
+                &[
+                    (fill(&[RED, BLUE]), 4, gif::DisposalMethod::Keep),
+                    (fill(&[BLUE, RED]), 4, gif::DisposalMethod::Keep),
+                ],
+            ),
+        )
+        .expect("write");
+        let run = media_gif(file.to_string_lossy().into_owned()).expect("gif");
+        assert_eq!(sizes(&run), vec![(2, 1, 40), (2, 1, 40)]);
+        assert_eq!(decoded(&run[1].source), fill(&[BLUE, RED]));
+        std::fs::remove_dir_all(&dir).expect("clean");
     }
 
     #[test]
