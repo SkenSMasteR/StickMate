@@ -12,7 +12,7 @@ export interface FlaImportResult {
   notes: string[];
 }
 
-const FILTERS = [{ name: "Adobe Animate", extensions: ["fla", "xfl"] }];
+const FILTERS = [{ name: "Adobe Animate", extensions: ["fla"] }];
 
 export function exportFla(id: string, path: string): Promise<FlaExportResult> {
   return invoke<FlaExportResult>("project_export_fla", { id, path });
