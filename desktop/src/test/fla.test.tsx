@@ -7,6 +7,7 @@ import { WorkspaceProvider } from "@/editor/workspace";
 import { I18nProvider } from "@/i18n";
 import en from "@/i18n/en.json";
 import { ConfirmProvider } from "@/lib/confirm";
+import { humanoidFigure } from "@/lib/document";
 import type { Document, Keyframe, Layer, Scene, Shape } from "@/lib/document";
 import { clearFlaReport, getFlaReport } from "@/lib/fla-report";
 import { PrefsProvider } from "@/lib/prefs";
@@ -132,7 +133,14 @@ describe("animate project exchange", () => {
         {
           id: "s0",
           name: "Scene 1",
-          layers: [layer({ blend: "multiply", keys: [keyframe([square()], true)] })]
+          layers: [
+            layer({
+              blend: "multiply",
+              keys: [
+                keyframe([square(), { kind: "Figure", figure: humanoidFigure(10, 10, 100) }], true)
+              ]
+            })
+          ]
         }
       ]
     });
@@ -149,7 +157,8 @@ describe("animate project exchange", () => {
     expect(getFlaReport()[0].lines).toEqual([
       "gradient fills are exported as flat colours",
       "blend modes are not exported",
-      "tweens are exported as keyframes that hold until the next key"
+      "tweens are exported as keyframes that hold until the next key",
+      "stick figures are exported as the lines they draw, without the rig"
     ]);
     expect(screen.queryByText("blend modes are not exported")).toBeNull();
     fireEvent.click(entry);

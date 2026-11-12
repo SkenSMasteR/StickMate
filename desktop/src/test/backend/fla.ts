@@ -1,4 +1,4 @@
-import type { Document, Keyframe, Layer } from "@/lib/document";
+import type { Document, Layer, Shape } from "@/lib/document";
 import type { FlaExportResult, FlaImportResult } from "@/lib/fla";
 import type { MockExtension } from "../backend";
 
@@ -32,8 +32,11 @@ function gaps(flags: Set<string>, layer: Layer) {
     if (key.transform.opacity !== 1) {
       flags.add("opacity");
     }
-    if (hasGradient(key)) {
+    if (key.shapes.some(usesGradient)) {
       flags.add("gradient");
+    }
+    if (key.shapes.some(usesFigure)) {
+      flags.add("figure");
     }
   }
   for (const child of layer.children) {
@@ -41,10 +44,18 @@ function gaps(flags: Set<string>, layer: Layer) {
   }
 }
 
-function hasGradient(key: Keyframe): boolean {
-  return key.shapes.some(
-    (shape) => "gradient" in shape && shape.gradient !== undefined && shape.gradient !== null
-  );
+function usesGradient(shape: Shape): boolean {
+  if (shape.kind === "Group") {
+    return shape.children.some(usesGradient);
+  }
+  return "gradient" in shape && shape.gradient !== undefined && shape.gradient !== null;
+}
+
+function usesFigure(shape: Shape): boolean {
+  if (shape.kind === "Group") {
+    return shape.children.some(usesFigure);
+  }
+  return shape.kind === "Figure";
 }
 
 const TEXTS: Record<string, string> = {
@@ -52,10 +63,11 @@ const TEXTS: Record<string, string> = {
   blend: "blend modes are not exported",
   effect: "layer effects are not exported",
   opacity: "layer and keyframe opacity are exported as shape transparency",
-  tween: "tweens are exported as keyframes that hold until the next key"
+  tween: "tweens are exported as keyframes that hold until the next key",
+  figure: "stick figures are exported as the lines they draw, without the rig"
 };
 
-const ORDER = ["gradient", "blend", "effect", "opacity", "tween"];
+const ORDER = ["gradient", "blend", "effect", "opacity", "tween", "figure"];
 
 export const handlers: MockExtension = (context) => ({
   project_export_fla: (args): FlaExportResult => {
