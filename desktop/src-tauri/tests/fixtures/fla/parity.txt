@@ -1,0 +1,239 @@
+FILE artwork.fla
+CENSUS DOMSymbolItem 6
+CENSUS Include 2207
+CENSUS DOMSymbolInstance 28
+CENSUS DOMLayer 19
+CENSUS DOMLayerFolder 0
+CENSUS DOMFrame 81
+CENSUS Edge 50
+CENSUS EdgeCubics 0
+CENSUS FrameLabel 0
+CENSUS DOMStaticText 14
+CENSUS DOMBitmapItem 0
+CENSUS DOMSoundItem 5
+CENSUS SoundEnvelope 1
+CENSUS GlowFilter 0
+CENSUS BlurFilter 0
+CENSUS DropShadowFilter 0
+CENSUS WidthMarker 94
+CENSUS Ease 4
+CENSUS MorphShape 9
+CENSUS mask_layers 0
+CENSUS masked_layers 0
+CENSUS guide_layers 1
+CENSUS motion_guide_layers 0
+CENSUS depth_layers 0
+CENSUS camera_layers 0
+CENSUS key_mode_motion_22017 2
+CENSUS key_mode_motion_24065 0
+CENSUS key_mode_motion_17921 0
+CENSUS key_mode_shape_17922 4
+CENSUS key_mode_plain_9728 40
+CENSUS key_mode_other_8192 0
+IMPORT members 13
+IMPORT scenes 1
+IMPORT layers 4
+IMPORT keyframes 26
+IMPORT tweens 1
+IMPORT eased 0
+IMPORT labels 0
+IMPORT masks 0
+IMPORT folders 0
+IMPORT effects 0
+IMPORT edge_nodes 8
+IMPORT shapes Stroke 0
+IMPORT shapes Rect 0
+IMPORT shapes Ellipse 0
+IMPORT shapes Polygon 0
+IMPORT shapes Bitmap 0
+IMPORT shapes Text 14
+IMPORT shapes Path 2
+IMPORT shapes Group 0
+IMPORT shapes Figure 0
+IMPORT notes 5
+NOTE 20 symbol instances were skipped
+NOTE 2206 library symbols were not imported
+NOTE 1 frame sound was skipped
+NOTE 1 shape tween was imported as a keyframe
+NOTE 1 brush stroke was imported as a plain stroke
+COVERAGE library_symbols 2213 0 2
+COVERAGE placements 28 0 3
+COVERAGE layers 19 4 2
+COVERAGE frames 81 26 1
+COVERAGE static_texts 14 14 3
+COVERAGE edges 50 8 1
+COVERAGE cubic_edges 0 0 1
+COVERAGE frame_labels 0 0 3
+COVERAGE mask_layers 0 0 3
+COVERAGE guide_layers 1 0 1
+COVERAGE folder_layers 0 0 2
+COVERAGE depth_layers 0 0 1
+COVERAGE camera_layers 0 0 1
+COVERAGE sounds 6 0 1
+COVERAGE filters 0 0 2
+COVERAGE brush_widths 94 0 2
+COVERAGE motion_keys 2 1 2
+COVERAGE shape_keys 13 0 1
+COVERAGE custom_easing 4 0 2
+SCORE 23.34
+ROUNDTRIP tweens 1 -> tweens 0
+
+FILE characters.fla
+CENSUS DOMSymbolItem 6
+CENSUS Include 210
+CENSUS DOMSymbolInstance 117
+CENSUS DOMLayer 28
+CENSUS DOMLayerFolder 0
+CENSUS DOMFrame 171
+CENSUS Edge 78
+CENSUS EdgeCubics 37
+CENSUS FrameLabel 0
+CENSUS DOMStaticText 1
+CENSUS DOMBitmapItem 3
+CENSUS DOMSoundItem 3
+CENSUS SoundEnvelope 1
+CENSUS GlowFilter 0
+CENSUS BlurFilter 0
+CENSUS DropShadowFilter 0
+CENSUS WidthMarker 80
+CENSUS Ease 46
+CENSUS MorphShape 8
+CENSUS mask_layers 0
+CENSUS masked_layers 0
+CENSUS guide_layers 2
+CENSUS motion_guide_layers 0
+CENSUS depth_layers 0
+CENSUS camera_layers 1
+CENSUS key_mode_motion_22017 51
+CENSUS key_mode_motion_24065 0
+CENSUS key_mode_motion_17921 0
+CENSUS key_mode_shape_17922 3
+CENSUS key_mode_plain_9728 82
+CENSUS key_mode_other_8192 0
+IMPORT members 13
+IMPORT scenes 1
+IMPORT layers 6
+IMPORT keyframes 27
+IMPORT tweens 1
+IMPORT eased 1
+IMPORT labels 0
+IMPORT masks 0
+IMPORT folders 0
+IMPORT effects 0
+IMPORT edge_nodes 0
+IMPORT shapes Stroke 0
+IMPORT shapes Rect 0
+IMPORT shapes Ellipse 0
+IMPORT shapes Polygon 0
+IMPORT shapes Bitmap 0
+IMPORT shapes Text 1
+IMPORT shapes Path 0
+IMPORT shapes Group 0
+IMPORT shapes Figure 0
+IMPORT notes 4
+NOTE 22 symbol instances were skipped
+NOTE 210 library symbols were not imported
+NOTE 1 frame sound was skipped
+NOTE 1 camera layer was skipped
+COVERAGE library_symbols 216 0 2
+COVERAGE placements 117 0 3
+COVERAGE layers 28 6 2
+COVERAGE frames 171 27 1
+COVERAGE static_texts 1 1 3
+COVERAGE edges 78 0 1
+COVERAGE cubic_edges 37 0 1
+COVERAGE frame_labels 0 0 3
+COVERAGE mask_layers 0 0 3
+COVERAGE guide_layers 2 0 1
+COVERAGE folder_layers 0 0 2
+COVERAGE depth_layers 0 0 1
+COVERAGE camera_layers 1 0 1
+COVERAGE sounds 4 0 1
+COVERAGE filters 0 0 2
+COVERAGE brush_widths 80 0 2
+COVERAGE motion_keys 51 1 2
+COVERAGE shape_keys 11 0 1
+COVERAGE custom_easing 46 1 2
+SCORE 15.95
+ROUNDTRIP tweens 1 -> tweens 0
+ROUNDTRIP eased 1 -> eased 0
+
+FILE layers.fla
+CENSUS DOMSymbolItem 4
+CENSUS Include 210
+CENSUS DOMSymbolInstance 214
+CENSUS DOMLayer 36
+CENSUS DOMLayerFolder 0
+CENSUS DOMFrame 223
+CENSUS Edge 77
+CENSUS EdgeCubics 75
+CENSUS FrameLabel 0
+CENSUS DOMStaticText 2
+CENSUS DOMBitmapItem 3
+CENSUS DOMSoundItem 3
+CENSUS SoundEnvelope 1
+CENSUS GlowFilter 0
+CENSUS BlurFilter 0
+CENSUS DropShadowFilter 0
+CENSUS WidthMarker 0
+CENSUS Ease 78
+CENSUS MorphShape 0
+CENSUS mask_layers 1
+CENSUS masked_layers 0
+CENSUS guide_layers 3
+CENSUS motion_guide_layers 0
+CENSUS depth_layers 0
+CENSUS camera_layers 1
+CENSUS key_mode_motion_22017 117
+CENSUS key_mode_motion_24065 0
+CENSUS key_mode_motion_17921 0
+CENSUS key_mode_shape_17922 0
+CENSUS key_mode_plain_9728 106
+CENSUS key_mode_other_8192 0
+IMPORT members 11
+IMPORT scenes 1
+IMPORT layers 6
+IMPORT keyframes 27
+IMPORT tweens 1
+IMPORT eased 1
+IMPORT labels 0
+IMPORT masks 0
+IMPORT folders 0
+IMPORT effects 0
+IMPORT edge_nodes 0
+IMPORT shapes Stroke 0
+IMPORT shapes Rect 0
+IMPORT shapes Ellipse 0
+IMPORT shapes Polygon 0
+IMPORT shapes Bitmap 0
+IMPORT shapes Text 1
+IMPORT shapes Path 0
+IMPORT shapes Group 0
+IMPORT shapes Figure 0
+IMPORT notes 4
+NOTE 22 symbol instances were skipped
+NOTE 210 library symbols were not imported
+NOTE 1 frame sound was skipped
+NOTE 1 camera layer was skipped
+COVERAGE library_symbols 214 0 2
+COVERAGE placements 214 0 3
+COVERAGE layers 36 6 2
+COVERAGE frames 223 27 1
+COVERAGE static_texts 2 1 3
+COVERAGE edges 77 0 1
+COVERAGE cubic_edges 75 0 1
+COVERAGE frame_labels 0 0 3
+COVERAGE mask_layers 1 0 3
+COVERAGE guide_layers 3 0 1
+COVERAGE folder_layers 0 0 2
+COVERAGE depth_layers 0 0 1
+COVERAGE camera_layers 1 0 1
+COVERAGE sounds 4 0 1
+COVERAGE filters 0 0 2
+COVERAGE brush_widths 0 0 2
+COVERAGE motion_keys 117 1 2
+COVERAGE shape_keys 0 0 1
+COVERAGE custom_easing 78 1 2
+SCORE 8.68
+ROUNDTRIP tweens 1 -> tweens 0
+ROUNDTRIP eased 1 -> eased 0

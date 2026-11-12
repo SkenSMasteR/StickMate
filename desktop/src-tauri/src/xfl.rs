@@ -57,7 +57,7 @@ pub struct XflBitmapInstance {
 }
 
 #[derive(Default)]
-pub(crate) struct Library {
+pub struct Library {
     seen: HashMap<String, usize>,
     items: Vec<XflBitmap>,
 }

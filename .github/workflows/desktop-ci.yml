@@ -66,3 +66,31 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --lib
+  fla-parity:
+    name: FLA parity
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt="sudo apt-get -o Acquire::Retries=10 -o Acquire::http::Timeout=20"
+          pkgs="libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev"
+          $apt update
+          tries=0
+          until $apt install -y $pkgs; do
+            tries=$((tries + 1))
+            if [ "$tries" -ge 3 ]; then
+              exit 1
+            fi
+            sleep 20
+          done
+      - name: Check FLA parity
+        shell: bash
+        working-directory: desktop/src-tauri
+        run: |
+          set -euo pipefail
+          cargo run --example fla_probe -- --check tests/fixtures/fla/parity.txt

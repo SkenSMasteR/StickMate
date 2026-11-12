@@ -1,9 +1,9 @@
 mod auth;
 mod boolean;
-mod document;
+pub mod document;
 mod entitlement;
 mod export;
-mod fla;
+pub mod fla;
 mod frames;
 mod media;
 mod path;
@@ -13,8 +13,8 @@ mod shapes;
 mod templates;
 mod tokens;
 mod updater;
-mod xfl;
-mod xfl_read;
+pub mod xfl;
+pub mod xfl_read;
 
 use std::time::Duration;
 use tauri::Manager;
