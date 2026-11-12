@@ -190,22 +190,20 @@ pub fn archive_stem(name: &str) -> String {
 
 pub fn archive_members(doc: &Document) -> Vec<(String, Vec<u8>)> {
     let stem = archive_stem(&doc.name);
+    let (document, media) = xfl::export_package(doc);
     let mut members = vec![
         (format!("{stem}.xfl"), b"PROXY-CS5".to_vec()),
         (xfl::LIBRARY_FOLDER.to_string(), Vec::new()),
         ("META-INF/".to_string(), Vec::new()),
         ("publishtemplates/".to_string(), Vec::new()),
         (xfl::METADATA.to_string(), Vec::new()),
-        (
-            xfl::DOM_DOCUMENT.to_string(),
-            xfl::document_xml(doc).into_bytes(),
-        ),
+        (xfl::DOM_DOCUMENT.to_string(), document.into_bytes()),
         (
             xfl::PUBLISH_SETTINGS.to_string(),
             xfl::publish_settings(&stem).into_bytes(),
         ),
     ];
-    members.extend(xfl::library_members(doc));
+    members.extend(media);
     members
 }
 

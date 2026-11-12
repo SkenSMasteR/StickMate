@@ -60,6 +60,7 @@ pub struct XflBitmapInstance {
 pub struct Library {
     seen: HashMap<String, usize>,
     items: Vec<XflBitmap>,
+    files: Vec<Vec<u8>>,
 }
 
 impl Library {
@@ -78,6 +79,7 @@ impl Library {
             width: info.width,
             height: info.height,
         });
+        self.files.push(bytes);
         self.seen.insert(source.to_string(), index);
         self.items.get(index)
     }
@@ -86,11 +88,12 @@ impl Library {
         self.items.clone()
     }
 
-    fn source_of(&self, index: usize) -> Option<&str> {
-        self.seen
+    fn members(&self) -> Vec<(String, Vec<u8>)> {
+        self.items
             .iter()
-            .find(|(_, at)| **at == index)
-            .map(|(source, _)| source.as_str())
+            .zip(&self.files)
+            .map(|(item, bytes)| (format!("{LIBRARY_FOLDER}{}", item.href), bytes.clone()))
+            .collect()
     }
 }
 
@@ -742,36 +745,30 @@ pub fn export_frames(layer: &Layer, library: &mut Library) -> Vec<XflFrame> {
     frames
 }
 
-pub fn export_document(doc: &Document) -> XflDocument {
+pub fn export_package(doc: &Document) -> (String, Vec<(String, Vec<u8>)>) {
     let mut library = Library::default();
     let scenes = doc
         .scenes
         .iter()
         .map(|scene| export_scene(scene, &mut library))
         .collect();
-    XflDocument {
+    let model = XflDocument {
         width: doc.width,
         height: doc.height,
         fps: doc.fps,
         background: doc.background.clone(),
         media: library.clone_items(),
         scenes,
-    }
+    };
+    (render(&model), library.members())
+}
+
+pub fn document_xml(doc: &Document) -> String {
+    export_package(doc).0
 }
 
 pub fn library_members(doc: &Document) -> Vec<(String, Vec<u8>)> {
-    let mut library = Library::default();
-    for scene in &doc.scenes {
-        export_scene(scene, &mut library);
-    }
-    let mut out = Vec::new();
-    for (index, item) in library.items.iter().enumerate() {
-        let bytes = library.source_of(index).and_then(crate::media::payload);
-        if let Some(bytes) = bytes {
-            out.push((format!("{LIBRARY_FOLDER}{}", item.href), bytes));
-        }
-    }
-    out
+    export_package(doc).1
 }
 
 pub fn render(model: &XflDocument) -> String {
@@ -800,10 +797,6 @@ pub fn render(model: &XflDocument) -> String {
     }
     out.push_str("     </timelines>\n</DOMDocument>\n");
     out
-}
-
-pub fn document_xml(doc: &Document) -> String {
-    render(&export_document(doc))
 }
 
 fn media_xml(items: &[XflBitmap]) -> String {
