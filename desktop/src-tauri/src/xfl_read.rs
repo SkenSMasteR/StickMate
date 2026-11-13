@@ -1039,48 +1039,282 @@ fn shape(el: &Element, notes: &mut Notes) -> Vec<Shape> {
     let place = matrix(el);
     let fills = fills(el, notes);
     let strokes = strokes(el, notes);
-    let mut out = Vec::new();
+    let mut painted: Vec<FaceRun> = Vec::new();
+    let mut halves: Vec<HalfEdge> = Vec::new();
+    let mut fills_out: Vec<Shape> = Vec::new();
+    let mut strokes_out: Vec<Shape> = Vec::new();
     for holder in named(el, "edges") {
         for edge in edges_of(holder) {
-            let fill_index = style_index(
-                edge_attr(&edge, "fillStyle1")
-                    .or_else(|| edge_attr(&edge, "fillStyle0"))
-                    .or_else(|| edge_attr(&edge, "fillStyle2")),
-            );
+            let fill0 = style_index(edge_attr(&edge, "fillStyle0"));
+            let fill1 = style_index(edge_attr(&edge, "fillStyle1"));
+            let fill2 = style_index(edge_attr(&edge, "fillStyle2"));
             let stroke_index = style_index(edge_attr(&edge, "strokeStyle"));
             for run in runs(edge_attr(&edge, "edges").unwrap_or(""), notes) {
-                let paint = run.style.or(fill_index).and_then(|index| paint_at(&fills, index));
+                if run.nodes.len() < 2 {
+                    continue;
+                }
                 let stroke = run
                     .style
                     .or(stroke_index)
                     .and_then(|index| stroke_at(&strokes, index));
-                let nodes = placed(run.nodes, &place);
-                if nodes.len() < 2 || (paint.is_none() && stroke.is_none()) {
+                let seal = run
+                    .style
+                    .or(fill1)
+                    .or(fill0)
+                    .or(fill2)
+                    .and_then(|index| paint_at(&fills, index));
+                let last = run.nodes.len() - 1;
+                let ring = run.nodes.len() > 3 && same(&run.nodes[0].point, &run.nodes[last].point);
+                if ring {
+                    let (stroke_ink, width) = stroke.map_or(("none".to_string(), 0.0), |value| value);
+                    let (fill, gradient) = seal.map_or(("none".to_string(), None), |paint| {
+                        (paint.ink, paint.gradient)
+                    });
+                    if fill != "none" || stroke_ink != "none" {
+                        fills_out.push(Shape::Path {
+                            nodes: placed(run.nodes[..last].to_vec(), &place),
+                            closed: true,
+                            fill,
+                            stroke: stroke_ink,
+                            width,
+                            gradient,
+                        });
+                    }
                     continue;
                 }
-                let ring = nodes.len() > 3 && same(&nodes[0].point, &nodes[nodes.len() - 1].point);
-                let (nodes, closed) = if ring {
-                    (nodes[..nodes.len() - 1].to_vec(), true)
-                } else {
-                    let sealed = paint.is_some() && nodes.len() > 2;
-                    (nodes, sealed)
-                };
-                let (stroke_ink, width) = stroke.map_or(("none".to_string(), 0.0), |value| value);
-                let (fill, gradient) = paint.map_or(("none".to_string(), None), |paint| {
-                    (paint.ink, paint.gradient)
-                });
-                out.push(Shape::Path {
-                    nodes,
-                    closed,
-                    fill,
-                    stroke: stroke_ink,
-                    width,
-                    gradient,
+                if let Some((ink, width)) = stroke {
+                    strokes_out.push(Shape::Path {
+                        nodes: placed(run.nodes.clone(), &place),
+                        closed: false,
+                        fill: "none".to_string(),
+                        stroke: ink,
+                        width,
+                        gradient: None,
+                    });
+                }
+                push_halves(&mut halves, &run.nodes, fill0, fill1, painted.len());
+                painted.push(FaceRun {
+                    nodes: run.nodes,
+                    seal,
                 });
             }
         }
     }
-    out
+    let mut consumed = vec![false; painted.len()];
+    let (face_list, isolated) = faces(&halves, &mut consumed);
+    for (face, ring) in face_list {
+        if let Some(paint) = paint_at(&fills, face) {
+            fills_out.push(Shape::Path {
+                nodes: placed(ring, &place),
+                closed: true,
+                fill: paint.ink,
+                stroke: "none".to_string(),
+                width: 0.0,
+                gradient: paint.gradient,
+            });
+        }
+    }
+    for (index, run) in painted.into_iter().enumerate() {
+        if consumed[index] || !isolated[index] {
+            continue;
+        }
+        let Some(paint) = run.seal else { continue };
+        if run.nodes.len() > 2 {
+            fills_out.push(Shape::Path {
+                nodes: placed(run.nodes, &place),
+                closed: true,
+                fill: paint.ink,
+                stroke: "none".to_string(),
+                width: 0.0,
+                gradient: paint.gradient,
+            });
+        }
+    }
+    fills_out.extend(strokes_out);
+    fills_out
+}
+
+struct FaceRun {
+    nodes: Vec<PathNode>,
+    seal: Option<Paint>,
+}
+
+struct HalfEdge {
+    a: Point,
+    b: Point,
+    face: Option<usize>,
+    nodes: Vec<PathNode>,
+    out: Point,
+    arrive: Point,
+    run: usize,
+    ang: f64,
+}
+
+fn push_halves(
+    halves: &mut Vec<HalfEdge>,
+    nodes: &[PathNode],
+    fill0: Option<usize>,
+    fill1: Option<usize>,
+    run: usize,
+) {
+    let last = nodes.len() - 1;
+    let a = nodes[0].point.clone();
+    let b = nodes[last].point.clone();
+    let out = nodes[0]
+        .handle_out
+        .clone()
+        .unwrap_or_else(|| nodes[1].point.clone());
+    let arrive = nodes[last]
+        .handle_in
+        .clone()
+        .unwrap_or_else(|| nodes[last - 1].point.clone());
+    halves.push(HalfEdge {
+        a: a.clone(),
+        b: b.clone(),
+        face: fill0,
+        nodes: nodes.to_vec(),
+        out: out.clone(),
+        arrive: arrive.clone(),
+        run,
+        ang: (out.y - a.y).atan2(out.x - a.x),
+    });
+    halves.push(HalfEdge {
+        a: b.clone(),
+        b: a,
+        face: fill1,
+        nodes: reversed(nodes),
+        out: arrive.clone(),
+        arrive: out,
+        run,
+        ang: (arrive.y - b.y).atan2(arrive.x - b.x),
+    });
+}
+
+fn reversed(nodes: &[PathNode]) -> Vec<PathNode> {
+    nodes
+        .iter()
+        .rev()
+        .map(|node| PathNode {
+            point: node.point.clone(),
+            handle_in: node.handle_out.clone(),
+            handle_out: node.handle_in.clone(),
+        })
+        .collect()
+}
+
+fn vertex(point: &Point) -> (i64, i64) {
+    ((point.x * 2.0).round() as i64, (point.y * 2.0).round() as i64)
+}
+
+fn ring_area(nodes: &[PathNode]) -> f64 {
+    let mut sum = 0.0;
+    for index in 0..nodes.len() {
+        let a = &nodes[index].point;
+        let b = &nodes[(index + 1) % nodes.len()].point;
+        sum += a.x * b.y - b.x * a.y;
+    }
+    sum / 2.0
+}
+
+fn faces(halves: &[HalfEdge], consumed: &mut [bool]) -> (Vec<(usize, Vec<PathNode>)>, Vec<bool>) {
+    let mut at: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (index, half) in halves.iter().enumerate() {
+        at.entry(vertex(&half.a)).or_default().push(index);
+    }
+    for list in at.values_mut() {
+        list.sort_by(|x, y| {
+            halves[*x]
+                .ang
+                .partial_cmp(&halves[*y].ang)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+    let mut isolated = vec![false; consumed.len()];
+    let mut incident: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (index, half) in halves.iter().enumerate() {
+        incident.entry(vertex(&half.a)).or_default().push(index);
+        incident.entry(vertex(&half.b)).or_default().push(index);
+    }
+    for run in 0..consumed.len() {
+        let forward = run * 2;
+        let backward = run * 2 + 1;
+        let only = |list: &Vec<usize>| {
+            !list.is_empty() && list.iter().all(|j| *j == forward || *j == backward)
+        };
+        let a = incident
+            .get(&vertex(&halves[forward].a))
+            .cloned()
+            .unwrap_or_default();
+        let b = incident
+            .get(&vertex(&halves[forward].b))
+            .cloned()
+            .unwrap_or_default();
+        isolated[run] = only(&a) && only(&b);
+    }
+    let mut used = vec![false; halves.len()];
+    let mut out = Vec::new();
+    for start in 0..halves.len() {
+        let Some(face) = halves[start].face else {
+            continue;
+        };
+        if used[start] {
+            continue;
+        }
+        let mut path = halves[start].nodes.clone();
+        let mut touched = vec![start];
+        let mut cur = start;
+        let mut closed = false;
+        for _ in 0..20000 {
+            used[cur] = true;
+            let half = &halves[cur];
+            let back = (half.a.y - half.arrive.y).atan2(half.a.x - half.arrive.x);
+            let list = at.get(&vertex(&half.b)).cloned().unwrap_or_default();
+            let mut pool: Vec<usize> = list
+                .iter()
+                .copied()
+                .filter(|j| halves[*j].face == Some(face) && !used[*j])
+                .collect();
+            if pool.is_empty() {
+                pool = list.iter().copied().filter(|j| !used[*j]).collect();
+            }
+            let mut best = None;
+            let mut bestd = f64::MAX;
+            for j in pool {
+                let mut delta = (halves[j].ang - back).rem_euclid(std::f64::consts::TAU);
+                if delta < 1e-9 {
+                    delta = std::f64::consts::TAU;
+                }
+                if delta < bestd {
+                    bestd = delta;
+                    best = Some(j);
+                }
+            }
+            let Some(next) = best else { break };
+            path.extend_from_slice(&halves[next].nodes[1..]);
+            touched.push(next);
+            cur = next;
+            if vertex(&halves[next].b) == vertex(&halves[start].a) {
+                used[cur] = true;
+                closed = true;
+                break;
+            }
+        }
+        if !closed || path.len() <= 3 {
+            continue;
+        }
+        if vertex(&path[0].point) != vertex(&path[path.len() - 1].point) {
+            continue;
+        }
+        let ring = path[..path.len() - 1].to_vec();
+        if ring.len() < 3 || ring_area(&ring) >= -1.0 {
+            continue;
+        }
+        for j in touched {
+            consumed[halves[j].run] = true;
+        }
+        out.push((face, ring));
+    }
+    (out, isolated)
 }
 
 fn placed(nodes: Vec<PathNode>, place: &Affine) -> Vec<PathNode> {
@@ -1795,6 +2029,42 @@ mod tests {
             other => panic!("expected a path, got {other:?}"),
         }
         crate::document::validate(shape).expect("filled");
+    }
+
+    #[test]
+    fn shared_edges_reconstruct_into_filled_faces() {
+        let body = "<DOMShape><fills><FillStyle index=\"1\"><SolidColor color=\"#ff0000\"/></FillStyle><FillStyle index=\"2\"><SolidColor color=\"#0000ff\"/></FillStyle></fills><edges>\
+            <Edge fillStyle1=\"1\" edges=\"!0 0|400 0\"/>\
+            <Edge fillStyle1=\"2\" edges=\"!400 0|800 0\"/>\
+            <Edge fillStyle1=\"2\" edges=\"!800 0|800 800\"/>\
+            <Edge fillStyle1=\"2\" edges=\"!800 800|400 800\"/>\
+            <Edge fillStyle1=\"1\" edges=\"!400 800|0 800\"/>\
+            <Edge fillStyle1=\"1\" edges=\"!0 800|0 0\"/>\
+            <Edge fillStyle0=\"2\" fillStyle1=\"1\" edges=\"!400 0|400 800\"/>\
+            </edges></DOMShape>";
+        let doc = parsed(&stage_xml(&art(&plain(0, 1, body))));
+        let shapes = &doc.scenes[0].layers[0].keys[0].shapes;
+        assert_eq!(shapes.len(), 2, "{shapes:?}");
+        let mut fills: Vec<String> = Vec::new();
+        for shape in shapes {
+            match shape {
+                Shape::Path {
+                    nodes,
+                    closed,
+                    fill,
+                    stroke,
+                    ..
+                } => {
+                    assert!(closed, "face should be closed");
+                    assert_eq!(stroke, "none");
+                    assert_eq!(nodes.len(), 4, "{nodes:?}");
+                    fills.push(fill.clone());
+                }
+                other => panic!("expected a path, got {other:?}"),
+            }
+        }
+        fills.sort();
+        assert_eq!(fills, vec!["#0000ff".to_string(), "#ff0000".to_string()]);
     }
 
     #[test]
