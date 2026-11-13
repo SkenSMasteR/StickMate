@@ -399,11 +399,17 @@ fn report(path: &Path) -> Vec<String> {
         out.push(format!("COVERAGE {row} {total} {landed} {weight}"));
     }
     out.push(format!("SCORE {:.2}", score(&rows)));
-    let exported = xfl::document_xml(&import.doc);
-    match xfl_read::parse(&exported, &stem, &[]) {
+    let repack = || -> Result<Document, String> {
+        let archive = fla::write_members(&fla::archive_members(&import.doc))?;
+        let members = fla::read_members(&archive)?;
+        let body = fla::member_bytes(&members, xfl::DOM_DOCUMENT)
+            .ok_or_else(|| "DOMDocument.xml is missing".to_string())?;
+        let text = String::from_utf8(body).map_err(|error| error.to_string())?;
+        Ok(xfl_read::parse(&text, &stem, &members)?.doc)
+    };
+    match repack() {
         Ok(again) => {
-            let after = Metrics::of(&again.doc);
-            let diffs = metrics.diff_rows(&after);
+            let diffs = metrics.diff_rows(&Metrics::of(&again));
             if diffs.is_empty() {
                 out.push("ROUNDTRIP same".to_string());
             } else {

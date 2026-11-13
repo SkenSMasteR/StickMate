@@ -5,8 +5,8 @@ use quick_xml::reader::Reader;
 use quick_xml::XmlVersion;
 
 use crate::document::{
-    apply_affine, new_id, Affine, Blend, Document, Easing, Keyframe, Layer, LoopMode, Point,
-    Scene, Shape, Symbol, SymbolKind, TextAlign, Transform,
+    apply_affine, new_id, Affine, Blend, Document, Easing, Gradient, GradientStop, Keyframe, Layer,
+    LoopMode, Point, Scene, Shape, Symbol, SymbolKind, TextAlign, Transform,
 };
 use crate::path::PathNode;
 use crate::xfl;
@@ -242,7 +242,6 @@ fn instance(el: &Element, media: &Media) -> Option<Shape> {
 struct Notes {
     fps: Option<u32>,
     stage: bool,
-    gradient: bool,
     symbols: usize,
     library: usize,
     bitmaps: usize,
@@ -270,9 +269,6 @@ impl Notes {
         }
         if self.stage {
             out.push("the stage size was reduced to fit the app range".to_string());
-        }
-        if self.gradient {
-            out.push("gradient fills were imported as flat colours".to_string());
         }
         said(
             &mut out,
@@ -390,13 +386,13 @@ pub fn parse(
     let mut notes = Notes::default();
     let mut media = media_of(&root, members);
     let symbols = library_of(&root, &mut media, &mut notes);
-    let doc = document(&root, name, &media, &mut notes, symbols);
+    let mut doc = document(&root, name, &media, &mut notes, symbols);
     let ids: HashSet<String> = doc.symbols.iter().map(|symbol| symbol.id.clone()).collect();
-    for scene in &doc.scenes {
-        strays(&scene.layers, &ids, &mut notes);
+    for scene in &mut doc.scenes {
+        prune_layers(&mut scene.layers, &ids, &mut notes);
     }
-    for symbol in &doc.symbols {
-        strays(&symbol.layers, &ids, &mut notes);
+    for symbol in &mut doc.symbols {
+        prune_layers(&mut symbol.layers, &ids, &mut notes);
     }
     Ok(Import {
         doc,
@@ -404,25 +400,29 @@ pub fn parse(
     })
 }
 
-fn strays(layers: &[Layer], ids: &HashSet<String>, notes: &mut Notes) {
+fn prune_layers(layers: &mut [Layer], ids: &HashSet<String>, notes: &mut Notes) {
     for layer in layers {
-        for key in &layer.keys {
-            stray_shapes(&key.shapes, ids, notes);
+        for key in &mut layer.keys {
+            prune_shapes(&mut key.shapes, ids, notes);
         }
-        strays(&layer.children, ids, notes);
+        prune_layers(&mut layer.children, ids, notes);
     }
 }
 
-fn stray_shapes(shapes: &[Shape], ids: &HashSet<String>, notes: &mut Notes) {
-    for shape in shapes {
-        match shape {
-            Shape::Instance { symbol, .. } => {
-                if !ids.contains(symbol) {
-                    notes.symbols += 1;
-                }
+fn prune_shapes(shapes: &mut Vec<Shape>, ids: &HashSet<String>, notes: &mut Notes) {
+    shapes.retain(|shape| match shape {
+        Shape::Instance { symbol, .. } => {
+            let landed = ids.contains(symbol);
+            if !landed {
+                notes.symbols += 1;
             }
-            Shape::Group { children } => stray_shapes(children, ids, notes),
-            _ => {}
+            landed
+        }
+        _ => true,
+    });
+    for shape in shapes {
+        if let Shape::Group { children } = shape {
+            prune_shapes(children, ids, notes);
         }
     }
 }
@@ -1049,30 +1049,33 @@ fn shape(el: &Element, notes: &mut Notes) -> Vec<Shape> {
             );
             let stroke_index = style_index(edge_attr(&edge, "strokeStyle"));
             for run in runs(edge_attr(&edge, "edges").unwrap_or(""), notes) {
-                let fill = run.style.or(fill_index).and_then(|index| ink_at(&fills, index));
+                let paint = run.style.or(fill_index).and_then(|index| paint_at(&fills, index));
                 let stroke = run
                     .style
                     .or(stroke_index)
                     .and_then(|index| stroke_at(&strokes, index));
                 let nodes = placed(run.nodes, &place);
-                if nodes.len() < 2 || (fill.is_none() && stroke.is_none()) {
+                if nodes.len() < 2 || (paint.is_none() && stroke.is_none()) {
                     continue;
                 }
                 let ring = nodes.len() > 3 && same(&nodes[0].point, &nodes[nodes.len() - 1].point);
                 let (nodes, closed) = if ring {
                     (nodes[..nodes.len() - 1].to_vec(), true)
                 } else {
-                    let sealed = fill.is_some() && nodes.len() > 2;
+                    let sealed = paint.is_some() && nodes.len() > 2;
                     (nodes, sealed)
                 };
                 let (stroke_ink, width) = stroke.map_or(("none".to_string(), 0.0), |value| value);
+                let (fill, gradient) = paint.map_or(("none".to_string(), None), |paint| {
+                    (paint.ink, paint.gradient)
+                });
                 out.push(Shape::Path {
                     nodes,
                     closed,
-                    fill: fill.unwrap_or_else(|| "none".to_string()),
+                    fill,
                     stroke: stroke_ink,
                     width,
-                    gradient: None,
+                    gradient,
                 });
             }
         }
@@ -1127,11 +1130,11 @@ fn style_index(value: Option<&str>) -> Option<usize> {
     Some(index as usize)
 }
 
-fn ink_at(styles: &[(usize, Option<String>)], index: usize) -> Option<String> {
+fn paint_at(styles: &[(usize, Option<Paint>)], index: usize) -> Option<Paint> {
     styles
         .iter()
         .find(|(position, _)| *position == index)
-        .and_then(|(_, ink)| ink.clone())
+        .and_then(|(_, paint)| paint.clone())
 }
 
 fn stroke_at(styles: &[(usize, Option<(String, f64)>)], index: usize) -> Option<(String, f64)> {
@@ -1141,17 +1144,25 @@ fn stroke_at(styles: &[(usize, Option<(String, f64)>)], index: usize) -> Option<
         .and_then(|(_, ink)| ink.clone())
 }
 
-fn fills(el: &Element, notes: &mut Notes) -> Vec<(usize, Option<String>)> {
+#[derive(Clone)]
+struct Paint {
+    ink: String,
+    gradient: Option<Gradient>,
+}
+
+fn fills(el: &Element, notes: &mut Notes) -> Vec<(usize, Option<Paint>)> {
     let mut out = Vec::new();
     for holder in named(el, "fills") {
         for style in named(holder, "FillStyle") {
             let index = style.number("index", 1.0).round().max(1.0) as usize;
-            let ink = match style.children.first() {
+            let paint = match style.children.first() {
                 None => None,
-                Some(value) if value.name == "SolidColor" => Some(ink_of(value)),
+                Some(value) if value.name == "SolidColor" => Some(Paint {
+                    ink: ink_of(value),
+                    gradient: None,
+                }),
                 Some(value) if value.name == "LinearGradientFill" || value.name == "RadialGradientFill" => {
-                    notes.gradient = true;
-                    dominant(value)
+                    gradient_paint(value)
                 }
                 Some(value) if value.name == "DOMBitmapFill" => {
                     notes.bitmaps += 1;
@@ -1159,19 +1170,37 @@ fn fills(el: &Element, notes: &mut Notes) -> Vec<(usize, Option<String>)> {
                 }
                 Some(_) => None,
             };
-            out.push((index, ink));
+            out.push((index, paint));
         }
     }
     out
 }
 
-fn dominant(value: &Element) -> Option<String> {
-    let gradient = child(value, "Gradient")?;
-    let stop = named(gradient, "GradientStop").into_iter().next()?;
-    Some(color_ink(
-        stop.attr("position").unwrap_or("#000000"),
-        stop.number("alpha", 1.0),
-    ))
+fn gradient_paint(el: &Element) -> Option<Paint> {
+    let stops = named(child(el, "Gradient")?, "GradientStop")
+        .iter()
+        .filter_map(|stop| {
+            Some(GradientStop {
+                offset: stop.number("ratio", 0.0) / 255.0,
+                color: color_ink(stop.attr("position")?, stop.number("alpha", 1.0)),
+            })
+        })
+        .collect::<Vec<GradientStop>>();
+    if stops.len() < 2 {
+        return None;
+    }
+    let ink = stops[0].color.clone();
+    let gradient = match el.name.as_str() {
+        "LinearGradientFill" => Gradient::Linear {
+            angle: -(el.number("angle", 0.0) / 65536.0).to_degrees(),
+            stops,
+        },
+        _ => Gradient::Radial { stops },
+    };
+    Some(Paint {
+        ink,
+        gradient: Some(gradient),
+    })
 }
 
 fn color_ink(color: &str, alpha: f64) -> String {
@@ -1281,6 +1310,9 @@ fn numeral_value(text: &str, radix: u32) -> Option<f64> {
     for ch in bit.chars() {
         value += ch.to_digit(16)? as f64 * place;
         place /= 16.0;
+    }
+    if sign > 0.0 && value >= 8_388_608.0 {
+        value -= 16_777_216.0;
     }
     Some(sign * value)
 }
@@ -1700,6 +1732,19 @@ mod tests {
     }
 
     #[test]
+    fn negative_edge_points_are_twos_complement() {
+        let body = "<DOMShape><fills><FillStyle index=\"1\"><SolidColor color=\"#00ff00\"/></FillStyle></fills><edges><Edge fillStyle1=\"1\" edges=\"!0 0[#FFFFC0.4 #28.0 -20 0!-20 0|0 0\"/></edges></DOMShape>";
+        let import = parse(&stage_xml(&art(&plain(0, 1, body))), "Imported", &[]).expect("parse");
+        assert_eq!(import.notes, Vec::<String>::new());
+        let (nodes, _, _) = path_of(&import.doc.scenes[0].layers[0].keys[0]);
+        let out = nodes[0].handle_out.clone().expect("handle out");
+        assert!((out.x + 2.125).abs() < 1e-6);
+        assert!((out.y - 1.3333333).abs() < 1e-5);
+        let held = nodes[1].handle_in.clone().expect("handle in");
+        assert!((held.x + 2.4583333).abs() < 1e-5);
+    }
+
+    #[test]
     fn shape_matrix_is_baked_into_geometry() {
         let body = "<DOMShape><matrix><Matrix a=\"2\" d=\"2\" tx=\"20\" ty=\"10\"/></matrix><fills><FillStyle index=\"1\"><SolidColor color=\"#0000ff\"/></FillStyle></fills><edges><Edge fillStyle1=\"1\" edges=\"!0 0|40 0!40 0|40 40!40 40|0 40\"/></edges></DOMShape>";
         let doc = parsed(&stage_xml(&art(&plain(0, 1, body))));
@@ -2081,6 +2126,27 @@ mod tests {
     }
 
     #[test]
+    fn a_placement_on_a_symbol_that_later_fails_to_land_is_pruned() {
+        let inside = placement("libraryItemName=\"Guy\"", "");
+        let members = vec![symbol_member("Dot", "id-2", &art(&plain(0, 1, &inside)))];
+        let xml = library_stage(
+            &format!("{}{}", include("Dot.xml", "id-2"), include("Guy.xml", "id-1")),
+            &art(&plain(0, 1, &placement("libraryItemName=\"Dot\"", ""))),
+        );
+        let import = parse(&xml, "Imported", &members).expect("parse");
+        assert_eq!(import.doc.symbols.len(), 1);
+        assert!(import.doc.symbols[0].layers[0].keys[0].shapes.is_empty());
+        assert_eq!(import.doc.scenes[0].layers[0].keys[0].shapes.len(), 1);
+        assert_eq!(
+            import.notes,
+            vec![
+                "1 symbol instance was skipped".to_string(),
+                "1 library symbol was not imported".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn library_members_that_are_not_symbol_files_are_left_alone() {
         let xml = library_stage(
             &include("Guy.swf", "id-1"),
@@ -2135,14 +2201,29 @@ mod tests {
     }
 
     #[test]
-    fn gradient_fills_fall_back_to_a_flat_stop() {
-        let body = "<DOMShape><fills><FillStyle index=\"1\"><LinearGradientFill focus=\"0\" angle=\"-90\"><Gradient interpolation=\"linear\" type=\"linear\" focus=\"0\"><GradientStop position=\"#ff0000FF\" ratio=\"0\"/><GradientStop position=\"#0000ff\" ratio=\"1\"/></Gradient></LinearGradientFill></FillStyle></fills><edges><Edge fillStyle1=\"1\" edges=\"!0 0|40 0!40 0|40 40!40 40|0 40\"/></edges></DOMShape>";
-        let import = parse(&stage_xml(&art(&plain(0, 1, body))), "Imported", &[]).expect("parse");
-        let (_, _, fill) = path_of(&import.doc.scenes[0].layers[0].keys[0]);
+    fn gradient_fills_import_as_gradients() {
+        let attr = (-90f64).to_radians() * 65536.0;
+        let body = format!(
+            "<DOMShape><fills><FillStyle index=\"1\"><LinearGradientFill focus=\"0\" angle=\"{}\"><Gradient interpolation=\"linear\" type=\"linear\" focus=\"0\"><GradientStop position=\"#ff0000\" ratio=\"0\"/><GradientStop position=\"#00ff00FF\" ratio=\"255\"/></Gradient></LinearGradientFill></FillStyle></fills><edges><Edge fillStyle1=\"1\" edges=\"!0 0|40 0!40 0|40 40!40 40|0 40\"/></edges></DOMShape>",
+            attr.round() as i64
+        );
+        let import = parse(&stage_xml(&art(&plain(0, 1, &body))), "Imported", &[]).expect("parse");
+        assert_eq!(import.notes, Vec::<String>::new());
+        let Shape::Path { fill, gradient, .. } = &import.doc.scenes[0].layers[0].keys[0].shapes[0]
+        else {
+            panic!("expected a path");
+        };
         assert_eq!(fill, "#ff0000");
+        let Some(Gradient::Linear { angle, stops }) = gradient else {
+            panic!("expected a linear gradient");
+        };
+        assert!((angle - 90.0).abs() < 0.001, "{angle}");
         assert_eq!(
-            import.notes,
-            vec!["gradient fills were imported as flat colours".to_string()]
+            stops,
+            &vec![
+                GradientStop { offset: 0.0, color: "#ff0000".to_string() },
+                GradientStop { offset: 1.0, color: "#00ff00".to_string() }
+            ]
         );
     }
 

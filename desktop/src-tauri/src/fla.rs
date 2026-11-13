@@ -209,13 +209,11 @@ pub fn archive_members(doc: &Document) -> Vec<(String, Vec<u8>)> {
 
 #[derive(Default)]
 struct Gaps {
-    gradient: bool,
     blend: bool,
     effect: bool,
     opacity: bool,
     tween: bool,
     figure: bool,
-    symbols: bool,
 }
 
 fn scan_layers(layers: &[Layer], gaps: &mut Gaps) {
@@ -227,31 +225,10 @@ fn scan_layers(layers: &[Layer], gaps: &mut Gaps) {
             gaps.tween |= key.tween;
             gaps.opacity |= key.transform.opacity < 0.999;
             for shape in &key.shapes {
-                gaps.symbols |= has_placement(shape);
-                gaps.gradient |= has_gradient(shape);
                 gaps.figure |= has_figure(shape);
             }
         }
         scan_layers(&layer.children, gaps);
-    }
-}
-
-fn has_placement(shape: &Shape) -> bool {
-    match shape {
-        Shape::Instance { .. } => true,
-        Shape::Group { children } => children.iter().any(has_placement),
-        _ => false,
-    }
-}
-
-fn has_gradient(shape: &Shape) -> bool {
-    match shape {
-        Shape::Rect { gradient, .. }
-        | Shape::Ellipse { gradient, .. }
-        | Shape::Polygon { gradient, .. }
-        | Shape::Path { gradient, .. } => gradient.is_some(),
-        Shape::Group { children } => children.iter().any(has_gradient),
-        _ => false,
     }
 }
 
@@ -265,13 +242,13 @@ fn has_figure(shape: &Shape) -> bool {
 
 pub fn export_warnings(doc: &Document) -> Vec<String> {
     let mut gaps = Gaps::default();
+    for symbol in &doc.symbols {
+        scan_layers(&symbol.layers, &mut gaps);
+    }
     for scene in &doc.scenes {
         scan_layers(&scene.layers, &mut gaps);
     }
     let mut warnings = Vec::new();
-    if gaps.gradient {
-        warnings.push("gradient fills are exported as flat colours".to_string());
-    }
     if gaps.blend {
         warnings.push("blend modes are not exported".to_string());
     }
@@ -286,9 +263,6 @@ pub fn export_warnings(doc: &Document) -> Vec<String> {
     }
     if gaps.figure {
         warnings.push("stick figures are exported as the lines they draw, without the rig".to_string());
-    }
-    if gaps.symbols {
-        warnings.push("symbol instances are not exported".to_string());
     }
     warnings
 }
@@ -606,6 +580,44 @@ mod tests {
         }
     }
 
+    fn dot_symbol() -> crate::document::Symbol {
+        crate::document::Symbol {
+            id: "y1".to_string(),
+            name: "Dot".to_string(),
+            kind: crate::document::SymbolKind::MovieClip,
+            layers: vec![Layer {
+                id: "l2".to_string(),
+                name: "Dot Art".to_string(),
+                visible: true,
+                locked: false,
+                opacity: 1.0,
+                blend: Blend::Normal,
+                effects: Vec::new(),
+                masked: false,
+                length: 10,
+                keys: vec![crate::document::Keyframe {
+                    frame: 0,
+                    shapes: vec![Shape::Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 10.0,
+                        h: 10.0,
+                        fill: "#ff0000".to_string(),
+                        stroke: "none".to_string(),
+                        width: 0.0,
+                        gradient: None,
+                    }],
+                    transform: Transform::default(),
+                    tween: false,
+                    easing: crate::document::Easing::linear(),
+                    label: None,
+                }],
+                folder: false,
+                children: Vec::new(),
+            }],
+        }
+    }
+
     fn plain_layer() -> Layer {
         Layer {
             id: "l1".to_string(),
@@ -670,8 +682,8 @@ mod tests {
         doc.scenes[0].layers[0].keys.push(gradient_key());
         let warnings = export_warnings(&doc);
         assert!(warnings.contains(&"blend modes are not exported".to_string()));
-        assert!(warnings.iter().any(|text| text.starts_with("gradient fills")));
         assert!(warnings.iter().any(|text| text.starts_with("tweens are exported")));
+        assert!(!warnings.iter().any(|text| text.starts_with("gradient fills")));
         assert!(!warnings.iter().any(|text| text.starts_with("layer masks")));
         assert!(!warnings.iter().any(|text| text.starts_with("placed images")));
         doc.scenes[0].layers[0].keys.push(image_key());
@@ -679,11 +691,14 @@ mod tests {
         assert!(!warnings.iter().any(|text| text.starts_with("placed images")));
         assert!(!warnings.iter().any(|text| text.starts_with("stick figures")));
         assert!(!warnings.iter().any(|text| text.starts_with("symbol instances")));
+        doc.symbols = vec![dot_symbol()];
         doc.scenes[0].layers[0].keys.push(placement_key());
-        let warnings = export_warnings(&doc);
         assert_eq!(
-            warnings.last().map(String::as_str),
-            Some("symbol instances are not exported")
+            export_warnings(&doc),
+            vec![
+                "blend modes are not exported".to_string(),
+                "tweens are exported as keyframes that hold until the next key".to_string()
+            ]
         );
         let members = archive_members(&doc);
         assert_eq!(
@@ -694,6 +709,61 @@ mod tests {
             .expect("utf8");
         assert!(xml.contains("<DOMBitmapItem name=\"Bitmap 1\""));
         assert!(xml.contains("<DOMBitmapInstance libraryItemName=\"Bitmap 1\">"));
+    }
+
+    #[test]
+    fn placements_survive_the_export_and_import() {
+        let mut doc = document("Rigged");
+        doc.symbols = vec![dot_symbol()];
+        doc.scenes[0].layers = vec![plain_layer()];
+        doc.scenes[0].layers[0].keys.push(placement_key());
+        assert!(export_warnings(&doc).is_empty());
+
+        let members = archive_members(&doc);
+        let xml = String::from_utf8(member_bytes(&members, xfl::DOM_DOCUMENT).expect("xml"))
+            .expect("utf8");
+        assert!(xml.contains("<Include href=\"Dot.xml\""));
+        assert!(xml.contains("<DOMSymbolInstance libraryItemName=\"Dot\" symbolType=\"movieClip\" name=\"hero\" loop=\"loop\">"));
+        let library = String::from_utf8(member_bytes(&members, "LIBRARY/Dot.xml").expect("member"))
+            .expect("utf8");
+        assert!(library.contains("<DOMSymbolItem"));
+        assert!(library.contains("symbolType=\"movieClip\""));
+
+        let import = crate::xfl_read::parse(&xml, "Rigged", &members).expect("round trip");
+        assert_eq!(import.notes, Vec::<String>::new());
+        assert_eq!(import.doc.symbols.len(), 1);
+        assert_eq!(import.doc.symbols[0].name, "Dot");
+        assert_eq!(
+            import.doc.symbols[0].kind,
+            crate::document::SymbolKind::MovieClip
+        );
+        match &import.doc.scenes[0].layers[0].keys[0].shapes[0] {
+            Shape::Instance {
+                symbol,
+                name,
+                looping,
+                ..
+            } => {
+                assert_eq!(symbol, &import.doc.symbols[0].id);
+                assert_eq!(name, "hero");
+                assert_eq!(*looping, crate::document::LoopMode::Loop);
+            }
+            other => panic!("expected the placement back, got {other:?}"),
+        }
+        let drawn = import
+            .doc
+            .evaluate(&import.doc.scenes[0].id, 0)
+            .expect("evaluate");
+        assert!(filled(&drawn.layers[0].shapes), "{:?}", drawn.layers[0].shapes);
+    }
+
+    fn filled(shapes: &[Shape]) -> bool {
+        shapes.iter().any(|shape| match shape {
+            Shape::Path { fill, closed, .. } => *closed && fill == "#ff0000",
+            Shape::Rect { fill, .. } => fill == "#ff0000",
+            Shape::Group { children } => filled(children),
+            _ => false,
+        })
     }
 
     fn scratch(tag: &str) -> PathBuf {

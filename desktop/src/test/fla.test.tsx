@@ -173,11 +173,9 @@ describe("animate project exchange", () => {
     expect(getFlaReport()).toHaveLength(1);
     expect(getFlaReport()[0].kind).toBe("export");
     expect(getFlaReport()[0].lines).toEqual([
-      "gradient fills are exported as flat colours",
       "blend modes are not exported",
       "tweens are exported as keyframes that hold until the next key",
-      "stick figures are exported as the lines they draw, without the rig",
-      "symbol instances are not exported"
+      "stick figures are exported as the lines they draw, without the rig"
     ]);
     expect(screen.queryByText("blend modes are not exported")).toBeNull();
     fireEvent.click(entry);

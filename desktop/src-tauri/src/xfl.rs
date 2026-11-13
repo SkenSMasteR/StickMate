@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::f64::consts::TAU;
 
 use crate::document::{
-    polygon_vertices, text_block_height, text_block_width, text_lines, Affine, Document, Keyframe,
-    Layer, Point, Scene, Shape, Transform, TextAlign,
+    polygon_vertices, shape_gradient, text_block_height, text_block_width, text_lines, Affine,
+    Document, Gradient, Keyframe, Layer, LoopMode, Point, Scene, Shape, Symbol, SymbolKind,
+    Transform, TextAlign,
 };
 use crate::path::PathNode;
 
@@ -25,6 +26,7 @@ pub struct Segment {
 
 pub struct XflShape {
     pub fill: Option<(String, f64)>,
+    pub gradient: Option<Gradient>,
     pub stroke: Option<(String, f64, f64)>,
     pub contours: Vec<Contour>,
 }
@@ -57,11 +59,31 @@ pub struct XflBitmapInstance {
     pub matrix: Affine,
 }
 
+#[derive(Clone)]
+pub struct XflSymbol {
+    pub name: String,
+    pub href: String,
+    pub kind: &'static str,
+    pub item_id: String,
+}
+
+pub struct XflInstance {
+    pub item: String,
+    pub kind: &'static str,
+    pub label: String,
+    pub matrix: Affine,
+    pub visible: bool,
+    pub first_frame: u32,
+    pub looping: &'static str,
+}
+
 #[derive(Default)]
 pub struct Library {
     seen: HashMap<String, usize>,
     items: Vec<XflBitmap>,
     files: Vec<Vec<u8>>,
+    symbols: Vec<XflSymbol>,
+    placed: HashMap<String, usize>,
 }
 
 impl Library {
@@ -97,12 +119,95 @@ impl Library {
             .map(|(item, bytes)| (format!("{LIBRARY_FOLDER}{}", item.href), bytes.clone()))
             .collect()
     }
+
+    fn plan(&mut self, symbols: &[Symbol]) {
+        for symbol in symbols {
+            if self.placed.contains_key(&symbol.id) {
+                continue;
+            }
+            let name = self.distinct(&symbol.name);
+            let entry = XflSymbol {
+                href: format!("{}.xml", member_path(&name)),
+                item_id: item_id(&symbol.id),
+                kind: symbol_kind_name(symbol.kind),
+                name,
+            };
+            self.placed.insert(symbol.id.clone(), self.symbols.len());
+            self.symbols.push(entry);
+        }
+    }
+
+    fn distinct(&self, name: &str) -> String {
+        let clean = name.trim();
+        let base = if clean.is_empty() { "Symbol" } else { clean };
+        if !self.symbols.iter().any(|item| item.name == base) {
+            return base.to_string();
+        }
+        let mut index = 2;
+        loop {
+            let candidate = format!("{base} {index}");
+            if !self.symbols.iter().any(|item| item.name == candidate) {
+                return candidate;
+            }
+            index += 1;
+        }
+    }
+
+    fn symbol(&self, id: &str) -> Option<&XflSymbol> {
+        self.placed.get(id).map(|index| &self.symbols[*index])
+    }
+
+    fn clone_symbols(&self) -> Vec<XflSymbol> {
+        self.symbols.clone()
+    }
+}
+
+fn symbol_kind_name(kind: SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::MovieClip => "movieClip",
+        SymbolKind::Button => "button",
+        SymbolKind::Graphic => "graphic",
+    }
+}
+
+fn loop_kind_name(looping: LoopMode) -> &'static str {
+    match looping {
+        LoopMode::Loop => "loop",
+        LoopMode::PlayOnce => "play once",
+        LoopMode::SingleFrame => "single frame",
+    }
+}
+
+fn member_path(name: &str) -> String {
+    let parts: Vec<String> = name
+        .split('/')
+        .map(|part| {
+            part.chars()
+                .map(|ch| match ch {
+                    '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                    ch if (ch as u32) < 0x20 => '_',
+                    other => other,
+                })
+                .collect::<String>()
+                .trim()
+                .trim_matches('.')
+                .chars()
+                .take(80)
+                .collect::<String>()
+        })
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return "Symbol".to_string();
+    }
+    parts.join("/")
 }
 
 pub enum Element {
     Shape(XflShape),
     Text(XflText),
     Bitmap(XflBitmapInstance),
+    Instance(XflInstance),
 }
 
 pub struct XflFrame {
@@ -133,6 +238,7 @@ pub struct XflDocument {
     pub fps: u32,
     pub background: String,
     pub media: Vec<XflBitmap>,
+    pub symbols: Vec<XflSymbol>,
     pub scenes: Vec<XflScene>,
 }
 
@@ -529,14 +635,15 @@ fn ink_of(shape: &Shape, scale: f64, opacity: f64) -> (Option<(String, f64)>, Op
         let (color, channel) = color_alpha(value);
         Some((color, channel * opacity))
     };
-    match shape {
-        Shape::Stroke { color, width, .. } => {
-            let (hex, channel) = color_alpha(color);
-            (
-                None,
-                Some((hex, channel * opacity, width.max(0.05) * scale)),
-            )
+    let stroke_ink = |value: &str, width: &f64| -> Option<(String, f64, f64)> {
+        if !solid_present(value) {
+            return None;
         }
+        let (hex, channel) = color_alpha(value);
+        Some((hex, channel * opacity, width.max(0.05) * scale))
+    };
+    match shape {
+        Shape::Stroke { color, width, .. } => (None, stroke_ink(color, width)),
         Shape::Rect {
             fill, stroke, width, ..
         }
@@ -545,18 +652,17 @@ fn ink_of(shape: &Shape, scale: f64, opacity: f64) -> (Option<(String, f64)>, Op
         }
         | Shape::Polygon {
             fill, stroke, width, ..
-        }
-        | Shape::Path {
-            fill, stroke, width, ..
-        } => {
-            let stroke_ink = if solid_present(stroke) {
-                let (color, channel) = color_alpha(stroke);
-                Some((color, channel * opacity, width.max(0.05) * scale))
-            } else {
-                None
-            };
-            (fill_ink(fill), stroke_ink)
-        }
+        } => (fill_ink(fill), stroke_ink(stroke, width)),
+        Shape::Path {
+            fill,
+            stroke,
+            width,
+            closed,
+            ..
+        } => (
+            if *closed { fill_ink(fill) } else { None },
+            stroke_ink(stroke, width),
+        ),
         Shape::Text { color, .. } => (fill_ink(color), None),
         Shape::Group { .. }
         | Shape::Figure { .. }
@@ -636,6 +742,7 @@ fn push_elements(
                         let (hex, channel) = color_alpha(&bone.color);
                         out.push(Element::Shape(XflShape {
                             fill: None,
+                            gradient: None,
                             stroke: Some((
                                 hex,
                                 channel * transform.opacity,
@@ -680,16 +787,47 @@ fn push_elements(
                     matrix: compose(matrix, &placed),
                 }));
             }
+            Shape::Instance {
+                symbol,
+                name,
+                matrix: local,
+                visible,
+                first_frame,
+                looping,
+            } => {
+                let Some(item) = library.symbol(symbol) else {
+                    continue;
+                };
+                let placed = local
+                    .as_ref()
+                    .map_or_else(|| *matrix, |inner| compose(matrix, inner));
+                let (item_name, kind, label) = (item.name.clone(), item.kind, name.clone());
+                out.push(Element::Instance(XflInstance {
+                    item: item_name,
+                    kind,
+                    label,
+                    matrix: placed,
+                    visible: *visible,
+                    first_frame: *first_frame,
+                    looping: loop_kind_name(*looping),
+                }));
+            }
             other => {
                 let Some(contour) = shape_contour(other, &matrix) else {
                     continue;
                 };
                 let (fill, stroke) = ink_of(other, transform.scale, transform.opacity);
-                if fill.is_none() && stroke.is_none() {
+                let gradient = if matches!(other, Shape::Path { closed: false, .. }) {
+                    None
+                } else {
+                    shape_gradient(other).map(|gradient| tinted(gradient, transform.opacity))
+                };
+                if fill.is_none() && gradient.is_none() && stroke.is_none() {
                     continue;
                 }
                 out.push(Element::Shape(XflShape {
                     fill,
+                    gradient,
                     stroke,
                     contours: vec![contour],
                 }));
@@ -699,32 +837,36 @@ fn push_elements(
 }
 
 pub fn export_scene(scene: &Scene, library: &mut Library) -> XflScene {
-    let mut flat: Vec<(&Layer, Option<usize>)> = Vec::new();
-    flatten_layers(&scene.layers, None, &mut flat);
     XflScene {
         name: scene.name.clone(),
-        layers: flat
-            .iter()
-            .enumerate()
-            .map(|(index, (layer, parent))| {
-                let mut out = export_layer(layer, index, library);
-                if layer.folder {
-                    out.kind = "folder".to_string();
-                } else if flat
-                    .get(index + 1)
-                    .is_some_and(|(next, _)| next.masked && !next.folder)
-                {
-                    out.kind = "mask".to_string();
-                }
-                out.parent = match parent {
-                    Some(at) => Some(*at),
-                    None if layer.masked && index > 0 => Some(index - 1),
-                    None => None,
-                };
-                out
-            })
-            .collect(),
+        layers: export_layers(&scene.layers, library),
     }
+}
+
+pub fn export_layers(layers: &[Layer], library: &mut Library) -> Vec<XflLayer> {
+    let mut flat: Vec<(&Layer, Option<usize>)> = Vec::new();
+    flatten_layers(layers, None, &mut flat);
+    flat
+        .iter()
+        .enumerate()
+        .map(|(index, (layer, parent))| {
+            let mut out = export_layer(layer, index, library);
+            if layer.folder {
+                out.kind = "folder".to_string();
+            } else if flat
+                .get(index + 1)
+                .is_some_and(|(next, _)| next.masked && !next.folder)
+            {
+                out.kind = "mask".to_string();
+            }
+            out.parent = match parent {
+                Some(at) => Some(*at),
+                None if layer.masked && index > 0 => Some(index - 1),
+                None => None,
+            };
+            out
+        })
+        .collect()
 }
 
 fn flatten_layers<'a>(
@@ -781,6 +923,12 @@ pub fn export_frames(layer: &Layer, library: &mut Library) -> Vec<XflFrame> {
 
 pub fn export_package(doc: &Document) -> (String, Vec<(String, Vec<u8>)>) {
     let mut library = Library::default();
+    library.plan(&doc.symbols);
+    let mut symbols = Vec::new();
+    for symbol in &doc.symbols {
+        let timeline = export_layers(&symbol.layers, &mut library);
+        symbols.push(symbol_member(symbol, &timeline, &library));
+    }
     let scenes = doc
         .scenes
         .iter()
@@ -792,9 +940,36 @@ pub fn export_package(doc: &Document) -> (String, Vec<(String, Vec<u8>)>) {
         fps: doc.fps,
         background: doc.background.clone(),
         media: library.clone_items(),
+        symbols: library.clone_symbols(),
         scenes,
     };
-    (render(&model), library.members())
+    let mut members = symbols;
+    members.extend(library.members());
+    (render(&model), members)
+}
+
+fn symbol_member(symbol: &Symbol, timeline: &[XflLayer], library: &Library) -> (String, Vec<u8>) {
+    let item = library.symbol(&symbol.id).expect("planned symbol");
+    let leaf = item.name.rsplit('/').next().unwrap_or(&item.name);
+    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
+    out.push_str(&format!(
+        "<DOMSymbolItem xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns=\"http://ns.adobe.com/xfl/2008/\" name=\"{}\" itemID=\"{}\" symbolType=\"{}\" lastModified=\"0\">\n",
+        escape(&item.name),
+        item.item_id,
+        item.kind
+    ));
+    out.push_str(&format!(
+        "  <timeline>\n    <DOMTimeline name=\"{}\" currentFrame=\"0\" layerDepthEnabled=\"true\">\n      <layers>\n",
+        escape(leaf)
+    ));
+    for (index, layer) in timeline.iter().enumerate() {
+        out.push_str(&layer_xml(layer, "        ", index == 0));
+    }
+    out.push_str("      </layers>\n    </DOMTimeline>\n  </timeline>\n</DOMSymbolItem>\n");
+    (
+        format!("{LIBRARY_FOLDER}{}", item.href),
+        out.into_bytes(),
+    )
 }
 
 pub fn document_xml(doc: &Document) -> String {
@@ -815,10 +990,21 @@ pub fn render(model: &XflDocument) -> String {
         model.fps as f64,
         model.scenes.len() + 1
     ));
-    out.push_str(&format!(
-        "{}     <symbols/>\n     <timelines>\n",
-        media_xml(&model.media)
-    ));
+    out.push_str(&media_xml(&model.media));
+    if model.symbols.is_empty() {
+        out.push_str("     <symbols/>\n");
+    } else {
+        out.push_str("     <symbols>\n");
+        for symbol in &model.symbols {
+            out.push_str(&format!(
+                "          <Include href=\"{}\" itemIcon=\"1\" loadImmediate=\"false\" itemID=\"{}\" lastModified=\"0\"/>\n",
+                escape(&symbol.href),
+                symbol.item_id
+            ));
+        }
+        out.push_str("     </symbols>\n");
+    }
+    out.push_str("     <timelines>\n");
     for scene in &model.scenes {
         out.push_str(&format!(
             "          <DOMTimeline name=\"{}\" currentFrame=\"0\" layerDepthEnabled=\"true\">\n               <layers>\n",
@@ -913,6 +1099,9 @@ fn frame_xml(frame: &XflFrame, indent: &str) -> String {
                 Element::Bitmap(instance) => {
                     inner.push_str(&bitmap_xml(instance, &format!("{indent}          ")))
                 }
+                Element::Instance(instance) => {
+                    inner.push_str(&instance_xml(instance, &format!("{indent}          ")))
+                }
             }
         }
         inner.push_str(&format!("{indent}     </elements>\n"));
@@ -931,11 +1120,17 @@ fn frame_xml(frame: &XflFrame, indent: &str) -> String {
 
 fn shape_xml(shape: &XflShape, indent: &str) -> String {
     let mut out = format!("{indent}<DOMShape>\n");
-    if let Some((color, alpha)) = &shape.fill {
-        out.push_str(&format!(
-            "{indent}     <fills>\n{indent}          <FillStyle index=\"1\">\n{indent}               <SolidColor color=\"{}\"{} />\n{indent}          </FillStyle>\n{indent}     </fills>\n",
-            color,
+    let fill = match (&shape.gradient, &shape.fill) {
+        (Some(gradient), _) => Some(gradient_fill(gradient)),
+        (None, Some((color, alpha))) => Some(format!(
+            "<SolidColor color=\"{color}\"{} />",
             alpha_attr(*alpha)
+        )),
+        (None, None) => None,
+    };
+    if let Some(fill) = &fill {
+        out.push_str(&format!(
+            "{indent}     <fills>\n{indent}          <FillStyle index=\"1\">\n{indent}               {fill}\n{indent}          </FillStyle>\n{indent}     </fills>\n"
         ));
     }
     if let Some((color, alpha, width)) = &shape.stroke {
@@ -946,23 +1141,73 @@ fn shape_xml(shape: &XflShape, indent: &str) -> String {
             alpha_attr(*alpha)
         ));
     }
+    let mut styles = String::new();
+    if fill.is_some() {
+        styles.push_str("fillStyle1=\"1\" ");
+    }
+    if shape.stroke.is_some() {
+        styles.push_str("strokeStyle=\"1\" ");
+    }
     out.push_str(&format!("{indent}     <edges>\n"));
     for contour in &shape.contours {
-        if let Some((_, _)) = &shape.fill {
-            out.push_str(&format!(
-                "{indent}          <Edge fillStyle1=\"1\" edges=\"{}\"/>\n",
-                edge_string(contour)
-            ));
-        }
-        if let Some((_, _, _)) = &shape.stroke {
-            out.push_str(&format!(
-                "{indent}          <Edge strokeStyle=\"1\" edges=\"{}\"/>\n",
-                edge_string(contour)
-            ));
-        }
+        out.push_str(&format!(
+            "{indent}          <Edge {styles}edges=\"{}\"/>\n",
+            edge_string(contour)
+        ));
     }
     out.push_str(&format!("{indent}     </edges>\n{indent}</DOMShape>\n"));
     out
+}
+
+fn gradient_fill(gradient: &Gradient) -> String {
+    let stops = gradient
+        .stops()
+        .iter()
+        .map(|stop| {
+            format!(
+                "<GradientStop position=\"{}\" ratio=\"{}\" />",
+                stop_position(&stop.color),
+                (stop.offset.clamp(0.0, 1.0) * 255.0).round() as u32
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("");
+    match gradient {
+        Gradient::Linear { angle, .. } => format!(
+            "<LinearGradientFill focus=\"0\" angle=\"{}\"><Gradient interpolation=\"linear\" type=\"linear\" focus=\"0\">{stops}</Gradient></LinearGradientFill>",
+            gradient_angle(*angle)
+        ),
+        Gradient::Radial { .. } => format!(
+            "<RadialGradientFill focus=\"0\"><Gradient interpolation=\"linear\" type=\"radial\" focus=\"0\">{stops}</Gradient></RadialGradientFill>"
+        ),
+    }
+}
+
+fn gradient_angle(degrees: f64) -> i64 {
+    (-degrees).to_radians().mul_add(65536.0, 0.0).round() as i64
+}
+
+fn tinted(gradient: &Gradient, opacity: f64) -> Gradient {
+    if opacity >= 0.999 {
+        return gradient.clone();
+    }
+    let mut tinted = gradient.clone();
+    let stops = match &mut tinted {
+        Gradient::Linear { stops, .. } | Gradient::Radial { stops } => stops,
+    };
+    for stop in stops.iter_mut() {
+        let (hex, channel) = color_alpha(&stop.color);
+        stop.color = format!("{hex}{}", hex2((channel * opacity * 255.0).round() as u32));
+    }
+    tinted
+}
+
+fn stop_position(color: &str) -> String {
+    let (hex, channel) = color_alpha(color);
+    if channel >= 0.999 {
+        return hex;
+    }
+    format!("{hex}{}", hex2((channel * 255.0).round() as u32))
 }
 
 fn alpha_attr(alpha: f64) -> String {
@@ -999,6 +1244,33 @@ fn bitmap_xml(instance: &XflBitmapInstance, indent: &str) -> String {
     format!(
         "{indent}<DOMBitmapInstance libraryItemName=\"{}\">\n{indent}     <matrix>\n{indent}          <Matrix a=\"{}\" b=\"{}\" c=\"{}\" d=\"{}\" tx=\"{}\" ty=\"{}\"/>\n{indent}     </matrix>\n{indent}</DOMBitmapInstance>\n",
         escape(&instance.item),
+        num(instance.matrix.a),
+        num(instance.matrix.b),
+        num(instance.matrix.c),
+        num(instance.matrix.d),
+        num(instance.matrix.e),
+        num(instance.matrix.f),
+    )
+}
+
+fn instance_xml(instance: &XflInstance, indent: &str) -> String {
+    let mut flags = format!(
+        " libraryItemName=\"{}\" symbolType=\"{}\"",
+        escape(&instance.item),
+        instance.kind
+    );
+    if !instance.label.is_empty() {
+        flags.push_str(&format!(" name=\"{}\"", escape(&instance.label)));
+    }
+    if !instance.visible {
+        flags.push_str(" isVisible=\"false\"");
+    }
+    if instance.first_frame > 0 {
+        flags.push_str(&format!(" firstFrame=\"{}\"", instance.first_frame));
+    }
+    flags.push_str(&format!(" loop=\"{}\"", instance.looping));
+    format!(
+        "{indent}<DOMSymbolInstance{flags}>\n{indent}     <matrix>\n{indent}          <Matrix a=\"{}\" b=\"{}\" c=\"{}\" d=\"{}\" tx=\"{}\" ty=\"{}\"/>\n{indent}     </matrix>\n{indent}</DOMSymbolInstance>\n",
         num(instance.matrix.a),
         num(instance.matrix.b),
         num(instance.matrix.c),
@@ -1255,12 +1527,16 @@ mod tests {
             fps: 24,
             background: "#ffffff".to_string(),
             media: Vec::new(),
+            symbols: Vec::new(),
             scenes: vec![XflScene {
                 name: "Scene 1".to_string(),
                 layers: vec![export_layer(&held, 0, &mut bits())],
             }],
         });
-        assert!(xml.contains("<Edge fillStyle1=\"1\" edges=\"!0 0|40 0!40 0|40 40!40 40|0 40!0 40|0 0\"/>"));
+        assert!(
+            xml.contains("<Edge fillStyle1=\"1\" edges=\"!0 0|40 0!40 0|40 40!40 40|0 40!0 40|0 0\"/>"),
+            "{xml}"
+        );
         assert!(xml.contains("<SolidColor color=\"#ff0000\" />"));
         assert!(xml.contains("frameRate=\"24.0000\""));
         assert!(xml.contains("xflVersion=\"2.971\""));
@@ -1302,8 +1578,7 @@ mod tests {
         assert_eq!(part.contours[0].segments.len(), 16);
         assert!(part.fill.is_some() && part.stroke.is_some());
         let xml = frame_xml(&frames[0], "");
-        assert!(xml.contains("<Edge fillStyle1=\"1\""));
-        assert!(xml.contains("<Edge strokeStyle=\"1\""));
+        assert!(xml.contains("<Edge fillStyle1=\"1\" strokeStyle=\"1\""));
         assert!(xml.contains("w=\"40\""));
     }
 

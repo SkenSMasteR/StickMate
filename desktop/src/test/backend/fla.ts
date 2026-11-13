@@ -32,26 +32,13 @@ function gaps(flags: Set<string>, layer: Layer) {
     if (key.transform.opacity !== 1) {
       flags.add("opacity");
     }
-    if (key.shapes.some(usesGradient)) {
-      flags.add("gradient");
-    }
     if (key.shapes.some(usesFigure)) {
       flags.add("figure");
-    }
-    if (key.shapes.some(usesInstance)) {
-      flags.add("symbols");
     }
   }
   for (const child of layer.children) {
     gaps(flags, child);
   }
-}
-
-function usesGradient(shape: Shape): boolean {
-  if (shape.kind === "Group") {
-    return shape.children.some(usesGradient);
-  }
-  return "gradient" in shape && shape.gradient !== undefined && shape.gradient !== null;
 }
 
 function usesFigure(shape: Shape): boolean {
@@ -61,29 +48,25 @@ function usesFigure(shape: Shape): boolean {
   return shape.kind === "Figure";
 }
 
-function usesInstance(shape: Shape): boolean {
-  if (shape.kind === "Group") {
-    return shape.children.some(usesInstance);
-  }
-  return shape.kind === "Instance";
-}
-
 const TEXTS: Record<string, string> = {
-  gradient: "gradient fills are exported as flat colours",
   blend: "blend modes are not exported",
   effect: "layer effects are not exported",
   opacity: "layer and keyframe opacity are exported as shape transparency",
   tween: "tweens are exported as keyframes that hold until the next key",
-  figure: "stick figures are exported as the lines they draw, without the rig",
-  symbols: "symbol instances are not exported"
+  figure: "stick figures are exported as the lines they draw, without the rig"
 };
 
-const ORDER = ["gradient", "blend", "effect", "opacity", "tween", "figure", "symbols"];
+const ORDER = ["blend", "effect", "opacity", "tween", "figure"];
 
 export const handlers: MockExtension = (context) => ({
   project_export_fla: (args): FlaExportResult => {
     const doc = context.state(args.id as string).doc;
     const flags = new Set<string>();
+    for (const symbol of doc.symbols || []) {
+      for (const layer of symbol.layers) {
+        gaps(flags, layer);
+      }
+    }
     for (const scene of doc.scenes) {
       for (const layer of scene.layers) {
         gaps(flags, layer);

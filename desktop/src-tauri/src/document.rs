@@ -199,7 +199,7 @@ fn mix_gradient(a: &Option<Gradient>, b: &Option<Gradient>, t: f64) -> Option<Gr
     }
 }
 
-fn shape_gradient(shape: &Shape) -> Option<&Gradient> {
+pub(crate) fn shape_gradient(shape: &Shape) -> Option<&Gradient> {
     match shape {
         Shape::Rect { gradient, .. }
         | Shape::Ellipse { gradient, .. }
