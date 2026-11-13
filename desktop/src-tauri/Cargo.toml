@@ -1,6 +1,6 @@
 [package]
 name = "stickmate"
-version = "0.1.30"
+version = "0.1.31"
 description = "StickMate desktop"
 edition = "2021"
 
