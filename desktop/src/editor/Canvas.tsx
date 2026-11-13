@@ -188,6 +188,9 @@ function isWorthwhile(shape: Shape): boolean {
   if (shape.kind === "Figure") {
     return shape.figure.bones.length > 0;
   }
+  if (shape.kind === "Instance") {
+    return shape.visible;
+  }
   return shape.w > 0.5 && shape.h > 0.5;
 }
 
@@ -203,7 +206,7 @@ function sampleColor(shape: Shape): { stroke: string; fill: string } {
     const color = shape.figure.bones[0]?.color ?? "#000000";
     return { stroke: color, fill: color };
   }
-  if (shape.kind === "Bitmap") {
+  if (shape.kind === "Bitmap" || shape.kind === "Instance") {
     return { stroke: "#000000", fill: "#000000" };
   }
   return { stroke: shape.stroke, fill: shape.fill };
@@ -589,6 +592,10 @@ function ShapeNode({
         {outline}
       </g>
     );
+  }
+
+  if (shape.kind === "Instance") {
+    return null;
   }
 
   const geometry =

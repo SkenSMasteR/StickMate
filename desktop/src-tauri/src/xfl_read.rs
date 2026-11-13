@@ -1,18 +1,19 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use quick_xml::XmlVersion;
 
 use crate::document::{
-    apply_affine, new_id, Affine, Blend, Document, Easing, Keyframe, Layer, Point, Scene, Shape,
-    TextAlign, Transform,
+    apply_affine, new_id, Affine, Blend, Document, Easing, Keyframe, Layer, LoopMode, Point,
+    Scene, Shape, Symbol, SymbolKind, TextAlign, Transform,
 };
 use crate::path::PathNode;
 use crate::xfl;
 
 const PROJECT_LIMIT: usize = 8 * 1024 * 1024;
 const ELEMENT_LIMIT: usize = 300_000;
+const SYMBOL_LIMIT: usize = 20_000;
 const STAGE_LIMIT: u32 = 8192;
 const TWIPS: f64 = 20.0;
 const KEY_PLAIN: &str = "9728";
@@ -72,6 +73,7 @@ struct BitmapSource {
 
 struct Media<'a> {
     items: HashMap<String, BitmapSource>,
+    library: HashMap<String, String>,
     members: &'a [(String, Vec<u8>)],
 }
 
@@ -81,6 +83,10 @@ impl Media<'_> {
         if href.is_empty() {
             return None;
         }
+        self.file(href)
+    }
+
+    fn file(&self, href: &str) -> Option<Vec<u8>> {
         crate::fla::member_bytes(self.members, &format!("{}{href}", xfl::LIBRARY_FOLDER))
     }
 }
@@ -100,7 +106,136 @@ fn media_of<'a>(root: &Element, members: &'a [(String, Vec<u8>)]) -> Media<'a> {
             );
         }
     }
-    Media { items, members }
+    Media {
+        items,
+        library: HashMap::new(),
+        members,
+    }
+}
+
+struct Entry {
+    id: String,
+    href: String,
+    stem: String,
+}
+
+fn entries_of(root: &Element) -> Vec<Entry> {
+    let mut out: Vec<Entry> = Vec::new();
+    let Some(holder) = child(root, "symbols") else {
+        return out;
+    };
+    for include in named(holder, "Include") {
+        let Some(href) = include
+            .attr("href")
+            .filter(|value| value.ends_with(".xml") && !value.ends_with("/"))
+        else {
+            continue;
+        };
+        let stem = href.trim_end_matches(".xml").to_string();
+        let id = match include.attr("itemID").filter(|value| !value.is_empty()) {
+            Some(value) if !out.iter().any(|entry| entry.id == value) => value.to_string(),
+            _ => new_id("y"),
+        };
+        out.push(Entry { id, href: href.to_string(), stem });
+    }
+    out
+}
+
+fn library_of(root: &Element, media: &mut Media, notes: &mut Notes) -> Vec<Symbol> {
+    let entries = entries_of(root);
+    let keep = SYMBOL_LIMIT.min(entries.len());
+    notes.library += entries.len() - keep;
+    for entry in entries.iter().take(keep) {
+        media.library.insert(entry.stem.clone(), entry.id.clone());
+    }
+    let mut out = Vec::new();
+    for entry in entries.iter().take(keep) {
+        match symbol(&entry.id, &entry.stem, media.file(&entry.href), media, notes) {
+            Some(symbol) => {
+                media.library.insert(symbol.name.clone(), symbol.id.clone());
+                out.push(symbol);
+            }
+            None => notes.library += 1,
+        }
+    }
+    let landed: HashSet<String> = out.iter().map(|symbol| symbol.id.clone()).collect();
+    media.library.retain(|_, id| landed.contains(id));
+    out
+}
+
+fn symbol(
+    id: &str,
+    stem: &str,
+    raw: Option<Vec<u8>>,
+    media: &Media,
+    notes: &mut Notes,
+) -> Option<Symbol> {
+    let text = String::from_utf8(raw?).ok()?;
+    if text.len() > PROJECT_LIMIT {
+        return None;
+    }
+    let root = build(&text).ok()?;
+    if root.name != "DOMSymbolItem" {
+        return None;
+    }
+    let layers = child(&root, "timeline")
+        .and_then(|timeline| child(timeline, "DOMTimeline"))
+        .and_then(|timeline| child(timeline, "layers"))
+        .map(|holder| scene_layers(holder, media, notes))
+        .unwrap_or_default();
+    Some(Symbol {
+        id: id.to_string(),
+        name: root.attr("name").unwrap_or(stem).to_string(),
+        kind: symbol_kind(root.attr("symbolType")),
+        layers,
+    })
+}
+
+fn symbol_kind(value: Option<&str>) -> SymbolKind {
+    match value
+        .unwrap_or_default()
+        .replace(' ', "")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "movieclip" | "clip" => SymbolKind::MovieClip,
+        "button" => SymbolKind::Button,
+        _ => SymbolKind::Graphic,
+    }
+}
+
+fn loop_mode(value: Option<&str>) -> LoopMode {
+    match value
+        .unwrap_or_default()
+        .replace(' ', "")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "loop" => LoopMode::Loop,
+        "playonce" => LoopMode::PlayOnce,
+        _ => LoopMode::SingleFrame,
+    }
+}
+
+fn instance(el: &Element, media: &Media) -> Option<Shape> {
+    let id = media.library.get(el.attr("libraryItemName")?)?;
+    let mut place = matrix(el);
+    if el.flag("FlipX", false) {
+        place.a = -place.a;
+        place.c = -place.c;
+    }
+    if el.flag("FlipY", false) {
+        place.b = -place.b;
+        place.d = -place.d;
+    }
+    Some(Shape::Instance {
+        symbol: id.clone(),
+        name: el.attr("name").unwrap_or_default().to_string(),
+        matrix: (place != Affine::default()).then_some(place),
+        visible: el.flag("isVisible", true),
+        first_frame: el.number("firstFrame", 0.0).max(0.0) as u32,
+        looping: loop_mode(el.attr("loop")),
+    })
 }
 
 #[derive(Default)]
@@ -253,12 +388,43 @@ pub fn parse(
         return Err(invalid);
     }
     let mut notes = Notes::default();
-    let media = media_of(&root, members);
-    let doc = document(&root, name, &media, &mut notes);
+    let mut media = media_of(&root, members);
+    let symbols = library_of(&root, &mut media, &mut notes);
+    let doc = document(&root, name, &media, &mut notes, symbols);
+    let ids: HashSet<String> = doc.symbols.iter().map(|symbol| symbol.id.clone()).collect();
+    for scene in &doc.scenes {
+        strays(&scene.layers, &ids, &mut notes);
+    }
+    for symbol in &doc.symbols {
+        strays(&symbol.layers, &ids, &mut notes);
+    }
     Ok(Import {
         doc,
         notes: notes.messages(),
     })
+}
+
+fn strays(layers: &[Layer], ids: &HashSet<String>, notes: &mut Notes) {
+    for layer in layers {
+        for key in &layer.keys {
+            stray_shapes(&key.shapes, ids, notes);
+        }
+        strays(&layer.children, ids, notes);
+    }
+}
+
+fn stray_shapes(shapes: &[Shape], ids: &HashSet<String>, notes: &mut Notes) {
+    for shape in shapes {
+        match shape {
+            Shape::Instance { symbol, .. } => {
+                if !ids.contains(symbol) {
+                    notes.symbols += 1;
+                }
+            }
+            Shape::Group { children } => stray_shapes(children, ids, notes),
+            _ => {}
+        }
+    }
 }
 
 fn build(xml: &str) -> Result<Element, String> {
@@ -422,10 +588,13 @@ fn named<'a>(el: &'a Element, name: &str) -> Vec<&'a Element> {
         .collect()
 }
 
-fn document(root: &Element, name: &str, media: &Media, notes: &mut Notes) -> Document {
-    if let Some(symbols) = child(root, "symbols") {
-        notes.library += named(symbols, "Include").len();
-    }
+fn document(
+    root: &Element,
+    name: &str,
+    media: &Media,
+    notes: &mut Notes,
+    symbols: Vec<Symbol>,
+) -> Document {
     let mut scenes = Vec::new();
     if let Some(holder) = child(root, "timelines") {
         for timeline in named(holder, "DOMTimeline") {
@@ -447,6 +616,7 @@ fn document(root: &Element, name: &str, media: &Media, notes: &mut Notes) -> Doc
         fps: frame_rate(root, notes),
         background: background(root),
         scenes,
+        symbols,
     }
 }
 
@@ -799,7 +969,10 @@ fn elements(holder: &Element, media: &Media, notes: &mut Notes) -> Vec<Shape> {
                 Some(shape) => out.push(shape),
                 None => notes.unread += 1,
             },
-            "DOMSymbolInstance" | "DOMInstance" => notes.symbols += 1,
+            "DOMSymbolInstance" | "DOMInstance" => match instance(item, media) {
+                Some(shape) => out.push(shape),
+                None => notes.symbols += 1,
+            },
             "DOMElement" => out.extend(elements(item, media, notes)),
             _ => {}
         }
@@ -889,7 +1062,8 @@ fn shape(el: &Element, notes: &mut Notes) -> Vec<Shape> {
                 let (nodes, closed) = if ring {
                     (nodes[..nodes.len() - 1].to_vec(), true)
                 } else {
-                    (nodes, fill.is_some())
+                    let sealed = fill.is_some() && nodes.len() > 2;
+                    (nodes, sealed)
                 };
                 let (stroke_ink, width) = stroke.map_or(("none".to_string(), 0.0), |value| value);
                 out.push(Shape::Path {
@@ -1046,27 +1220,69 @@ fn strokes(el: &Element, notes: &mut Notes) -> Vec<(usize, Option<(String, f64)>
 }
 
 fn tokens(text: &str) -> Vec<Token> {
+    let chars: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
-    let mut current = String::new();
-    for ch in text.chars() {
-        if ch.is_ascii_whitespace() {
-            push_number(&mut current, &mut out);
-        } else if ch.is_ascii_digit() || ch == '-' || (ch == '.' && !current.is_empty()) {
-            current.push(ch);
+    let mut at = 0;
+    while at < chars.len() {
+        if chars[at].is_ascii_whitespace() {
+            at += 1;
+            continue;
+        }
+        let radix = if chars[at] == '#' {
+            at += 1;
+            16
         } else {
-            push_number(&mut current, &mut out);
-            out.push(Token::Marker(ch));
+            10
+        };
+        let Some(&head) = chars.get(at) else { break };
+        if radix == 16 || head.is_ascii_digit() || head == '-' {
+            let start = at;
+            while at < chars.len() && numeral(chars[at], radix) {
+                at += 1;
+            }
+            let text: String = chars[start..at].iter().collect();
+            if let Some(value) = numeral_value(&text, radix) {
+                out.push(Token::Number(value));
+            }
+        } else {
+            out.push(Token::Marker(head));
+            at += 1;
         }
     }
-    push_number(&mut current, &mut out);
     out
 }
 
-fn push_number(current: &mut String, out: &mut Vec<Token>) {
-    if let Ok(value) = current.parse::<f64>() {
-        out.push(Token::Number(value));
+fn numeral(ch: char, radix: u32) -> bool {
+    ch.is_digit(radix) || ch == '.' || ch == '-'
+}
+
+fn numeral_value(text: &str, radix: u32) -> Option<f64> {
+    if radix == 10 {
+        return text
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite());
     }
-    current.clear();
+    let (sign, rest) = match text.strip_prefix('-') {
+        Some(rest) => (-1.0, rest),
+        None => (1.0, text),
+    };
+    let mut parts = rest.split('.');
+    let whole = parts.next().unwrap_or_default();
+    let bit = parts.next().unwrap_or_default();
+    if whole.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    let mut value = 0.0;
+    for ch in whole.chars() {
+        value = value * 16.0 + ch.to_digit(16)? as f64;
+    }
+    let mut place = 1.0 / 16.0;
+    for ch in bit.chars() {
+        value += ch.to_digit(16)? as f64 * place;
+        place /= 16.0;
+    }
+    Some(sign * value)
 }
 
 fn next_number(tokens: &[Token], at: &mut usize) -> Option<f64> {
@@ -1334,6 +1550,7 @@ mod tests {
                     children: Vec::new(),
                 }],
             }],
+            symbols: Vec::new(),
         }
     }
 
@@ -1452,6 +1669,34 @@ mod tests {
         assert!((held.x - 2.0).abs() < 1e-5);
         assert!((held.y - 0.6666666).abs() < 1e-5);
         assert!(nodes[1].handle_out.is_none());
+    }
+
+    #[test]
+    fn edge_markup_writes_control_points_in_hex() {
+        let body = "<DOMShape><fills><FillStyle index=\"1\"><SolidColor color=\"#00ff00\"/></FillStyle></fills><edges><Edge fillStyle1=\"1\" edges=\"!0 0[#28.0 #0 40 40!40 40|0 40!0 40|0 0\"/></edges></DOMShape>";
+        let import = parse(&stage_xml(&art(&plain(0, 1, body))), "Imported", &[]).expect("parse");
+        assert_eq!(import.notes, Vec::<String>::new());
+        let (nodes, closed, _) = path_of(&import.doc.scenes[0].layers[0].keys[0]);
+        assert!(closed);
+        assert_eq!(nodes.len(), 3);
+        let out = nodes[0].handle_out.clone().expect("handle out");
+        assert!((out.x - 1.3333333).abs() < 1e-5);
+        assert!((out.y - 0.0).abs() < 1e-5);
+        let held = nodes[1].handle_in.clone().expect("handle in");
+        assert!((held.x - 2.0).abs() < 1e-5);
+        assert!((held.y - 0.6666666).abs() < 1e-5);
+        let fine = "<DOMShape><fills><FillStyle index=\"1\"><SolidColor color=\"#00ff00\"/></FillStyle></fills><edges><Edge fillStyle1=\"1\" edges=\"!0 0[#234.E5 #D8.1B 239 -366|478 -732!0 0\"/></edges></DOMShape>";
+        let import = parse(&stage_xml(&art(&plain(0, 1, fine))), "Imported", &[]).expect("parse");
+        assert_eq!(import.notes, Vec::<String>::new());
+        let (nodes, _, _) = path_of(&import.doc.scenes[0].layers[0].keys[0]);
+        assert!((nodes[1].point.x - 11.95).abs() < 1e-6);
+        assert!((nodes[1].point.y + 18.3).abs() < 1e-6);
+        let out = nodes[0].handle_out.clone().expect("handle out");
+        assert!((out.x - 18.8298177).abs() < 1e-5);
+        assert!((out.y - 7.2035156).abs() < 1e-5);
+        let held = nodes[1].handle_in.clone().expect("handle in");
+        assert!((held.x - 22.8131507).abs() < 1e-5);
+        assert!((held.y - 1.1035156).abs() < 1e-5);
     }
 
     #[test]
@@ -1618,6 +1863,275 @@ mod tests {
             import.notes,
             vec!["2 symbol instances were skipped".to_string()]
         );
+    }
+
+    fn symbol_file_xml(name: &str, item_id: &str, kind: &str, layers: &str) -> String {
+        format!("<DOMSymbolItem xmlns=\"http://ns.adobe.com/xfl/2008/\" name=\"{name}\" itemID=\"{item_id}\" symbolType=\"{kind}\"><timeline><DOMTimeline name=\"{name}\" currentFrame=\"0\"><layers>{layers}</layers></DOMTimeline></timeline></DOMSymbolItem>")
+    }
+
+    fn symbol_member(name: &str, item_id: &str, layers: &str) -> (String, Vec<u8>) {
+        let xml = symbol_file_xml(name, item_id, "graphic", layers);
+        (format!("LIBRARY/{name}.xml"), xml.into_bytes())
+    }
+
+    fn include(href: &str, item_id: &str) -> String {
+        format!("<Include href=\"{href}\" itemID=\"{item_id}\" loadImmediate=\"false\"/>")
+    }
+
+    fn library_stage(includes: &str, layers: &str) -> String {
+        format!("<DOMDocument xmlns=\"http://ns.adobe.com/xfl/2008/\" backgroundColor=\"#999999\" width=\"640\" height=\"360\" frameRate=\"12.0000\"><symbols>{includes}</symbols><timelines><DOMTimeline name=\"Scene 1\" currentFrame=\"0\"><layers>{layers}</layers></DOMTimeline></timelines></DOMDocument>")
+    }
+
+    fn placement(attrs: &str, matrix: &str) -> String {
+        format!("<DOMSymbolInstance {attrs}>{matrix}</DOMSymbolInstance>")
+    }
+
+    fn placed_at(body: &str) -> Vec<Shape> {
+        let members = vec![symbol_member(
+            "Guy",
+            "id-1",
+            &art(&plain(0, 1, &square(0.0))),
+        )];
+        let xml = library_stage(
+            &include("Guy.xml", "id-1"),
+            &art(&plain(0, 1, body)),
+        );
+        let import = parse(&xml, "Imported", &members).expect("parse");
+        assert_eq!(import.notes, Vec::<String>::new());
+        import.doc.scenes[0].layers[0].keys[0].shapes.clone()
+    }
+
+    fn shape_of(body: &str) -> Shape {
+        placed_at(body).remove(0)
+    }
+
+    #[test]
+    fn a_library_symbol_keeps_its_own_timeline() {
+        let members = vec![
+            symbol_member("Guy", "id-1", &art(&plain(0, 1, &square(0.0)))),
+            symbol_member("Girl", "id-2", &art(&plain(0, 2, &square(2.0)))),
+        ];
+        let xml = library_stage(
+            &format!("{}{}", include("Guy.xml", "id-1"), include("Girl.xml", "id-2")),
+            "",
+        );
+        let import = parse(&xml, "Imported", &members).expect("parse");
+        assert_eq!(import.notes, Vec::<String>::new());
+        assert_eq!(import.doc.symbols.len(), 2);
+        assert_eq!(import.doc.symbols[0].id, "id-1");
+        assert_eq!(import.doc.symbols[0].name, "Guy");
+        assert_eq!(import.doc.symbols[0].kind, SymbolKind::Graphic);
+        assert_eq!(import.doc.symbols[0].layers[0].name, "Art");
+        assert_eq!(path_of(&import.doc.symbols[0].layers[0].keys[0]).2, "#ff0000");
+        assert_eq!(import.doc.symbols[1].layers[0].keys.len(), 1);
+        assert_eq!(import.doc.symbols[1].layers[0].length, 2);
+    }
+
+    #[test]
+    fn a_symbol_file_kind_survives_the_import() {
+        let members = vec![(
+            "LIBRARY/Clip.xml".to_string(),
+            symbol_file_xml("Clip", "id-9", "movie clip", &art(&plain(0, 1, &square(0.0))))
+                .into_bytes(),
+        )];
+        let import = parse(
+            &library_stage(&include("Clip.xml", "id-9"), ""),
+            "Imported",
+            &members,
+        )
+        .expect("parse");
+        assert_eq!(import.doc.symbols[0].kind, SymbolKind::MovieClip);
+    }
+
+    #[test]
+    fn a_placement_points_at_its_library_symbol() {
+        let shape = shape_of(&placement(
+            "libraryItemName=\"Guy\" symbolType=\"graphic\"",
+            "<matrix><Matrix a=\"2\" d=\"3\" tx=\"10\" ty=\"20\"/></matrix>",
+        ));
+        match shape {
+            Shape::Instance {
+                symbol,
+                name,
+                matrix,
+                visible,
+                first_frame,
+                looping,
+            } => {
+                assert_eq!(symbol, "id-1");
+                assert_eq!(name, "");
+                assert_eq!(
+                    matrix.expect("matrix"),
+                    Affine {
+                        a: 2.0,
+                        b: 0.0,
+                        c: 0.0,
+                        d: 3.0,
+                        e: 10.0,
+                        f: 20.0
+                    }
+                );
+                assert!(visible);
+                assert_eq!(first_frame, 0);
+                assert_eq!(looping, LoopMode::SingleFrame);
+            }
+            other => panic!("expected a placement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_placement_keeps_its_name_label_and_loop() {
+        let shape = shape_of(&placement(
+            "name=\"hero\" libraryItemName=\"Guy\" isVisible=\"false\" firstFrame=\"4\" loop=\"loop\"",
+            "",
+        ));
+        match shape {
+            Shape::Instance {
+                symbol,
+                name,
+                matrix,
+                visible,
+                first_frame,
+                looping,
+            } => {
+                assert_eq!(symbol, "id-1");
+                assert_eq!(name, "hero");
+                assert!(matrix.is_none());
+                assert!(!visible);
+                assert_eq!(first_frame, 4);
+                assert_eq!(looping, LoopMode::Loop);
+            }
+            other => panic!("expected a placement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_flipped_placement_mirrors_its_basis_vectors() {
+        let shape = shape_of(&placement(
+            "libraryItemName=\"Guy\" FlipX=\"true\" FlipY=\"true\"",
+            "<matrix><Matrix a=\"2\" d=\"3\" tx=\"10\" ty=\"20\"/></matrix>",
+        ));
+        match shape {
+            Shape::Instance {
+                matrix: Some(place),
+                ..
+            } => {
+                assert_eq!(place.a, -2.0);
+                assert_eq!(place.d, -3.0);
+                assert_eq!(place.e, 10.0);
+            }
+            other => panic!("expected a flipped placement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_placement_of_one_symbol_shares_the_same_library_entry() {
+        let body = format!(
+            "{}{}",
+            placement("libraryItemName=\"Guy\"", "<matrix><Matrix tx=\"5\" ty=\"5\"/></matrix>"),
+            placement("libraryItemName=\"Guy\"", "")
+        );
+        let shapes = placed_at(&body);
+        assert_eq!(shapes.len(), 2);
+        for shape in &shapes {
+            match shape {
+                Shape::Instance { symbol, .. } => assert_eq!(symbol, "id-1"),
+                other => panic!("expected a placement, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_symbol_without_its_file_is_reported_once_per_gap() {
+        let xml = library_stage(
+            &include("Guy.xml", "id-1"),
+            &art(&plain(0, 1, &placement("libraryItemName=\"Guy\"", ""))),
+        );
+        let import = parse(&xml, "Imported", &[]).expect("parse");
+        assert!(import.doc.symbols.is_empty());
+        assert!(import.doc.scenes[0].layers[0].keys[0].shapes.is_empty());
+        assert_eq!(
+            import.notes,
+            vec![
+                "1 symbol instance was skipped".to_string(),
+                "1 library symbol was not imported".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_broken_symbol_file_does_not_leave_a_dangling_placement() {
+        let members = vec![(
+            "LIBRARY/Guy.xml".to_string(),
+            b"<DOMSymbolItem name=\"Guy\"".to_vec(),
+        )];
+        let xml = library_stage(
+            &include("Guy.xml", "id-1"),
+            &art(&plain(0, 1, &placement("libraryItemName=\"Guy\"", ""))),
+        );
+        let import = parse(&xml, "Imported", &members).expect("parse");
+        assert!(import.doc.symbols.is_empty());
+        assert_eq!(
+            import.notes,
+            vec![
+                "1 symbol instance was skipped".to_string(),
+                "1 library symbol was not imported".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn library_members_that_are_not_symbol_files_are_left_alone() {
+        let xml = library_stage(
+            &include("Guy.swf", "id-1"),
+            &art(&plain(0, 1, &placement("libraryItemName=\"Guy\"", ""))),
+        );
+        let import = parse(&xml, "Imported", &[]).expect("parse");
+        assert!(import.doc.symbols.is_empty());
+        assert_eq!(
+            import.notes,
+            vec!["1 symbol instance was skipped".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_symbol_that_is_never_placed_still_lands() {
+        let members = vec![symbol_member("Guy", "id-1", &art(&plain(0, 1, &square(0.0))))];
+        let import = parse(
+            &library_stage(&include("Guy.xml", "id-1"), &art(&plain(0, 1, ""))),
+            "Imported",
+            &members,
+        )
+        .expect("parse");
+        assert_eq!(import.doc.symbols.len(), 1);
+        assert_eq!(import.notes, Vec::<String>::new());
+    }
+
+    #[test]
+    fn nested_placements_cross_reference_whatever_order_the_files_land_in() {
+        let solo = art(&plain(0, 1, &square(0.0)));
+        let inside = art(&plain(
+            0,
+            1,
+            &placement("libraryItemName=\"Girl\"", "<matrix><Matrix tx=\"8\" ty=\"9\"/></matrix>"),
+        ));
+        let members = vec![
+            symbol_member("Guy", "id-1", &inside),
+            symbol_member("Girl", "id-2", &solo),
+        ];
+        let xml = library_stage(
+            &format!("{}{}", include("Guy.xml", "id-1"), include("Girl.xml", "id-2")),
+            &art(&plain(0, 1, &placement("libraryItemName=\"Girl\"", ""))),
+        );
+        let import = parse(&xml, "Imported", &members).expect("parse");
+        assert_eq!(import.notes, Vec::<String>::new());
+        assert_eq!(import.doc.symbols.len(), 2);
+        let Shape::Instance { symbol, .. } =
+            import.doc.symbols[0].layers[0].keys[0].shapes[0].clone()
+        else {
+            panic!("expected a nested placement");
+        };
+        assert_eq!(symbol, "id-2");
     }
 
     #[test]
@@ -2103,6 +2617,7 @@ mod tests {
                     children: Vec::new(),
                 }],
             }],
+            symbols: Vec::new(),
         }
     }
 }

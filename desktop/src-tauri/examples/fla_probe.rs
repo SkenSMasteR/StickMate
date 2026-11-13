@@ -7,13 +7,15 @@ use stickmate_lib::fla;
 use stickmate_lib::xfl;
 use stickmate_lib::xfl_read;
 
-const SHAPE_KINDS: [&str; 9] = [
+const SHAPE_KINDS: [&str; 10] = [
     "Stroke", "Rect", "Ellipse", "Polygon", "Bitmap", "Text", "Path", "Group", "Figure",
+    "Instance",
 ];
 
 #[derive(Default)]
 struct Metrics {
     scenes: usize,
+    symbols: usize,
     layers: usize,
     keys: usize,
     tweens: usize,
@@ -30,8 +32,12 @@ impl Metrics {
     fn of(doc: &Document) -> Metrics {
         let mut out = Metrics::default();
         out.scenes = doc.scenes.len();
+        out.symbols = doc.symbols.len();
         for scene in &doc.scenes {
             out.layers_of(&scene.layers);
+        }
+        for symbol in &doc.symbols {
+            out.layers_of(&symbol.layers);
         }
         out
     }
@@ -80,6 +86,7 @@ impl Metrics {
                 ("Path", Shape::Path { .. }) => true,
                 ("Group", Shape::Group { .. }) => true,
                 ("Figure", Shape::Figure { .. }) => true,
+                ("Instance", Shape::Instance { .. }) => true,
                 _ => false,
             };
             if hit {
@@ -90,6 +97,7 @@ impl Metrics {
 
     fn push_rows(&self, out: &mut Vec<String>, prefix: &str) {
         out.push(format!("{prefix} scenes {}", self.scenes));
+        out.push(format!("{prefix} symbols {}", self.symbols));
         out.push(format!("{prefix} layers {}", self.layers));
         out.push(format!("{prefix} keyframes {}", self.keys));
         out.push(format!("{prefix} tweens {}", self.tweens));
@@ -267,9 +275,10 @@ impl Census {
 
 fn coverage_rows(census: &Census, metrics: &Metrics) -> Vec<(&'static str, usize, usize, usize)> {
     let texts = metrics.shapes.get("Text").copied().unwrap_or(0);
+    let placed = metrics.shapes.get("Instance").copied().unwrap_or(0);
     vec![
-        ("library_symbols", census.total(&["DOMSymbolItem", "Include"]), 0, 2),
-        ("placements", census.total(&["DOMSymbolInstance"]), 0, 3),
+        ("library_symbols", census.total(&["DOMSymbolItem"]), metrics.symbols, 2),
+        ("placements", census.total(&["DOMSymbolInstance"]), placed, 3),
         ("layers", census.total(&["DOMLayer"]), metrics.layers, 2),
         ("frames", census.total(&["DOMFrame"]), metrics.keys, 1),
         ("static_texts", census.total(&["DOMStaticText"]), texts, 3),

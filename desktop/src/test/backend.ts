@@ -383,7 +383,7 @@ function figureOf(shape: Shape): Figure {
 }
 
 function shapeHit(shape: Shape, p: Point, radius: number): boolean {
-  if (shape.kind === "Group") {
+  if (shape.kind === "Group" || shape.kind === "Instance") {
     const box = shapeBounds(shape);
     return (
       p.x >= box.x - radius &&
@@ -615,7 +615,12 @@ function paintFill(shape: Shape, color: string): Shape {
       }
     };
   }
-  if (shape.kind === "Stroke" || shape.kind === "Text" || shape.kind === "Bitmap") {
+  if (
+    shape.kind === "Stroke" ||
+    shape.kind === "Text" ||
+    shape.kind === "Bitmap" ||
+    shape.kind === "Instance"
+  ) {
     return shape;
   }
   return { ...shape, fill: color, gradient: null };
@@ -706,6 +711,9 @@ export function transformShape(
         }))
       }
     };
+  }
+  if (shape.kind === "Instance") {
+    return { ...shape, matrix: composeAffine(matrix, shape.matrix ?? { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) };
   }
   if (shape.kind === "Stroke") {
     return {

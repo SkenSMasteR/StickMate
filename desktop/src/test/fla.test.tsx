@@ -66,6 +66,17 @@ function square(): Shape {
   };
 }
 
+function instance(): Shape {
+  return {
+    kind: "Instance",
+    symbol: "y0",
+    name: "Guy",
+    visible: true,
+    firstFrame: 0,
+    looping: "loop"
+  };
+}
+
 function seed(doc: Document): void {
   store.set(doc.id, { doc, undo: [], redo: [], updated_at: Date.now() });
 }
@@ -137,7 +148,14 @@ describe("animate project exchange", () => {
             layer({
               blend: "multiply",
               keys: [
-                keyframe([square(), { kind: "Figure", figure: humanoidFigure(10, 10, 100) }], true)
+                keyframe(
+                  [
+                    square(),
+                    { kind: "Figure", figure: humanoidFigure(10, 10, 100) },
+                    { kind: "Group", children: [instance()] }
+                  ],
+                  true
+                )
               ]
             })
           ]
@@ -158,7 +176,8 @@ describe("animate project exchange", () => {
       "gradient fills are exported as flat colours",
       "blend modes are not exported",
       "tweens are exported as keyframes that hold until the next key",
-      "stick figures are exported as the lines they draw, without the rig"
+      "stick figures are exported as the lines they draw, without the rig",
+      "symbol instances are not exported"
     ]);
     expect(screen.queryByText("blend modes are not exported")).toBeNull();
     fireEvent.click(entry);

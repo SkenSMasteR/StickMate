@@ -906,6 +906,24 @@ function ShapeFields({
     );
   }
 
+  if (shape.kind === "Instance") {
+    const place = shape.matrix ?? { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+    return (
+      <>
+        <NumberField
+          label={t("editor.x")}
+          value={rounded(place.e)}
+          onCommit={(e) => onReplace(index, { ...shape, matrix: { ...place, e } })}
+        />
+        <NumberField
+          label={t("editor.y")}
+          value={rounded(place.f)}
+          onCommit={(f) => onReplace(index, { ...shape, matrix: { ...place, f } })}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <NumberField

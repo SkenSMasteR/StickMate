@@ -219,6 +219,33 @@ pub(crate) fn rotated_gradient(gradient: &Option<Gradient>, rotation: f64) -> Op
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SymbolKind {
+    #[default]
+    Graphic,
+    MovieClip,
+    Button,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LoopMode {
+    #[default]
+    Loop,
+    PlayOnce,
+    SingleFrame,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Symbol {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub kind: SymbolKind,
+    pub layers: Vec<Layer>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Shape {
@@ -301,6 +328,23 @@ pub enum Shape {
     Figure {
         figure: Figure,
     },
+    Instance {
+        symbol: String,
+        #[serde(default)]
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        matrix: Option<Affine>,
+        #[serde(default = "default_true")]
+        visible: bool,
+        #[serde(default, rename = "firstFrame")]
+        first_frame: u32,
+        #[serde(default)]
+        looping: LoopMode,
+    },
+}
+
+fn default_true() -> bool {
+    true
 }
 
 pub const TEXT_ADVANCE: f64 = 0.6;
@@ -367,6 +411,19 @@ pub struct Affine {
     pub f: f64,
 }
 
+impl Default for Affine {
+    fn default() -> Self {
+        Affine {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 0.0,
+            f: 0.0,
+        }
+    }
+}
+
 pub fn affine_from(pivot: &Point, dx: f64, dy: f64, sx: f64, sy: f64, rotation: f64) -> Affine {
     let angle = rotation * std::f64::consts::PI / 180.0;
     let cos = angle.cos();
@@ -401,6 +458,10 @@ fn compose_affine(outer: &Affine, inner: &Affine) -> Affine {
         e: outer.a * inner.e + outer.c * inner.f + outer.e,
         f: outer.b * inner.e + outer.d * inner.f + outer.f,
     }
+}
+
+fn instance_matrix(matrix: &Option<Affine>) -> Affine {
+    (*matrix).unwrap_or_default()
 }
 
 fn text_corners(
@@ -523,6 +584,15 @@ pub fn shape_bounds(shape: &Shape) -> Bounds {
             w: 0.0,
             h: 0.0,
         }),
+        Shape::Instance { matrix, .. } => {
+            let origin = apply_affine(&instance_matrix(matrix), &Point { x: 0.0, y: 0.0 });
+            Bounds {
+                x: origin.x,
+                y: origin.y,
+                w: 0.0,
+                h: 0.0,
+            }
+        }
     }
 }
 
@@ -855,6 +925,21 @@ pub(crate) fn transform_shape(
                 gradient: gradient.clone(),
             })
         }
+        Shape::Instance {
+            symbol,
+            name,
+            matrix: place,
+            visible,
+            first_frame,
+            looping,
+        } => Ok(Shape::Instance {
+            symbol: symbol.clone(),
+            name: name.clone(),
+            matrix: Some(compose_affine(matrix, &instance_matrix(place))),
+            visible: *visible,
+            first_frame: *first_frame,
+            looping: *looping,
+        }),
     }
 }
 
@@ -1089,7 +1174,7 @@ fn inside_polygon(p: &Point, vertices: &[Point]) -> bool {
 
 fn shape_hit(shape: &Shape, p: &Point, radius: f64) -> bool {
     match shape {
-        Shape::Group { .. } => {
+        Shape::Group { .. } | Shape::Instance { .. } => {
             let box_ = shape_bounds(shape);
             p.x >= box_.x - radius
                 && p.x <= box_.x + box_.w + radius
@@ -1310,6 +1395,28 @@ pub(crate) fn validate(shape: &Shape) -> Result<(), String> {
                     .any(|value| !value.is_finite())
                 {
                     return Err("bitmap matrix must be finite".to_string());
+                }
+            }
+            Ok(())
+        }
+        Shape::Instance {
+            symbol,
+            name,
+            matrix,
+            ..
+        } => {
+            if symbol.is_empty() || symbol.len() > 256 {
+                return Err("a symbol instance needs a library symbol".to_string());
+            }
+            if name.len() > 256 {
+                return Err("symbol instance names must stay short".to_string());
+            }
+            if let Some(m) = matrix {
+                if [m.a, m.b, m.c, m.d, m.e, m.f]
+                    .iter()
+                    .any(|value| !value.is_finite())
+                {
+                    return Err("symbol instance matrix must be finite".to_string());
                 }
             }
             Ok(())
@@ -1911,6 +2018,8 @@ pub struct Document {
     pub fps: u32,
     pub background: String,
     pub scenes: Vec<Scene>,
+    #[serde(default)]
+    pub symbols: Vec<Symbol>,
 }
 
 impl Document {
@@ -2656,6 +2765,7 @@ impl DocStore {
             fps,
             background,
             scenes: vec![Scene::new("Scene 1".to_string())],
+            symbols: Vec::new(),
         };
         let state = DocState {
             doc: doc.clone(),
@@ -3098,6 +3208,7 @@ impl DocStore {
             Shape::Path { .. } => "draw_path",
             Shape::Group { .. } => "draw_group",
             Shape::Figure { .. } => "draw_figure",
+            Shape::Instance { .. } => "draw_instance",
         };
         self.edit_named(id, step, |doc| {
             let layer = doc.leaf_mut(scene_id, layer_id)?;
@@ -3267,6 +3378,7 @@ impl DocStore {
                 }
                 Shape::Figure { .. } => paint_fill(shape, &color),
                 Shape::Bitmap { .. } => {}
+                Shape::Instance { .. } => {}
             }
             Ok(())
         })
@@ -10746,6 +10858,205 @@ mod tests {
             turned
         );
         assert!(validate(&turned).is_ok());
+    }
+
+    fn placement(symbol: &str, matrix: Option<Affine>) -> Shape {
+        Shape::Instance {
+            symbol: symbol.to_string(),
+            name: "hero".to_string(),
+            matrix,
+            visible: true,
+            first_frame: 2,
+            looping: LoopMode::PlayOnce,
+        }
+    }
+
+    #[test]
+    fn a_placement_keeps_its_library_reference_in_json() {
+        let shape = placement("y1", Some(Affine::default()));
+        let json = serde_json::to_value(&shape).expect("json");
+        assert_eq!(json["kind"], "Instance");
+        assert_eq!(json["symbol"], "y1");
+        assert_eq!(json["firstFrame"], 2);
+        assert_eq!(json["looping"], "playOnce");
+        assert_eq!(serde_json::from_value::<Shape>(json).expect("read"), shape);
+        let bare = serde_json::to_value(placement("y1", None)).expect("json");
+        assert!(bare.get("matrix").is_none());
+        assert_eq!(
+            serde_json::from_value::<Shape>(serde_json::json!({
+                "kind": "Instance",
+                "symbol": "y1"
+            }))
+            .expect("read"),
+            Shape::Instance {
+                symbol: "y1".to_string(),
+                name: String::new(),
+                matrix: None,
+                visible: true,
+                first_frame: 0,
+                looping: LoopMode::Loop,
+            }
+        );
+    }
+
+    #[test]
+    fn a_library_symbol_round_trips_with_the_document() {
+        let fixture = Fixture::new("library");
+        let mut doc = fixture.doc.clone();
+        let layers = doc.scenes[0].layers.clone();
+        doc.symbols = vec![Symbol {
+            id: "y1".to_string(),
+            name: "Guy".to_string(),
+            kind: SymbolKind::MovieClip,
+            layers,
+        }];
+        let stored = serde_json::to_value(&doc).expect("json");
+        assert_eq!(stored["symbols"][0]["kind"], "movieClip");
+        let restored: Document = serde_json::from_value(stored).expect("read");
+        assert_eq!(restored, doc);
+        assert_eq!(restored.symbols[0].layers.len(), 1);
+    }
+
+    #[test]
+    fn an_older_document_has_an_empty_library() {
+        let fixture = Fixture::new("older-library");
+        let doc = fixture.doc.clone();
+        let mut stored = serde_json::to_value(&doc).expect("json");
+        stored
+            .as_object_mut()
+            .expect("map")
+            .remove("symbols")
+            .expect("library");
+        let restored: Document = serde_json::from_value(stored).expect("read");
+        assert!(restored.symbols.is_empty());
+        assert_eq!(restored.scenes, doc.scenes);
+    }
+
+    #[test]
+    fn a_placement_needs_a_library_symbol_and_a_finite_matrix() {
+        assert_eq!(
+            validate(&placement("", None)).unwrap_err(),
+            "a symbol instance needs a library symbol"
+        );
+        assert_eq!(
+            validate(&placement(&"y".repeat(300), None)).unwrap_err(),
+            "a symbol instance needs a library symbol"
+        );
+        assert_eq!(
+            validate(&placement(
+                "y1",
+                Some(Affine {
+                    a: f64::NAN,
+                    ..Affine::default()
+                })
+            ))
+            .unwrap_err(),
+            "symbol instance matrix must be finite"
+        );
+        assert_eq!(
+            validate(&Shape::Instance {
+                symbol: "y1".to_string(),
+                name: "h".repeat(300),
+                matrix: None,
+                visible: true,
+                first_frame: 0,
+                looping: LoopMode::Loop,
+            })
+            .unwrap_err(),
+            "symbol instance names must stay short"
+        );
+        assert!(validate(&placement("y1", Some(Affine::default()))).is_ok());
+    }
+
+    #[test]
+    fn moving_a_placement_composes_its_matrix() {
+        let moved = transform_shape(
+            &placement(
+                "y1",
+                Some(Affine {
+                    a: 2.0,
+                    b: 0.0,
+                    c: 0.0,
+                    d: 2.0,
+                    e: 10.0,
+                    f: 20.0,
+                }),
+            ),
+            &Affine {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                e: 5.0,
+                f: -4.0,
+            },
+            1.0,
+            1.0,
+            0.0,
+        )
+        .expect("move");
+        assert_eq!(
+            moved,
+            placement(
+                "y1",
+                Some(Affine {
+                    a: 2.0,
+                    b: 0.0,
+                    c: 0.0,
+                    d: 2.0,
+                    e: 15.0,
+                    f: 16.0,
+                })
+            )
+        );
+        let dropped = transform_shape(
+            &placement("y1", None),
+            &Affine {
+                a: 3.0,
+                b: 0.0,
+                c: 0.0,
+                d: 3.0,
+                e: 0.0,
+                f: 0.0,
+            },
+            3.0,
+            3.0,
+            0.0,
+        )
+        .expect("scale");
+        assert_eq!(
+            dropped,
+            placement(
+                "y1",
+                Some(Affine {
+                    a: 3.0,
+                    b: 0.0,
+                    c: 0.0,
+                    d: 3.0,
+                    e: 0.0,
+                    f: 0.0,
+                })
+            )
+        );
+    }
+
+    #[test]
+    fn a_placement_is_hit_at_its_own_origin() {
+        let at = placement(
+            "y1",
+            Some(Affine {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                e: 10.0,
+                f: 20.0,
+            }),
+        );
+        let bounds = shape_bounds(&at);
+        assert_eq!((bounds.x, bounds.y, bounds.w, bounds.h), (10.0, 20.0, 0.0, 0.0));
+        assert!(shape_hit(&at, &Point { x: 11.0, y: 20.0 }, 2.0));
+        assert!(!shape_hit(&at, &Point { x: 40.0, y: 20.0 }, 2.0));
     }
 }
 

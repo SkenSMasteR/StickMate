@@ -85,7 +85,27 @@ export type Shape =
       gradient?: Gradient | null;
     }
   | { kind: "Group"; children: Shape[] }
-  | { kind: "Figure"; figure: Figure };
+  | { kind: "Figure"; figure: Figure }
+  | {
+      kind: "Instance";
+      symbol: string;
+      name: string;
+      matrix?: Affine | null;
+      visible: boolean;
+      firstFrame: number;
+      looping: LoopMode;
+    };
+
+export type SymbolKind = "graphic" | "movieClip" | "button";
+
+export type LoopMode = "loop" | "playOnce" | "singleFrame";
+
+export interface SymbolDef {
+  id: string;
+  name: string;
+  kind: SymbolKind;
+  layers: Layer[];
+}
 
 export interface Bone {
   parent: number | null;
@@ -375,6 +395,10 @@ export function shapeBounds(shape: Shape): Bounds {
         h: 0
       }
     );
+  }
+  if (shape.kind === "Instance") {
+    const at = shape.matrix ? applyAffine(shape.matrix, { x: 0, y: 0 }) : { x: 0, y: 0 };
+    return { x: at.x, y: at.y, w: 0, h: 0 };
   }
   return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
 }
@@ -881,6 +905,7 @@ export interface Document {
   fps: number;
   background: string;
   scenes: Scene[];
+  symbols?: SymbolDef[];
 }
 
 export interface EvalMask {

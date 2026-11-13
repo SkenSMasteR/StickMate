@@ -167,6 +167,19 @@ fn check_shape(shape: &Shape) -> Result<(), String> {
             !children.is_empty() && children.iter().try_for_each(check_shape).is_ok()
         }
         Shape::Figure { figure } => check_figure(figure),
+        Shape::Instance {
+            symbol,
+            matrix,
+            name,
+            ..
+        } => {
+            !symbol.is_empty()
+                && symbol.len() <= 256
+                && name.len() <= 256
+                && matrix.as_ref().map_or(true, |m| {
+                    [m.a, m.b, m.c, m.d, m.e, m.f].iter().all(|v| v.is_finite())
+                })
+        }
     };
     if valid {
         Ok(())
@@ -318,6 +331,7 @@ pub(crate) fn converted(
         | Shape::Polygon { width, .. }
         | Shape::Path { width, .. } => *width *= scale,
         Shape::Text { .. } | Shape::Group { .. } | Shape::Figure { .. } | Shape::Bitmap { .. } => {}
+        Shape::Instance { .. } => {}
     }
     check_shape(&result)?;
     Ok(result)
@@ -532,6 +546,13 @@ mod tests {
                 x: figure.x,
                 y: figure.y,
             },
+            Shape::Instance { matrix, .. } => {
+                let place = matrix.unwrap_or_default();
+                Point {
+                    x: place.e,
+                    y: place.f,
+                }
+            }
         }
     }
 
@@ -639,6 +660,48 @@ mod tests {
         let shapes = shapes(&pasted.document, &target);
         assert_eq!(shapes.len(), 1);
         assert_eq!(shapes[0], picture(50.0, 0.0, 20.0, 10.0));
+    }
+
+    #[test]
+    fn a_pasted_placement_keeps_its_library_symbol() {
+        let stage = Stage::new("placement-zoom");
+        stage.draw(
+            &stage.source.clone(),
+            Shape::Instance {
+                symbol: "y1".to_string(),
+                name: "hero".to_string(),
+                matrix: None,
+                visible: false,
+                first_frame: 3,
+                looping: crate::document::LoopMode::PlayOnce,
+            },
+        );
+        stage.set(&stage.source.clone(), transform(20.0, 30.0, 2.0, 0.0));
+        let clip = stage.copy(&stage.source.clone(), vec![0]).expect("copy");
+        let target = stage.add_layer();
+        let pasted = stage.paste(&target, clip).expect("paste");
+        let moved = shapes(&pasted.document, &target);
+        assert_eq!(moved.len(), 1);
+        match &moved[0] {
+            Shape::Instance {
+                symbol,
+                name,
+                matrix,
+                visible,
+                first_frame,
+                looping,
+            } => {
+                assert_eq!(symbol, "y1");
+                assert_eq!(name, "hero");
+                assert!(!visible);
+                assert_eq!(*first_frame, 3);
+                assert_eq!(*looping, crate::document::LoopMode::PlayOnce);
+                let place = matrix.expect("placement matrix");
+                assert_eq!((place.a, place.d), (2.0, 2.0));
+                assert!(close(&anchor(&moved[0]), 20.0, 30.0));
+            }
+            other => panic!("expected a placement, got {other:?}"),
+        }
     }
 
     #[test]

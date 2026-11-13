@@ -371,6 +371,7 @@ mod tests {
                     name: "Scene 1".to_string(),
                     layers: vec![layer],
                 }],
+                symbols: Vec::new(),
             };
             let dir = std::env::temp_dir().join(format!("stickmate-frames-{tag}-{}", new_id("t")));
             fs::create_dir_all(&dir).expect("dir");

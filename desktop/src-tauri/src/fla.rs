@@ -215,6 +215,7 @@ struct Gaps {
     opacity: bool,
     tween: bool,
     figure: bool,
+    symbols: bool,
 }
 
 fn scan_layers(layers: &[Layer], gaps: &mut Gaps) {
@@ -226,11 +227,20 @@ fn scan_layers(layers: &[Layer], gaps: &mut Gaps) {
             gaps.tween |= key.tween;
             gaps.opacity |= key.transform.opacity < 0.999;
             for shape in &key.shapes {
+                gaps.symbols |= has_placement(shape);
                 gaps.gradient |= has_gradient(shape);
                 gaps.figure |= has_figure(shape);
             }
         }
         scan_layers(&layer.children, gaps);
+    }
+}
+
+fn has_placement(shape: &Shape) -> bool {
+    match shape {
+        Shape::Instance { .. } => true,
+        Shape::Group { children } => children.iter().any(has_placement),
+        _ => false,
     }
 }
 
@@ -276,6 +286,9 @@ pub fn export_warnings(doc: &Document) -> Vec<String> {
     }
     if gaps.figure {
         warnings.push("stick figures are exported as the lines they draw, without the rig".to_string());
+    }
+    if gaps.symbols {
+        warnings.push("symbol instances are not exported".to_string());
     }
     warnings
 }
@@ -394,6 +407,9 @@ pub fn validate_import(doc: &Document) -> Result<(), String> {
     for scene in &doc.scenes {
         validate_import_layers(&scene.layers)?;
     }
+    for symbol in &doc.symbols {
+        validate_import_layers(&symbol.layers)?;
+    }
     Ok(())
 }
 
@@ -438,6 +454,7 @@ mod tests {
                 name: "Scene 1".to_string(),
                 layers: Vec::new(),
             }],
+            symbols: Vec::new(),
         }
     }
 
@@ -559,14 +576,34 @@ mod tests {
     fn import_refuses_shapes_the_editor_cannot_hold() {
         let dir = scratch("refuse");
         let store = DocStore::load(dir.clone());
-        let body = "<DOMDocument xmlns=\"http://ns.adobe.com/xfl/2008/\" width=\"640\" height=\"360\" frameRate=\"12.0000\"><timelines><DOMTimeline name=\"Scene 1\"><layers><DOMLayer name=\"Art\"><frames><DOMFrame index=\"0\" duration=\"1\" keyMode=\"9728\"><elements><DOMShape><fills><FillStyle index=\"1\"><SolidColor color=\"#ff0000\"/></FillStyle></fills><edges><Edge fillStyle1=\"1\" edges=\"!0 0|100 0\"/></edges></DOMShape></elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>";
+        let body = "<DOMDocument xmlns=\"http://ns.adobe.com/xfl/2008/\" width=\"640\" height=\"360\" frameRate=\"12.0000\"><timelines><DOMTimeline name=\"Scene 1\"><layers><DOMLayer name=\"Art\"><frames><DOMFrame index=\"0\" duration=\"1\" keyMode=\"9728\"><elements><DOMShape><strokes><StrokeStyle index=\"1\"><SolidStroke scaleMode=\"none\" caps=\"none\" w=\"6000\"><SolidColor color=\"#000000\"/></SolidStroke></StrokeStyle></strokes><edges><Edge strokeStyle=\"1\" edges=\"!0 0|100 0\"/></edges></DOMShape></elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>";
         let outcome = import_members(&store, "Broken", body.as_bytes(), &[]);
         match outcome {
             Ok(_) => panic!("a document the editor cannot hold must not import"),
-            Err(error) => assert_eq!(error, "closed path needs at least 3 nodes"),
+            Err(error) => assert_eq!(error, "width must be between 0.5 and 200"),
         }
         assert_eq!(store.list().expect("list").len(), 0);
         fs::remove_dir_all(&dir).expect("clean");
+    }
+
+    fn placement_key() -> crate::document::Keyframe {
+        crate::document::Keyframe {
+            frame: 0,
+            shapes: vec![Shape::Group {
+                children: vec![Shape::Instance {
+                    symbol: "y1".to_string(),
+                    name: "hero".to_string(),
+                    matrix: None,
+                    visible: true,
+                    first_frame: 0,
+                    looping: crate::document::LoopMode::Loop,
+                }],
+            }],
+            transform: Transform::default(),
+            tween: false,
+            easing: crate::document::Easing::linear(),
+            label: None,
+        }
     }
 
     fn plain_layer() -> Layer {
@@ -641,6 +678,13 @@ mod tests {
         let warnings = export_warnings(&doc);
         assert!(!warnings.iter().any(|text| text.starts_with("placed images")));
         assert!(!warnings.iter().any(|text| text.starts_with("stick figures")));
+        assert!(!warnings.iter().any(|text| text.starts_with("symbol instances")));
+        doc.scenes[0].layers[0].keys.push(placement_key());
+        let warnings = export_warnings(&doc);
+        assert_eq!(
+            warnings.last().map(String::as_str),
+            Some("symbol instances are not exported")
+        );
         let members = archive_members(&doc);
         assert_eq!(
             member_bytes(&members, "LIBRARY/Bitmap 1.png"),

@@ -720,7 +720,7 @@ function pathCommands(shape: Extract<Shape, { kind: "Path" }>): Array<string | n
   return out;
 }
 
-function normalShape(shape: Exclude<Shape, { kind: "Group" | "Figure" }>): NormalShape | null {
+function normalShape(shape: Exclude<Shape, { kind: "Group" | "Figure" | "Instance" }>): NormalShape | null {
   if (shape.kind === "Stroke") {
     if (shape.points.length < 2) {
       return null;
@@ -798,6 +798,9 @@ function normalShapes(shape: Shape): NormalShape[] {
         : []),
       ...bone.art.flatMap(normalShapes)
     ]);
+  }
+  if (shape.kind === "Instance") {
+    return [];
   }
   const single = normalShape(shape);
   return single ? [single] : [];
