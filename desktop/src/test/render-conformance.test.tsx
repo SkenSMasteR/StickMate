@@ -96,6 +96,9 @@ function shapePaintFill(shape: Extract<Shape, { fill: string }>): string {
 }
 
 function tracePaintFill(value: unknown): string {
+  if (value === "transparent") {
+    return "none";
+  }
   if (typeof value === "string") {
     return value;
   }
@@ -1343,7 +1346,7 @@ function fromTrace(log: Entry[]): { background: string | null; layers: NormalLay
       continue;
     }
     if (name === "set:strokeStyle") {
-      stroke = String(entry[2]);
+      stroke = entry[2] === "transparent" ? "none" : String(entry[2]);
       continue;
     }
     if (name === "set:lineWidth") {

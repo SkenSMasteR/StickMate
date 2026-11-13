@@ -611,4 +611,40 @@ describe("export runtime", () => {
     expect(boxes(player, 1)).toEqual([[20, 0, 4, 4]]);
     expect(boxes(player, 2)).toEqual([[0, 0, 4, 4]]);
   });
+
+  test("unpainted ink reaches the canvas as transparent", () => {
+    const hollow: Shape = {
+      kind: "Rect",
+      x: 0,
+      y: 0,
+      w: 8,
+      h: 8,
+      fill: "none",
+      stroke: "#000000",
+      width: 1
+    };
+    const air: Shape = {
+      kind: "Stroke",
+      points: [
+        { x: 0, y: 10 },
+        { x: 20, y: 10 }
+      ],
+      color: "none",
+      width: 2
+    };
+    const { player } = mountPlayer(
+      project({
+        symbols: [sym("hollow", [layer("h", { keys: [key(0, [hollow])] })])],
+        scenes: [scene("s0", [layer("l0", { keys: [key(0, [hollow, air, place("hollow")])] })])]
+      })
+    );
+    log = [];
+    player.seek(0);
+    const inks = log
+      .filter((call) => call[1] === "set:fillStyle" || call[1] === "set:strokeStyle")
+      .map((call) => String(call[2]));
+    expect(inks).toContain("transparent");
+    expect(inks).not.toContain("none");
+    expect(inks).not.toContain("");
+  });
 });

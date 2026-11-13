@@ -223,10 +223,14 @@
     return [cx - dx * half, cy - dy * half, cx + dx * half, cy + dy * half, 0];
   }
 
+  function ink(value) {
+    return value === "none" || value === "" ? "transparent" : value;
+  }
+
   function fillStyle(ctx, shape) {
     var gradient = gradientOf(shape);
     if (!gradient) {
-      return shape.fill;
+      return ink(shape.fill);
     }
     var parts = gradientGeometry(gradientBox(shape), gradient);
     var paint =
@@ -802,6 +806,7 @@
     for (let position = 0; position < symbols.length; position += 1) {
       if (symbols[position].id === shape.symbol) {
         index = position;
+        break;
       }
     }
     if (index < 0) {
@@ -1130,7 +1135,7 @@
         ctx.translate(place.base.x, place.base.y);
         ctx.rotate(place.angle);
         if (bone.length > 0) {
-          ctx.strokeStyle = bone.color;
+          ctx.strokeStyle = ink(bone.color);
           ctx.lineWidth = Math.max(bone.width, 1);
           ctx.lineCap = "round";
           ctx.beginPath();
@@ -1149,7 +1154,7 @@
       if (shape.points.length < 2) {
         return;
       }
-      ctx.strokeStyle = shape.color;
+      ctx.strokeStyle = ink(shape.color);
       ctx.lineWidth = shape.width;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -1167,7 +1172,7 @@
         const m = shape.matrix;
         ctx.transform(m.a, m.b, m.c, m.d, m.e, m.f);
       }
-      ctx.fillStyle = shape.color;
+      ctx.fillStyle = ink(shape.color);
       ctx.font = shape.size + "px " + shape.family;
       ctx.textBaseline = "hanging";
       ctx.letterSpacing = (shape.spacing || 0) + "px";
@@ -1185,7 +1190,7 @@
       if (shape.closed) {
         ctx.fillStyle = fillStyle(ctx, shape);
       }
-      ctx.strokeStyle = shape.stroke;
+      ctx.strokeStyle = ink(shape.stroke);
       ctx.lineWidth = shape.width;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -1221,7 +1226,7 @@
       return;
     }
     ctx.fillStyle = fillStyle(ctx, shape);
-    ctx.strokeStyle = shape.stroke;
+    ctx.strokeStyle = ink(shape.stroke);
     ctx.lineWidth = shape.width;
     ctx.lineCap = "butt";
     ctx.lineJoin = shape.kind === "Polygon" ? "round" : "miter";
