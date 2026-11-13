@@ -17,7 +17,17 @@ import {
   shapeGradient,
   textLinePositions
 } from "@/lib/document";
-import type { Blend, EvalLayer, Keyframe, Layer, Scene, Shape, Transform } from "@/lib/document";
+import type {
+  Blend,
+  EvalLayer,
+  Keyframe,
+  Layer,
+  Point,
+  Scene,
+  Shape,
+  SymbolDef,
+  Transform
+} from "@/lib/document";
 import source from "@/export/runtime.js?raw";
 import { installBackend, store } from "./backend";
 import { flush, getCanvas, press } from "./utils";
@@ -699,6 +709,107 @@ function figureFixture(): Scene[] {
   return [{ id: "s0", name: "Scene 1", layers: [leafLayer("rig", "Rig", [rig, walker])] }];
 }
 
+function placed(symbol: string, patch: Partial<Extract<Shape, { kind: "Instance" }>> = {}): Shape {
+  return {
+    kind: "Instance",
+    symbol,
+    name: "hero",
+    matrix: null,
+    visible: true,
+    firstFrame: 0,
+    looping: "loop",
+    ...patch
+  };
+}
+
+function symbolFixture(): SymbolDef[] {
+  const bar: Shape = {
+    kind: "Rect",
+    x: 0,
+    y: 0,
+    w: 8,
+    h: 4,
+    fill: "#ef4444",
+    stroke: "#111827",
+    width: 2,
+    gradient: null
+  };
+  const dot: Shape = {
+    kind: "Ellipse",
+    x: 2,
+    y: 3,
+    w: 10,
+    h: 6,
+    fill: "#22c55e",
+    stroke: "none",
+    width: 0,
+    gradient: null
+  };
+  const walk = (at: Point): Shape[] => [
+    { ...bar, x: bar.x + at.x, y: bar.y + at.y },
+    { ...dot, x: dot.x + at.x, y: dot.y + at.y }
+  ];
+  return [
+    {
+      id: "y-dot",
+      name: "Dot",
+      kind: "graphic",
+      layers: [
+        leafLayer("y-dot-1", "Art", [bar]),
+        leafLayer("y-dot-2", "Fade", [dot], { opacity: 0.5 }),
+        folderLayer(
+          "y-dot-3",
+          "Deep",
+          [
+            leafLayer("y-dot-4", "Nest", [
+              placed("y-walk", { looping: "singleFrame", firstFrame: 2 })
+            ]),
+            leafLayer("y-dot-5", "Gone", [bar], { visible: false }),
+            leafLayer("y-dot-6", "Self", [placed("y-dot")])
+          ],
+          { opacity: 0.75 }
+        )
+      ]
+    },
+    {
+      id: "y-walk",
+      name: "Walk",
+      kind: "graphic",
+      layers: [
+        leafLayer("y-walk-1", "Steps", walk({ x: 0, y: 0 }), {
+          length: 3,
+          keys: [key(0, walk({ x: 0, y: 0 })), key(1, walk({ x: 5, y: 0 })), key(2, walk({ x: 0, y: 6 }))]
+        })
+      ]
+    }
+  ];
+}
+
+function placementFixture(): Scene[] {
+  const turn = affineFrom({ x: 0, y: 0 }, 0, 0, 1, 1, 30);
+  return [
+    {
+      id: "s0",
+      name: "Scene 1",
+      layers: [
+        leafLayer("p-grow", "Grow", [
+          placed("y-dot", { matrix: { a: 2, b: 0, c: 0, d: 2, e: 10, f: 4 } })
+        ]),
+        leafLayer("p-provider", "Provider", [
+          { kind: "Rect", x: 6, y: 6, w: 20, h: 20, fill: "#0ea5e9", stroke: "none", width: 0, gradient: null }
+        ]),
+        leafLayer("p-clipped", "Clipped", [placed("y-dot")], { masked: true }),
+        leafLayer("p-turn", "Turn", [
+          placed("y-dot", { matrix: turn, looping: "playOnce", firstFrame: 1 })
+        ]),
+        leafLayer("p-loop", "Loop", [placed("y-walk", { looping: "loop", firstFrame: 1 })]),
+        leafLayer("p-gone", "Gone", [placed("y-dot", { visible: false })]),
+        leafLayer("p-missing", "Missing", [placed("y-nope")])
+      ]
+    }
+  ];
+}
+
 function flat(points: Array<{ x: number; y: number }>): number[] {
   return points.flatMap((point) => [point.x, point.y]);
 }
@@ -1368,7 +1479,7 @@ function recorder(index: number): CanvasRenderingContext2D {
   return target as unknown as CanvasRenderingContext2D;
 }
 
-type Fixture = "shapes" | "folders" | "figure";
+type Fixture = "shapes" | "folders" | "figure" | "placements";
 
 function scenesFor(fixture: Fixture): Scene[] {
   if (fixture === "folders") {
@@ -1377,7 +1488,14 @@ function scenesFor(fixture: Fixture): Scene[] {
   if (fixture === "figure") {
     return figureFixture();
   }
+  if (fixture === "placements") {
+    return placementFixture();
+  }
   return fixtureScenes();
+}
+
+function libraryFor(fixture: Fixture): SymbolDef[] {
+  return fixture === "placements" ? symbolFixture() : [];
 }
 
 function payload(scale = 1, fixture: Fixture = "shapes") {
@@ -1389,6 +1507,7 @@ function payload(scale = 1, fixture: Fixture = "shapes") {
     fps: 10,
     background: "#ffffff",
     scenes: scenesFor(fixture),
+    symbols: libraryFor(fixture),
     loop: false,
     scale,
     startFrame: 0,
@@ -1424,6 +1543,7 @@ async function mountEditor(fixture: Fixture = "shapes"): Promise<{
     throw new Error("document is not in the store");
   }
   state.doc.scenes = scenesFor(fixture);
+  state.doc.symbols = libraryFor(fixture);
   render(<App />);
   await act(async () => {
     await emit("editor-open", doc.id);
@@ -1518,7 +1638,53 @@ describe("editor and export renderer conformance", () => {
     expect(limbs[0]).toMatchObject({ points: [0, 0, 26, 0], color: "#27272a", width: 4 });
   });
 
-  test("every shape kind survives the round trip", async () => {    const { svg } = await mountEditor();
+  test("library placements paint their artwork in both renderers", async () => {
+    const { id, svg } = await mountEditor("placements");
+    const evaluated = await docEvaluate(id, "s0", 0, 2);
+    expect(fromSvg(svg)).toEqual(fromEvaluation(evaluated[0].layers));
+    for (const frame of evaluated) {
+      const expected = fromEvaluation(frame.layers);
+      expect(traceAt(frame.frame, 1, "placements")).toEqual(expected);
+    }
+    const [grow, provider, clipped, turn, loop, gone, missing] =
+      fromEvaluation(evaluated[0].layers);
+    expect(grow.shapes.map((shape) => shape.kind)).toEqual([
+      "Rect",
+      "Ellipse",
+      "Rect",
+      "Ellipse"
+    ]);
+    expect(grow.shapes.map((shape) => (shape as { box: number[] }).box)).toEqual([
+      [10, 4, 16, 8],
+      [24, 16, 10, 6],
+      [10, 16, 16, 8],
+      [24, 28, 10, 6]
+    ]);
+    expect(grow.shapes[1]).toMatchObject({ paint: { fill: "#22c55e80" } });
+    expect(grow.shapes[2]).toMatchObject({ paint: { fill: "#ef4444bf" } });
+    expect(clipped.shapes).toHaveLength(4);
+    expect(clipped.mask?.shapes).toEqual(provider.shapes);
+    expect(turn.shapes.map((shape) => shape.kind)).toEqual(["Path", "Path", "Path", "Path"]);
+    expect(gone.shapes).toHaveLength(0);
+    expect(missing.shapes).toHaveLength(0);
+    expect(loop.shapes.map((shape) => (shape as { box: number[] }).box)).toEqual([
+      [5, 0, 8, 4],
+      [12, 6, 5, 3]
+    ]);
+    const walked = evaluated.map(
+      (frame) =>
+        fromEvaluation(frame.layers)[4].shapes.map((shape) => (shape as { box: number[] }).box[0]) ??
+        []
+    );
+    expect(walked).toEqual([
+      [5, 12],
+      [0, 7],
+      [5, 12]
+    ]);
+  });
+
+  test("every shape kind survives the round trip", async () => {
+    const { svg } = await mountEditor();
     const kinds = fromSvg(svg)[0].shapes.map((shape) => shape.kind);
     expect(kinds).toEqual([
       "Stroke",

@@ -2055,16 +2055,26 @@ impl Document {
         let index = self.scene_index(scene_id)?;
         Ok(EvalFrame {
             frame,
-            layers: evaluate_layers(&self.scenes[index].layers, frame),
+            layers: evaluate_layers(
+                &self.scenes[index].layers,
+                frame,
+                &self.symbols,
+                &mut Placements::default(),
+            ),
         })
     }
 }
 
-fn evaluate_layers(layers: &[Layer], frame: u32) -> Vec<EvalLayer> {
+fn evaluate_layers(
+    layers: &[Layer],
+    frame: u32,
+    symbols: &[Symbol],
+    book: &mut Placements,
+) -> Vec<EvalLayer> {
     let mut evaluated = Vec::new();
     for (position, layer) in layers.iter().enumerate() {
         let mut item = if layer.folder {
-            match evaluate_folder(layer, frame) {
+            match evaluate_folder(layer, frame, symbols, book) {
                 Some(item) => item,
                 None => continue,
             }
@@ -2074,19 +2084,28 @@ fn evaluate_layers(layers: &[Layer], frame: u32) -> Vec<EvalLayer> {
                 None => continue,
             }
         };
+        if !layer.folder {
+            let elapsed = frame - held_frame(layer, frame);
+            item.shapes = expand_shapes(&item.shapes, elapsed, symbols, book);
+        }
         if layer.masked && position > 0 {
-            item.mask = mask_from(&layers[position - 1], frame);
+            item.mask = mask_from(&layers[position - 1], frame, symbols, book);
         }
         evaluated.push(item);
     }
     evaluated
 }
 
-fn evaluate_folder(folder: &Layer, frame: u32) -> Option<EvalLayer> {
+fn evaluate_folder(
+    folder: &Layer,
+    frame: u32,
+    symbols: &[Symbol],
+    book: &mut Placements,
+) -> Option<EvalLayer> {
     if !folder.visible {
         return None;
     }
-    let children = evaluate_layers(&folder.children, frame);
+    let children = evaluate_layers(&folder.children, frame, symbols, book);
     if children.is_empty() {
         return None;
     }
@@ -2557,15 +2576,293 @@ pub fn evaluate_layer(layer: &Layer, frame: u32) -> Option<EvalLayer> {
     })
 }
 
-fn mask_from(layer: &Layer, frame: u32) -> Option<EvalMask> {
+fn mask_from(
+    layer: &Layer,
+    frame: u32,
+    symbols: &[Symbol],
+    book: &mut Placements,
+) -> Option<EvalMask> {
     if layer.folder || !layer.visible || frame >= layer.length {
         return None;
     }
     let evaluated = evaluate_layer(layer, frame)?;
+    let elapsed = frame.saturating_sub(held_frame(layer, frame));
     Some(EvalMask {
         transform: evaluated.transform,
-        shapes: evaluated.shapes,
+        shapes: expand_shapes(&evaluated.shapes, elapsed, symbols, book),
     })
+}
+
+#[derive(Default)]
+struct Placements {
+    memo: HashMap<(usize, u32), Vec<Shape>>,
+    chain: Vec<usize>,
+}
+
+impl Symbol {
+    pub(crate) fn length(&self) -> u32 {
+        self.layers
+            .iter()
+            .map(|layer| layer.length)
+            .max()
+            .unwrap_or(1)
+            .max(1)
+    }
+}
+
+fn held_frame(layer: &Layer, frame: u32) -> u32 {
+    layer
+        .held_index(frame)
+        .map(|index| layer.keys[index].frame)
+        .unwrap_or(frame)
+}
+
+fn local_frame(length: u32, looping: LoopMode, first: u32, elapsed: u32) -> u32 {
+    match looping {
+        LoopMode::SingleFrame => first,
+        LoopMode::PlayOnce => (first + elapsed).min(length.saturating_sub(1)),
+        LoopMode::Loop => {
+            if first >= length {
+                return first;
+            }
+            first + elapsed % (length - first)
+        }
+    }
+}
+
+fn decompose(matrix: &Affine) -> (f64, f64, f64) {
+    (
+        (matrix.a * matrix.a + matrix.b * matrix.b).sqrt(),
+        (matrix.c * matrix.c + matrix.d * matrix.d).sqrt(),
+        matrix.b.atan2(matrix.a) * 180.0 / std::f64::consts::PI,
+    )
+}
+
+fn curved_ellipse(shape: &Shape, rotation: f64) -> Shape {
+    match shape {
+        Shape::Ellipse {
+            x,
+            y,
+            w,
+            h,
+            fill,
+            stroke,
+            width,
+            gradient,
+        } if rotation % 90.0 != 0.0 => Shape::Path {
+            nodes: crate::xfl::ellipse_nodes(*x, *y, *w, *h),
+            closed: true,
+            fill: fill.clone(),
+            stroke: stroke.clone(),
+            width: *width,
+            gradient: rotated_gradient(gradient, rotation),
+        },
+        Shape::Group { children } => Shape::Group {
+            children: children
+                .iter()
+                .map(|child| curved_ellipse(child, rotation))
+                .collect(),
+        },
+        other => other.clone(),
+    }
+}
+
+fn bake(shape: &Shape, matrix: &Affine) -> Option<Shape> {
+    let (sx, sy, rotation) = decompose(matrix);
+    let ready = curved_ellipse(shape, rotation);
+    transform_shape(&ready, matrix, sx, sy, rotation).ok()
+}
+
+fn layer_matrix(place: &Transform) -> Affine {
+    affine_from(
+        &Point { x: 0.0, y: 0.0 },
+        place.x,
+        place.y,
+        place.scale,
+        place.scale,
+        place.rotation,
+    )
+}
+
+fn shade(value: &str, opacity: f64) -> String {
+    if opacity >= 0.999 || !value.starts_with('#') {
+        return value.to_string();
+    }
+    let (hex, alpha) = crate::xfl::color_alpha(value);
+    let byte = (alpha * opacity.clamp(0.0, 1.0) * 255.0).round() as u32;
+    format!("{hex}{byte:02x}")
+}
+
+fn tinted(shape: &Shape, opacity: f64) -> Shape {
+    let mut out = shape.clone();
+    if opacity >= 0.999 {
+        return out;
+    }
+    match &mut out {
+        Shape::Stroke { color, .. } => *color = shade(color, opacity),
+        Shape::Text { color, .. } => *color = shade(color, opacity),
+        Shape::Rect {
+            fill,
+            stroke,
+            gradient,
+            ..
+        }
+        | Shape::Ellipse {
+            fill,
+            stroke,
+            gradient,
+            ..
+        }
+        | Shape::Polygon {
+            fill,
+            stroke,
+            gradient,
+            ..
+        }
+        | Shape::Path {
+            fill,
+            stroke,
+            gradient,
+            ..
+        } => {
+            *fill = shade(fill, opacity);
+            *stroke = shade(stroke, opacity);
+            if let Some(value) = gradient {
+                let stops = match value {
+                    Gradient::Linear { stops, .. } | Gradient::Radial { stops } => stops,
+                };
+                for stop in stops {
+                    stop.color = shade(&stop.color, opacity);
+                }
+            }
+        }
+        Shape::Group { children } => {
+            for child in children {
+                *child = tinted(child, opacity);
+            }
+        }
+        Shape::Figure { figure } => {
+            for bone in &mut figure.bones {
+                bone.color = shade(&bone.color, opacity);
+                for item in &mut bone.art {
+                    *item = tinted(item, opacity);
+                }
+            }
+        }
+        Shape::Bitmap { .. } | Shape::Instance { .. } => {}
+    }
+    out
+}
+
+fn expand_shapes(
+    shapes: &[Shape],
+    elapsed: u32,
+    symbols: &[Symbol],
+    book: &mut Placements,
+) -> Vec<Shape> {
+    shapes
+        .iter()
+        .flat_map(|shape| expand_shape(shape, elapsed, symbols, book))
+        .collect()
+}
+
+fn expand_shape(
+    shape: &Shape,
+    elapsed: u32,
+    symbols: &[Symbol],
+    book: &mut Placements,
+) -> Vec<Shape> {
+    match shape {
+        Shape::Instance {
+            symbol,
+            matrix,
+            visible,
+            first_frame,
+            looping,
+            ..
+        } => {
+            if !visible {
+                return Vec::new();
+            }
+            let Some(index) = symbols.iter().position(|item| item.id == *symbol) else {
+                return vec![shape.clone()];
+            };
+            let local = local_frame(
+                symbols[index].length(),
+                *looping,
+                *first_frame,
+                elapsed,
+            );
+            let place = instance_matrix(matrix);
+            vec![Shape::Group {
+                children: symbol_shapes(index, local, symbols, book)
+                    .into_iter()
+                    .map(|item| bake(&item, &place).unwrap_or(item))
+                    .collect(),
+            }]
+        }
+        Shape::Group { children } => vec![Shape::Group {
+            children: expand_shapes(children, elapsed, symbols, book),
+        }],
+        other => vec![other.clone()],
+    }
+}
+
+fn symbol_shapes(
+    index: usize,
+    frame: u32,
+    symbols: &[Symbol],
+    book: &mut Placements,
+) -> Vec<Shape> {
+    if let Some(found) = book.memo.get(&(index, frame)) {
+        return found.clone();
+    }
+    if book.chain.contains(&index) {
+        return Vec::new();
+    }
+    let Some(symbol) = symbols.get(index) else {
+        return Vec::new();
+    };
+    book.chain.push(index);
+    let out = symbol_layers(&symbol.layers, frame, 1.0, symbols, book);
+    book.chain.pop();
+    book.memo.insert((index, frame), out.clone());
+    out
+}
+
+fn symbol_layers(
+    layers: &[Layer],
+    frame: u32,
+    opacity: f64,
+    symbols: &[Symbol],
+    book: &mut Placements,
+) -> Vec<Shape> {
+    let mut out = Vec::new();
+    for layer in layers {
+        if layer.folder {
+            out.extend(symbol_layers(
+                &layer.children,
+                frame,
+                opacity * layer.opacity,
+                symbols,
+                book,
+            ));
+            continue;
+        }
+        let Some(item) = evaluate_layer(layer, frame) else {
+            continue;
+        };
+        let ink = (opacity * item.opacity).clamp(0.0, 1.0);
+        let elapsed = frame.saturating_sub(held_frame(layer, frame));
+        let place = layer_matrix(&item.transform);
+        for shape in expand_shapes(&item.shapes, elapsed, symbols, book) {
+            match bake(&shape, &place) {
+                Some(moved) => out.push(tinted(&moved, ink)),
+                None => out.push(tinted(&shape, ink)),
+            }
+        }
+    }
+    out
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -11057,6 +11354,362 @@ mod tests {
         assert_eq!((bounds.x, bounds.y, bounds.w, bounds.h), (10.0, 20.0, 0.0, 0.0));
         assert!(shape_hit(&at, &Point { x: 11.0, y: 20.0 }, 2.0));
         assert!(!shape_hit(&at, &Point { x: 40.0, y: 20.0 }, 2.0));
+    }
+
+    fn plate(x: f64) -> Shape {
+        Shape::Rect {
+            x,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+            fill: "#ff0000".to_string(),
+            stroke: "none".to_string(),
+            width: 0.0,
+            gradient: None,
+        }
+    }
+
+    fn held(frame: u32, shapes: Vec<Shape>) -> Keyframe {
+        Keyframe {
+            frame,
+            shapes,
+            transform: Transform::default(),
+            tween: false,
+            easing: Easing::linear(),
+            label: None,
+        }
+    }
+
+    fn ink_layer(id: &str, opacity: f64, length: u32, keys: Vec<Keyframe>) -> Layer {
+        Layer {
+            id: id.to_string(),
+            name: "Art".to_string(),
+            visible: true,
+            locked: false,
+            opacity,
+            blend: Blend::Normal,
+            effects: Vec::new(),
+            masked: false,
+            length,
+            keys,
+            folder: false,
+            children: Vec::new(),
+        }
+    }
+
+    fn symbol(id: &str, layers: Vec<Layer>) -> Symbol {
+        Symbol {
+            id: id.to_string(),
+            name: "Hero".to_string(),
+            kind: SymbolKind::Graphic,
+            layers,
+        }
+    }
+
+    fn placed(symbol: &str, looping: LoopMode, first_frame: u32, visible: bool) -> Shape {
+        Shape::Instance {
+            symbol: symbol.to_string(),
+            name: "hero".to_string(),
+            matrix: None,
+            visible,
+            first_frame,
+            looping,
+        }
+    }
+
+    fn drawn(layers: &[EvalLayer]) -> Vec<Shape> {
+        let mut out = Vec::new();
+        for layer in layers {
+            out.extend(layer.shapes.iter().cloned());
+            out.extend(drawn(&layer.children));
+        }
+        out
+    }
+
+    fn boxes(shapes: &[Shape]) -> Vec<(f64, f64, f64, f64)> {
+        let mut out = Vec::new();
+        for shape in shapes {
+            match shape {
+                Shape::Rect { x, y, w, h, .. } => out.push((*x, *y, *w, *h)),
+                Shape::Group { children } => out.extend(boxes(children)),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn ink_of(shapes: &[Shape]) -> Vec<String> {
+        let mut out = Vec::new();
+        for shape in shapes {
+            match shape {
+                Shape::Rect { fill, .. } => out.push(fill.clone()),
+                Shape::Group { children } => out.extend(ink_of(children)),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_placement_draws_its_library_artwork() {
+        let fixture = Fixture::new("expand");
+        let mut doc = fixture.doc.clone();
+        doc.symbols = vec![symbol("y1", vec![ink_layer("s1", 1.0, 1, vec![held(0, vec![plate(5.0)])])])];
+        doc.scenes[0].layers[0].keys[0].shapes = vec![placement(
+            "y1",
+            Some(Affine {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                e: 20.0,
+                f: 30.0,
+            }),
+        )];
+        let frame = doc.evaluate(&doc.scenes[0].id.clone(), 0).expect("evaluate");
+        assert_eq!(boxes(&drawn(&frame.layers)), vec![(25.0, 30.0, 10.0, 10.0)]);
+    }
+
+    #[test]
+    fn a_scaled_placement_scales_its_artwork() {
+        let fixture = Fixture::new("expand-scale");
+        let mut doc = fixture.doc.clone();
+        doc.symbols = vec![symbol("y1", vec![ink_layer("s1", 1.0, 1, vec![held(0, vec![plate(10.0)])])])];
+        doc.scenes[0].layers[0].keys[0].shapes = vec![placement(
+            "y1",
+            Some(Affine {
+                a: 2.0,
+                b: 0.0,
+                c: 0.0,
+                d: 2.0,
+                e: 0.0,
+                f: 0.0,
+            }),
+        )];
+        let frame = doc.evaluate(&doc.scenes[0].id.clone(), 0).expect("evaluate");
+        assert_eq!(boxes(&drawn(&frame.layers)), vec![(20.0, 0.0, 20.0, 20.0)]);
+    }
+
+    #[test]
+    fn a_flipped_placement_mirrors_its_artwork() {
+        let fixture = Fixture::new("expand-flip");
+        let mut doc = fixture.doc.clone();
+        doc.symbols = vec![symbol("y1", vec![ink_layer("s1", 1.0, 1, vec![held(0, vec![plate(10.0)])])])];
+        doc.scenes[0].layers[0].keys[0].shapes = vec![placement(
+            "y1",
+            Some(Affine {
+                a: -1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                e: 100.0,
+                f: 0.0,
+            }),
+        )];
+        let frame = doc.evaluate(&doc.scenes[0].id.clone(), 0).expect("evaluate");
+        let shapes = drawn(&frame.layers);
+        let Shape::Group { children } = &shapes[0] else {
+            panic!("a flipped placement should draw a group");
+        };
+        assert!(matches!(&children[0], Shape::Path { closed: true, .. }));
+        let bounds = shape_bounds(&children[0]);
+        assert_eq!((bounds.x, bounds.y, bounds.w, bounds.h), (80.0, 0.0, 10.0, 10.0));
+    }
+
+    #[test]
+    fn a_rotated_placement_keeps_its_round_artwork_turned() {
+        let fixture = Fixture::new("expand-rotate");
+        let mut doc = fixture.doc.clone();
+        doc.symbols = vec![symbol(
+            "y1",
+            vec![ink_layer(
+                "s1",
+                1.0,
+                1,
+                vec![held(0, vec![ellipse_shape(0.0, 0.0, 10.0, 10.0)])],
+            )],
+        )];
+        let matrix = affine_from(&Point { x: 0.0, y: 0.0 }, 0.0, 0.0, 1.0, 1.0, 30.0);
+        doc.scenes[0].layers[0].keys[0].shapes = vec![placement("y1", Some(matrix.clone()))];
+        let frame = doc.evaluate(&doc.scenes[0].id.clone(), 0).expect("evaluate");
+        let shapes = drawn(&frame.layers);
+        let Shape::Group { children } = &shapes[0] else {
+            panic!("a placement should draw a group");
+        };
+        let Shape::Path { nodes, closed, .. } = &children[0] else {
+            panic!("a turned circle should draw as a path, got {:?}", children[0]);
+        };
+        assert!(closed);
+        assert_eq!(nodes.len(), 16);
+        let at = apply_affine(&matrix, &Point { x: 10.0, y: 5.0 });
+        close(nodes[0].point.x, at.x);
+        close(nodes[0].point.y, at.y);
+    }
+
+    #[test]
+    fn a_play_once_placement_freezes_on_its_last_frame() {
+        let fixture = Fixture::new("expand-once");
+        let mut doc = fixture.doc.clone();
+        doc.symbols = vec![symbol(
+            "y1",
+            vec![ink_layer(
+                "s1",
+                1.0,
+                3,
+                vec![held(0, vec![plate(0.0)]), held(2, vec![plate(40.0)])],
+            )],
+        )];
+        doc.scenes[0].layers[0].keys[0].shapes =
+            vec![placed("y1", LoopMode::PlayOnce, 0, true)];
+        doc.scenes[0].layers[0].length = 12;
+        let scene = doc.scenes[0].id.clone();
+        assert_eq!(
+            boxes(&drawn(&doc.evaluate(&scene, 0).expect("evaluate").layers)),
+            vec![(0.0, 0.0, 10.0, 10.0)]
+        );
+        assert_eq!(
+            boxes(&drawn(&doc.evaluate(&scene, 9).expect("evaluate").layers)),
+            vec![(40.0, 0.0, 10.0, 10.0)]
+        );
+    }
+
+    #[test]
+    fn a_looping_placement_wraps_inside_its_symbol() {
+        let fixture = Fixture::new("expand-loop");
+        let mut doc = fixture.doc.clone();
+        doc.symbols = vec![symbol(
+            "y1",
+            vec![ink_layer(
+                "s1",
+                1.0,
+                3,
+                vec![
+                    held(0, vec![plate(0.0)]),
+                    held(1, vec![plate(10.0)]),
+                    held(2, vec![plate(20.0)]),
+                ],
+            )],
+        )];
+        doc.scenes[0].layers[0].keys[0].shapes =
+            vec![placed("y1", LoopMode::Loop, 1, true)];
+        doc.scenes[0].layers[0].length = 12;
+        let scene = doc.scenes[0].id.clone();
+        let seen: Vec<f64> = (0..4)
+            .map(|frame| boxes(&drawn(&doc.evaluate(&scene, frame).expect("evaluate").layers))[0].0)
+            .collect();
+        assert_eq!(seen, vec![10.0, 20.0, 10.0, 20.0]);
+    }
+
+    #[test]
+    fn a_single_frame_placement_shows_only_its_start() {
+        let fixture = Fixture::new("expand-still");
+        let mut doc = fixture.doc.clone();
+        doc.symbols = vec![symbol(
+            "y1",
+            vec![ink_layer("s1", 1.0, 3, vec![held(0, vec![plate(0.0)]), held(2, vec![plate(40.0)])])],
+        )];
+        doc.scenes[0].layers[0].keys[0].shapes =
+            vec![placed("y1", LoopMode::SingleFrame, 2, true)];
+        doc.scenes[0].layers[0].length = 12;
+        let scene = doc.scenes[0].id.clone();
+        for frame in [0, 5] {
+            assert_eq!(
+                boxes(&drawn(&doc.evaluate(&scene, frame).expect("evaluate").layers)),
+                vec![(40.0, 0.0, 10.0, 10.0)],
+                "frame {frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hidden_placement_draws_nothing() {
+        let fixture = Fixture::new("expand-hidden");
+        let mut doc = fixture.doc.clone();
+        doc.symbols = vec![symbol("y1", vec![ink_layer("s1", 1.0, 1, vec![held(0, vec![plate(5.0)])])])];
+        doc.scenes[0].layers[0].keys[0].shapes = vec![placed("y1", LoopMode::Loop, 0, false)];
+        let scene = doc.scenes[0].id.clone();
+        assert!(drawn(&doc.evaluate(&scene, 0).expect("evaluate").layers).is_empty());
+    }
+
+    #[test]
+    fn a_placement_without_its_symbol_keeps_the_reference() {
+        let fixture = Fixture::new("expand-missing");
+        let mut doc = fixture.doc.clone();
+        doc.symbols = Vec::new();
+        doc.scenes[0].layers[0].keys[0].shapes = vec![placed("y1", LoopMode::Loop, 0, true)];
+        let scene = doc.scenes[0].id.clone();
+        let shapes = drawn(&doc.evaluate(&scene, 0).expect("evaluate").layers);
+        assert!(matches!(&shapes[0], Shape::Instance { symbol, .. } if symbol == "y1"));
+    }
+
+    #[test]
+    fn a_placement_inside_a_symbol_expands_too() {
+        let fixture = Fixture::new("expand-nested");
+        let mut doc = fixture.doc.clone();
+        doc.symbols = vec![
+            symbol("y1", vec![ink_layer("s1", 1.0, 1, vec![held(0, vec![plate(5.0)])])]),
+            symbol(
+                "y2",
+                vec![ink_layer("s2", 1.0, 1, vec![held(0, vec![placed("y1", LoopMode::Loop, 0, true)])])],
+            ),
+        ];
+        doc.scenes[0].layers[0].keys[0].shapes = vec![placed("y2", LoopMode::Loop, 0, true)];
+        let scene = doc.scenes[0].id.clone();
+        assert_eq!(
+            boxes(&drawn(&doc.evaluate(&scene, 0).expect("evaluate").layers)),
+            vec![(5.0, 0.0, 10.0, 10.0)]
+        );
+    }
+
+    #[test]
+    fn a_symbol_that_places_itself_stops_at_the_guard() {
+        let fixture = Fixture::new("expand-cycle");
+        let mut doc = fixture.doc.clone();
+        doc.symbols = vec![symbol(
+            "y1",
+            vec![ink_layer(
+                "s1",
+                1.0,
+                1,
+                vec![held(0, vec![plate(5.0), placed("y1", LoopMode::Loop, 0, true)])],
+            )],
+        )];
+        doc.scenes[0].layers[0].keys[0].shapes = vec![placed("y1", LoopMode::Loop, 0, true)];
+        let scene = doc.scenes[0].id.clone();
+        assert_eq!(
+            boxes(&drawn(&doc.evaluate(&scene, 0).expect("evaluate").layers)),
+            vec![(5.0, 0.0, 10.0, 10.0)]
+        );
+    }
+
+    #[test]
+    fn a_symbol_layer_dims_its_ink() {
+        let fixture = Fixture::new("expand-opacity");
+        let mut doc = fixture.doc.clone();
+        doc.symbols = vec![symbol("y1", vec![ink_layer("s1", 0.5, 1, vec![held(0, vec![plate(5.0)])])])];
+        doc.scenes[0].layers[0].keys[0].shapes = vec![placed("y1", LoopMode::Loop, 0, true)];
+        let scene = doc.scenes[0].id.clone();
+        assert_eq!(
+            ink_of(&drawn(&doc.evaluate(&scene, 0).expect("evaluate").layers)),
+            vec!["#ff000080".to_string()]
+        );
+    }
+
+    #[test]
+    fn two_placements_of_one_symbol_keep_two_slots() {
+        let fixture = Fixture::new("expand-slots");
+        let mut doc = fixture.doc.clone();
+        doc.symbols = vec![symbol("y1", vec![ink_layer("s1", 1.0, 1, vec![held(0, vec![plate(5.0)])])])];
+        doc.scenes[0].layers[0].keys[0].shapes = vec![
+            placed("y1", LoopMode::Loop, 0, true),
+            placed("y1", LoopMode::Loop, 0, true),
+        ];
+        let scene = doc.scenes[0].id.clone();
+        let shapes = drawn(&doc.evaluate(&scene, 0).expect("evaluate").layers);
+        assert_eq!(shapes.len(), 2);
+        assert!(shapes
+            .iter()
+            .all(|shape| matches!(shape, Shape::Group { children } if children.len() == 1)));
     }
 }
 

@@ -427,6 +427,441 @@
     return a;
   }
 
+  const IDENTITY_MATRIX = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+
+  function applyAffine(matrix, point) {
+    return {
+      x: matrix.a * point.x + matrix.c * point.y + matrix.e,
+      y: matrix.b * point.x + matrix.d * point.y + matrix.f
+    };
+  }
+
+  function composeAffine(outer, inner) {
+    return {
+      a: outer.a * inner.a + outer.c * inner.b,
+      b: outer.b * inner.a + outer.d * inner.b,
+      c: outer.a * inner.c + outer.c * inner.d,
+      d: outer.b * inner.c + outer.d * inner.d,
+      e: outer.a * inner.e + outer.c * inner.f + outer.e,
+      f: outer.b * inner.e + outer.d * inner.f + outer.f
+    };
+  }
+
+  function affineFrom(pivot, dx, dy, sx, sy, rotation) {
+    const angle = (rotation * Math.PI) / 180;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const a = cos * sx;
+    const b = sin * sx;
+    const c = -sin * sy;
+    const d = cos * sy;
+    return {
+      a: a,
+      b: b,
+      c: c,
+      d: d,
+      e: pivot.x - a * pivot.x - c * pivot.y + dx,
+      f: pivot.y - b * pivot.x - d * pivot.y + dy
+    };
+  }
+
+  function rotatedGradient(gradient, rotation) {
+    if (!gradient) {
+      return null;
+    }
+    return gradient.kind === "linear"
+      ? { kind: "linear", angle: gradient.angle + rotation, stops: gradient.stops }
+      : gradient;
+  }
+
+  function cornersPath(corners, matrix, fill, stroke, width, gradient) {
+    return {
+      kind: "Path",
+      nodes: corners.map(function (point) {
+        return { point: applyAffine(matrix, point), handle_in: null, handle_out: null };
+      }),
+      closed: true,
+      fill: fill,
+      stroke: stroke,
+      width: width,
+      gradient: gradient
+    };
+  }
+
+  function transformShape(shape, matrix, sx, sy, rotation) {
+    if (shape.kind === "Group") {
+      return {
+        kind: "Group",
+        children: shape.children.map(function (child) {
+          return transformShape(child, matrix, sx, sy, rotation);
+        })
+      };
+    }
+    if (shape.kind === "Figure") {
+      if (Math.abs(sx - sy) > 0.0001) {
+        throw new Error("a figure cannot be stretched in one direction");
+      }
+      const scale = Math.sqrt(matrix.a * matrix.d - matrix.b * matrix.c);
+      const grown = { a: scale, b: 0, c: 0, d: scale, e: 0, f: 0 };
+      const moved = applyAffine(matrix, { x: shape.figure.x, y: shape.figure.y });
+      return {
+        kind: "Figure",
+        figure: {
+          x: moved.x,
+          y: moved.y,
+          rotation: shape.figure.rotation + rotation,
+          bones: shape.figure.bones.map(function (bone) {
+            return {
+              parent: bone.parent,
+              anchor: { x: bone.anchor.x * scale, y: bone.anchor.y * scale },
+              length: bone.length * scale,
+              twist: bone.twist,
+              width: bone.width * scale,
+              color: bone.color,
+              art: bone.art.map(function (item) {
+                return transformShape(item, grown, scale, scale, 0);
+              })
+            };
+          })
+        }
+      };
+    }
+    if (shape.kind === "Instance") {
+      return {
+        ...shape,
+        matrix: composeAffine(matrix, shape.matrix || IDENTITY_MATRIX)
+      };
+    }
+    if (shape.kind === "Stroke") {
+      return {
+        ...shape,
+        points: shape.points.map(function (point) {
+          return applyAffine(matrix, point);
+        })
+      };
+    }
+    if (shape.kind === "Path") {
+      return {
+        ...shape,
+        nodes: shape.nodes.map(function (node) {
+          return {
+            point: applyAffine(matrix, node.point),
+            handle_in: node.handle_in ? applyAffine(matrix, node.handle_in) : null,
+            handle_out: node.handle_out ? applyAffine(matrix, node.handle_out) : null
+          };
+        })
+      };
+    }
+    if (shape.kind === "Text") {
+      if (!shape.matrix && rotation === 0 && sx === sy) {
+        const at = applyAffine(matrix, { x: shape.x, y: shape.y });
+        return {
+          ...shape,
+          x: at.x,
+          y: at.y,
+          size: shape.size * sx,
+          spacing: (shape.spacing || 0) * sx
+        };
+      }
+      return {
+        ...shape,
+        matrix: shape.matrix ? composeAffine(matrix, shape.matrix) : matrix
+      };
+    }
+    if (shape.kind === "Bitmap") {
+      if (!shape.matrix && rotation === 0 && sx === sy) {
+        const scale = Math.sqrt(matrix.a * matrix.d - matrix.b * matrix.c);
+        const at = applyAffine(matrix, { x: shape.x, y: shape.y });
+        return {
+          kind: "Bitmap",
+          x: at.x,
+          y: at.y,
+          w: shape.w * scale,
+          h: shape.h * scale,
+          source: shape.source
+        };
+      }
+      return {
+        ...shape,
+        matrix: shape.matrix ? composeAffine(matrix, shape.matrix) : matrix
+      };
+    }
+    if (shape.kind === "Ellipse" && rotation !== 0) {
+      if (rotation % 90 !== 0) {
+        throw new Error("ellipse cannot be rotated");
+      }
+      const center = applyAffine(matrix, {
+        x: shape.x + shape.w / 2,
+        y: shape.y + shape.h / 2
+      });
+      const odd = Math.abs(Math.trunc(rotation / 90)) % 2 === 1;
+      const nw = odd ? shape.h * sy : shape.w * sx;
+      const nh = odd ? shape.w * sx : shape.h * sy;
+      return { ...shape, x: center.x - nw / 2, y: center.y - nh / 2, w: nw, h: nh };
+    }
+    if (shape.kind === "Rect" && rotation !== 0) {
+      return cornersPath(
+        [
+          { x: shape.x, y: shape.y },
+          { x: shape.x + shape.w, y: shape.y },
+          { x: shape.x + shape.w, y: shape.y + shape.h },
+          { x: shape.x, y: shape.y + shape.h }
+        ],
+        matrix,
+        shape.fill,
+        shape.stroke,
+        shape.width,
+        rotatedGradient(shape.gradient, rotation)
+      );
+    }
+    if (shape.kind === "Polygon" && rotation !== 0) {
+      return cornersPath(
+        polygonVertices(shape.x, shape.y, shape.w, shape.h, shape.sides),
+        matrix,
+        shape.fill,
+        shape.stroke,
+        shape.width,
+        rotatedGradient(shape.gradient, rotation)
+      );
+    }
+    const corner = applyAffine(matrix, { x: shape.x, y: shape.y });
+    return { ...shape, x: corner.x, y: corner.y, w: shape.w * sx, h: shape.h * sy };
+  }
+
+  function ellipseNodes(x, y, w, h) {
+    const step = (Math.PI * 2) / 16;
+    const k = (4 / 3) * Math.tan(step / 4);
+    const nodes = [];
+    for (let index = 0; index < 16; index += 1) {
+      const angle = index * step;
+      const point = {
+        x: x + w / 2 + (w / 2) * Math.cos(angle),
+        y: y + h / 2 + (h / 2) * Math.sin(angle)
+      };
+      const dx = (-w / 2) * Math.sin(angle) * k;
+      const dy = (h / 2) * Math.cos(angle) * k;
+      nodes.push({
+        point: point,
+        handle_in: { x: point.x - dx, y: point.y - dy },
+        handle_out: { x: point.x + dx, y: point.y + dy }
+      });
+    }
+    return nodes;
+  }
+
+  function curvedEllipse(shape, rotation) {
+    if (shape.kind === "Group") {
+      return {
+        kind: "Group",
+        children: shape.children.map(function (child) {
+          return curvedEllipse(child, rotation);
+        })
+      };
+    }
+    if (shape.kind === "Ellipse" && rotation % 90 !== 0) {
+      return {
+        kind: "Path",
+        nodes: ellipseNodes(shape.x, shape.y, shape.w, shape.h),
+        closed: true,
+        fill: shape.fill,
+        stroke: shape.stroke,
+        width: shape.width,
+        gradient: rotatedGradient(shape.gradient, rotation)
+      };
+    }
+    return JSON.parse(JSON.stringify(shape));
+  }
+
+  function bakeShape(shape, matrix) {
+    const sx = Math.sqrt(matrix.a * matrix.a + matrix.b * matrix.b);
+    const sy = Math.sqrt(matrix.c * matrix.c + matrix.d * matrix.d);
+    const rotation = (Math.atan2(matrix.b, matrix.a) * 180) / Math.PI;
+    try {
+      return transformShape(curvedEllipse(shape, rotation), matrix, sx, sy, rotation);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function layerMatrix(place) {
+    return affineFrom({ x: 0, y: 0 }, place.x, place.y, place.scale, place.scale, place.rotation);
+  }
+
+  function colorAlpha(value) {
+    const digits = String(value).trim().replace(/^#/, "").toLowerCase();
+    if (/[^0-9a-f]/.test(digits)) {
+      return ["#000000", 1];
+    }
+    if (digits.length === 3 || digits.length === 4) {
+      const nibble = function (index) {
+        return (parseInt(digits.charAt(index), 16) * 17).toString(16).padStart(2, "0");
+      };
+      const alpha = digits.length === 4 ? parseInt(nibble(3), 16) / 255 : 1;
+      return ["#" + nibble(0) + nibble(1) + nibble(2), alpha];
+    }
+    if (digits.length === 6 || digits.length === 8) {
+      const alpha = digits.length === 8 ? parseInt(digits.slice(6, 8), 16) / 255 : 1;
+      return ["#" + digits.slice(0, 6), alpha];
+    }
+    return ["#000000", 1];
+  }
+
+  function shadeColor(value, opacity) {
+    if (opacity >= 0.999 || String(value).charAt(0) !== "#") {
+      return value;
+    }
+    const parts = colorAlpha(value);
+    const byte = Math.round(parts[1] * clamp(opacity, 0, 1) * 255);
+    return parts[0] + byte.toString(16).padStart(2, "0");
+  }
+
+  function tintShape(shape, opacity) {
+    const out = JSON.parse(JSON.stringify(shape));
+    if (opacity >= 0.999) {
+      return out;
+    }
+    if (out.kind === "Stroke" || out.kind === "Text") {
+      out.color = shadeColor(out.color, opacity);
+      return out;
+    }
+    if (out.kind === "Rect" || out.kind === "Ellipse" || out.kind === "Polygon" || out.kind === "Path") {
+      out.fill = shadeColor(out.fill, opacity);
+      out.stroke = shadeColor(out.stroke, opacity);
+      if (out.gradient) {
+        for (const stop of out.gradient.stops) {
+          stop.color = shadeColor(stop.color, opacity);
+        }
+      }
+      return out;
+    }
+    if (out.kind === "Group") {
+      out.children = out.children.map(function (child) {
+        return tintShape(child, opacity);
+      });
+      return out;
+    }
+    if (out.kind === "Figure") {
+      for (const bone of out.figure.bones) {
+        bone.color = shadeColor(bone.color, opacity);
+        bone.art = bone.art.map(function (item) {
+          return tintShape(item, opacity);
+        });
+      }
+      return out;
+    }
+    return out;
+  }
+
+  function symbolLength(symbol) {
+    let length = 1;
+    for (const layer of symbol.layers) {
+      length = Math.max(length, layer.length);
+    }
+    return length;
+  }
+
+  function heldFrame(layer, frame) {
+    const key = heldKey(layer, frame);
+    return key ? key.frame : frame;
+  }
+
+  function localFrame(length, looping, first, elapsed) {
+    if (looping === "singleFrame") {
+      return first;
+    }
+    if (looping === "playOnce") {
+      return Math.min(first + elapsed, Math.max(0, length - 1));
+    }
+    if (first >= length) {
+      return first;
+    }
+    return first + (elapsed % (length - first));
+  }
+
+  function expandShapes(shapes, elapsed, symbols, book) {
+    const out = [];
+    for (const shape of shapes) {
+      out.push(...expandShape(shape, elapsed, symbols, book));
+    }
+    return out;
+  }
+
+  function expandShape(shape, elapsed, symbols, book) {
+    if (shape.kind === "Group") {
+      return [
+        { kind: "Group", children: expandShapes(shape.children, elapsed, symbols, book) }
+      ];
+    }
+    if (shape.kind !== "Instance") {
+      return [JSON.parse(JSON.stringify(shape))];
+    }
+    if (!shape.visible) {
+      return [];
+    }
+    let index = -1;
+    for (let position = 0; position < symbols.length; position += 1) {
+      if (symbols[position].id === shape.symbol) {
+        index = position;
+      }
+    }
+    if (index < 0) {
+      return [JSON.parse(JSON.stringify(shape))];
+    }
+    const local = localFrame(
+      symbolLength(symbols[index]),
+      shape.looping,
+      shape.firstFrame,
+      elapsed
+    );
+    const matrix = shape.matrix || IDENTITY_MATRIX;
+    return [
+      {
+        kind: "Group",
+        children: symbolShapes(index, local, symbols, book).map(function (item) {
+          const baked = bakeShape(item, matrix);
+          return baked ? baked : item;
+        })
+      }
+    ];
+  }
+
+  function symbolShapes(index, frame, symbols, book) {
+    const symbol = symbols[index];
+    if (!symbol) {
+      return [];
+    }
+    const key = symbol.id + ":" + frame;
+    if (book.has(key)) {
+      return book.get(key).slice();
+    }
+    book.set(key, []);
+    const out = symbolLayers(symbol.layers, frame, 1, symbols, book);
+    book.set(key, out);
+    return out.slice();
+  }
+
+  function symbolLayers(layers, frame, opacity, symbols, book) {
+    const out = [];
+    for (const layer of layers) {
+      if (layer.folder) {
+        out.push(...symbolLayers(layer.children, frame, opacity * layer.opacity, symbols, book));
+        continue;
+      }
+      const item = evaluateLayer(layer, frame);
+      if (!item) {
+        continue;
+      }
+      const ink = clamp(opacity * item.opacity, 0, 1);
+      const elapsed = Math.max(0, frame - heldFrame(layer, frame));
+      const place = layerMatrix(item.transform);
+      for (const shape of expandShapes(item.shapes, elapsed, symbols, book)) {
+        const baked = bakeShape(shape, place);
+        out.push(tintShape(baked ? baked : shape, ink));
+      }
+    }
+    return out;
+  }
+
   function evaluateLayer(layer, frame) {
     if (!layer.visible || frame >= layer.length) {
       return null;
@@ -470,11 +905,11 @@
     };
   }
 
-  function evaluateFolder(folder, frame) {
+  function evaluateFolder(folder, frame, symbols, book) {
     if (!folder.visible) {
       return null;
     }
-    const children = evaluateLayers(folder.children, frame);
+    const children = evaluateLayers(folder.children, frame, symbols, book);
     if (children.length === 0) {
       return null;
     }
@@ -490,7 +925,7 @@
     };
   }
 
-  function maskFrom(provider, frame) {
+  function maskFrom(provider, frame, symbols, book) {
     if (!provider || provider.folder || !provider.visible || frame >= provider.length) {
       return null;
     }
@@ -498,18 +933,28 @@
     if (!evaluated) {
       return null;
     }
-    return { transform: evaluated.transform, shapes: evaluated.shapes };
+    const elapsed = Math.max(0, frame - heldFrame(provider, frame));
+    return {
+      transform: evaluated.transform,
+      shapes: expandShapes(evaluated.shapes, elapsed, symbols, book)
+    };
   }
 
-  function evaluateLayers(layers, frame) {
+  function evaluateLayers(layers, frame, symbols, book) {
     const evaluated = [];
     layers.forEach((layer, position) => {
-      const result = layer.folder ? evaluateFolder(layer, frame) : evaluateLayer(layer, frame);
+      const result = layer.folder
+        ? evaluateFolder(layer, frame, symbols, book)
+        : evaluateLayer(layer, frame);
       if (!result) {
         return;
       }
+      if (!layer.folder) {
+        const elapsed = Math.max(0, frame - heldFrame(layer, frame));
+        result.shapes = expandShapes(result.shapes, elapsed, symbols, book);
+      }
       if (layer.masked && position > 0) {
-        result.mask = maskFrom(layers[position - 1], frame);
+        result.mask = maskFrom(layers[position - 1], frame, symbols, book);
       }
       evaluated.push(result);
     });
@@ -643,6 +1088,11 @@
         collectLayerSources(layer, sources);
       }
     }
+    for (const symbol of project.symbols || []) {
+      for (const layer of symbol.layers) {
+        collectLayerSources(layer, sources);
+      }
+    }
     return sources;
   }
 
@@ -666,6 +1116,9 @@
       for (const child of shape.children) {
         drawShape(ctx, child);
       }
+      return;
+    }
+    if (shape.kind === "Instance") {
       return;
     }
     if (shape.kind === "Figure") {
@@ -835,7 +1288,7 @@
         }
         scene = scenes[index];
       }
-      return evaluateLayers(scene.layers, local);
+      return evaluateLayers(scene.layers, local, project.symbols || [], new Map());
     }
 
     function surface(depth) {

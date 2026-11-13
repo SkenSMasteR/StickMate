@@ -367,7 +367,7 @@ fn push_quadratics(
     push_quadratics(&middle, &e, &c, end, depth + 1, out);
 }
 
-fn ellipse_nodes(x: f64, y: f64, w: f64, h: f64) -> Vec<PathNode> {
+pub(crate) fn ellipse_nodes(x: f64, y: f64, w: f64, h: f64) -> Vec<PathNode> {
     let step = TAU / 16.0;
     let k = 4.0 / 3.0 * (step / 4.0).tan();
     (0..16)

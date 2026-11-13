@@ -411,6 +411,29 @@ mod tests {
     }
 
     #[test]
+    fn library_symbols_ship_with_the_package() {
+        let mut film = doc();
+        film.symbols.push(
+            serde_json::from_str(
+                r##"{"id":"y1","name":"Dot","kind":"graphic","layers":[{"id":"ly1","name":"Dot","visible":true,"locked":false,"opacity":1,"length":2,"keys":[{"frame":0,"shapes":[{"kind":"Rect","x":0,"y":0,"w":4,"h":4,"fill":"#ff0000","stroke":"#000000","width":0}],"transform":{"x":0,"y":0,"rotation":0,"scale":1,"opacity":1},"tween":false,"label":null}]}]}"##,
+            )
+            .expect("symbol"),
+        );
+        let package = build_package(
+            &film,
+            &options(ExportRange::Scene {
+                scene_id: "s1".to_string(),
+            }),
+        )
+        .expect("package");
+        let json = value(&package);
+        let symbols = json["symbols"].as_array().expect("symbols");
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0]["id"], "y1");
+        assert_eq!(symbols[0]["layers"][0]["keys"][0]["shapes"][0]["kind"], "Rect");
+    }
+
+    #[test]
     fn invalid_scale_and_fps_are_rejected() {
         for scale in [0.0, 0.1, 5.0, f64::NAN, f64::INFINITY] {
             let mut bad = options(ExportRange::Whole);

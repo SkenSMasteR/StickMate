@@ -698,6 +698,57 @@ describe("export dialog", () => {
     expect(disk.get("C:/Users/Test/Downloads/StickMate/Embed-canvasjs/stickmate.js")).toBe(source);
   });
 
+  test("the package ships the library so placements still play", async () => {
+    const dot: Shape = { kind: "Rect", x: 0, y: 0, w: 10, h: 10, fill: "#ff0000", stroke: "#000000", width: 0 };
+    const walked: Shape = { kind: "Rect", x: 30, y: 0, w: 10, h: 10, fill: "#ff0000", stroke: "#000000", width: 0 };
+    const doc: Document = {
+      ...simpleDoc("d5", "Library"),
+      symbols: [
+        {
+          id: "y1",
+          name: "Dot",
+          kind: "graphic",
+          layers: [layer("ly", { length: 3, keys: [key(0, [dot]), key(1, [walked])] })]
+        }
+      ],
+      scenes: [
+        scene("s0", [
+          layer("l0", {
+            length: 10,
+            keys: [
+              key(0, [
+                {
+                  kind: "Instance",
+                  symbol: "y1",
+                  name: "Dot",
+                  visible: true,
+                  firstFrame: 0,
+                  looping: "loop",
+                  matrix: { a: 1, b: 0, c: 0, d: 1, e: 100, f: 50 }
+                }
+              ])
+            ]
+          })
+        ]),
+        scene("s1", [layer("l1", { length: 4 })])
+      ]
+    };
+    await mountDialog(doc);
+    fireEvent.change(screen.getByLabelText("Format"), { target: { value: "canvasjs" } });
+    await clickExport();
+    await screen.findByText("Export ready");
+    const payload = payloadOf("C:/Users/Test/Downloads/StickMate/Library-canvasjs");
+    expect((payload.symbols as unknown[]).length).toBe(1);
+    const player = StickMate.load(payload);
+    player.mount(document.createElement("canvas"));
+    expect(player.frameCount).toBe(14);
+    log = [];
+    player.seek(1);
+    expect(log.filter((call) => call[1] === "rect").map((call) => call.slice(2))).toEqual([
+      [130, 50, 10, 10]
+    ]);
+  });
+
   test("scene and frame ranges change the exported data", async () => {
     const doc = simpleDoc("d3", "Ranges");
     await mountDialog(doc);

@@ -1,6 +1,6 @@
 import { runInThisContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { Document, Keyframe, Layer, Scene, Shape } from "@/lib/document";
+import type { Affine, Document, Keyframe, Layer, Scene, Shape, SymbolDef } from "@/lib/document";
 import source from "@/export/runtime.js?raw";
 
 runInThisContext(source);
@@ -86,6 +86,87 @@ function project(patch: Partial<Payload> = {}): Payload {
     endFrame: null,
     ...patch
   };
+}
+
+const dot: Shape = {
+  kind: "Rect",
+  x: 0,
+  y: 0,
+  w: 4,
+  h: 4,
+  fill: "#ff0000",
+  stroke: "#000000",
+  width: 0
+};
+
+const dash: Shape = {
+  kind: "Rect",
+  x: 20,
+  y: 0,
+  w: 4,
+  h: 4,
+  fill: "#00ff00",
+  stroke: "#000000",
+  width: 0
+};
+
+const ball: Shape = {
+  kind: "Ellipse",
+  x: 0,
+  y: 0,
+  w: 10,
+  h: 10,
+  fill: "#3b82f6",
+  stroke: "#000000",
+  width: 0
+};
+
+function sym(id: string, layers: Layer[]): SymbolDef {
+  return { id, name: id, kind: "graphic", layers };
+}
+
+function place(id: string, patch: Partial<Extract<Shape, { kind: "Instance" }>> = {}): Shape {
+  return {
+    kind: "Instance",
+    symbol: id,
+    name: id,
+    visible: true,
+    firstFrame: 0,
+    looping: "loop",
+    ...patch
+  };
+}
+
+function moved(e: number, f: number): Affine {
+  return { a: 1, b: 0, c: 0, d: 1, e, f };
+}
+
+function turned(degrees: number): Affine {
+  const angle = (degrees * Math.PI) / 180;
+  return {
+    a: Math.cos(angle),
+    b: Math.sin(angle),
+    c: -Math.sin(angle),
+    d: Math.cos(angle),
+    e: 0,
+    f: 0
+  };
+}
+
+function boxes(player: Player, frame: number): number[][] {
+  log = [];
+  player.seek(frame);
+  return log
+    .filter((call) => call[1] === "rect")
+    .map((call) => call.slice(2) as number[]);
+}
+
+function painted(player: Player, frame: number): string[] {
+  log = [];
+  player.seek(frame);
+  return log
+    .filter((call) => call[1] === "set:fillStyle")
+    .map((call) => String(call[2]));
 }
 
 let log: unknown[][] = [];
@@ -386,5 +467,148 @@ describe("export runtime", () => {
     const player = StickMate.load(project());
     player.play();
     expect(player.playing).toBe(false);
+  });
+
+  test("looping placements play their symbol across frames", () => {
+    const { player } = mountPlayer(
+      project({
+        symbols: [sym("walk", [layer("w", { length: 2, keys: [key(0, [dot]), key(1, [dash])] })])],
+        scenes: [scene("s0", [layer("l0", { keys: [key(0, [place("walk")])] })])]
+      })
+    );
+    expect(boxes(player, 0)).toEqual([[0, 0, 4, 4]]);
+    expect(boxes(player, 1)).toEqual([[20, 0, 4, 4]]);
+    expect(boxes(player, 2)).toEqual([[0, 0, 4, 4]]);
+    expect(boxes(player, 3)).toEqual([[20, 0, 4, 4]]);
+  });
+
+  test("play once freezes on the last frame and single frame pins its start", () => {
+    const symbols = [sym("walk", [layer("w", { length: 2, keys: [key(0, [dot]), key(1, [dash])] })])];
+    const once = mountPlayer(
+      project({
+        symbols,
+        scenes: [scene("s0", [layer("l0", { keys: [key(0, [place("walk", { looping: "playOnce" })])] })])]
+      })
+    ).player;
+    expect(boxes(once, 0)).toEqual([[0, 0, 4, 4]]);
+    expect(boxes(once, 3)).toEqual([[20, 0, 4, 4]]);
+    const pinned = mountPlayer(
+      project({
+        symbols,
+        scenes: [
+          scene("s0", [
+            layer("l0", {
+              keys: [key(0, [place("walk", { looping: "singleFrame", firstFrame: 1 })])]
+            })
+          ])
+        ]
+      })
+    ).player;
+    expect(boxes(pinned, 0)).toEqual([[20, 0, 4, 4]]);
+    expect(boxes(pinned, 3)).toEqual([[20, 0, 4, 4]]);
+  });
+
+  test("placement matrices and symbol transforms bake into the geometry", () => {
+    const { player } = mountPlayer(
+      project({
+        symbols: [sym("walk", [layer("w", { length: 2, keys: [key(0, [dot])] })])],
+        scenes: [
+          scene("s0", [
+            layer("l0", {
+              keys: [
+                key(0, [
+                  place("walk", { matrix: moved(10, 4) }),
+                  place("walk", { matrix: { a: 2, b: 0, c: 0, d: 2, e: 6, f: 6 } })
+                ])
+              ]
+            })
+          ])
+        ]
+      })
+    );
+    expect(boxes(player, 0)).toEqual([
+      [10, 4, 4, 4],
+      [6, 6, 8, 8]
+    ]);
+  });
+
+  test("symbol layers keep their own transform and folder opacity", () => {
+    const shifted = key(0, [dot], { transform: { x: 5, y: 0, rotation: 0, scale: 1, opacity: 1 } });
+    const { player } = mountPlayer(
+      project({
+        symbols: [
+          sym("soft", [
+            layer("f", { folder: true, opacity: 0.5, children: [layer("a", { keys: [shifted] })] })
+          ])
+        ],
+        scenes: [scene("s0", [layer("l0", { keys: [key(0, [place("soft")])] })])]
+      })
+    );
+    expect(boxes(player, 0)).toEqual([[5, 0, 4, 4]]);
+    expect(painted(player, 0)).toContain("#ff000080");
+  });
+
+  test("a turned placement of round artwork stays turned", () => {
+    log = [];
+    const { player } = mountPlayer(
+      project({
+        symbols: [sym("ball", [layer("a", { keys: [key(0, [ball])] })])],
+        scenes: [scene("s0", [layer("l0", { keys: [key(0, [place("ball", { matrix: turned(30) })])] })])]
+      })
+    );
+    log = [];
+    player.seek(0);
+    expect(log.filter((call) => call[1] === "bezierCurveTo")).toHaveLength(16);
+    expect(log.filter((call) => call[1] === "ellipse")).toHaveLength(0);
+  });
+
+  test("hidden and unknown placements paint nothing", () => {
+    const { player } = mountPlayer(
+      project({
+        symbols: [sym("walk", [layer("w", { keys: [key(0, [dot])] })])],
+        scenes: [
+          scene("s0", [
+            layer("l0", {
+              keys: [
+                key(0, [place("walk", { visible: false }), place("ghost"), place("missing")])
+              ]
+            })
+          ])
+        ]
+      })
+    );
+    expect(boxes(player, 0)).toEqual([]);
+  });
+
+  test("a symbol that places itself stops nesting", () => {
+    const looped = sym("loop", [layer("a", { keys: [key(0, [dot, place("loop")])] })]);
+    const { player } = mountPlayer(
+      project({
+        symbols: [looped],
+        scenes: [scene("s0", [layer("l0", { keys: [key(0, [place("loop")])] })])]
+      })
+    );
+    expect(boxes(player, 0)).toEqual([[0, 0, 4, 4]]);
+  });
+
+  test("nested placements inherit the outer playhead", () => {
+    const symbols = [
+      sym("inner", [layer("i", { length: 2, keys: [key(0, [dot]), key(1, [dash])] })]),
+      sym("outer", [
+        layer("o", {
+          length: 4,
+          keys: [key(0, [place("inner")]), key(2, [place("inner")])]
+        })
+      ])
+    ];
+    const { player } = mountPlayer(
+      project({
+        symbols,
+        scenes: [scene("s0", [layer("l0", { keys: [key(0, [place("outer")])] })])]
+      })
+    );
+    expect(boxes(player, 0)).toEqual([[0, 0, 4, 4]]);
+    expect(boxes(player, 1)).toEqual([[20, 0, 4, 4]]);
+    expect(boxes(player, 2)).toEqual([[0, 0, 4, 4]]);
   });
 });

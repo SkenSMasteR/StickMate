@@ -40,11 +40,13 @@ import type {
   GradientStop,
   Keyframe,
   Layer,
+  LoopMode,
   PathNode,
   Place,
   Point,
   Scene,
   Shape,
+  SymbolDef,
   Transform
 } from "@/lib/document";
 
@@ -77,7 +79,12 @@ function sanitizeEffects(effects: Effect[]): Effect[] {
   );
 }
 
-function maskFrom(provider: Layer | undefined, frame: number): EvalMask | null {
+function maskFrom(
+  provider: Layer | undefined,
+  frame: number,
+  symbols: SymbolDef[] = [],
+  book: Map<string, Shape[]> = new Map()
+): EvalMask | null {
   if (!provider || provider.folder || !provider.visible || frame >= provider.length) {
     return null;
   }
@@ -85,7 +92,11 @@ function maskFrom(provider: Layer | undefined, frame: number): EvalMask | null {
   if (!evaluated) {
     return null;
   }
-  return { transform: evaluated.transform, shapes: evaluated.shapes };
+  const elapsed = Math.max(0, frame - heldFrame(provider, frame));
+  return {
+    transform: evaluated.transform,
+    shapes: expandShapes(evaluated.shapes, elapsed, symbols, book)
+  };
 }
 
 function validateLayerMasks(layers: Layer[]): void {
@@ -1455,6 +1466,239 @@ function mixShape(a: Shape, b: Shape, t: number): Shape {
   return structuredClone(a);
 }
 
+function symbolLength(symbol: SymbolDef): number {
+  return Math.max(1, ...symbol.layers.map((layer) => layer.length));
+}
+
+function heldFrame(layer: Layer, frame: number): number {
+  const index = heldIndex(layer, frame);
+  return index < 0 ? frame : layer.keys[index].frame;
+}
+
+function localFrame(length: number, looping: LoopMode, first: number, elapsed: number): number {
+  if (looping === "singleFrame") {
+    return first;
+  }
+  if (looping === "playOnce") {
+    return Math.min(first + elapsed, Math.max(0, length - 1));
+  }
+  if (first >= length) {
+    return first;
+  }
+  return first + (elapsed % (length - first));
+}
+
+function ellipseNodes(x: number, y: number, w: number, h: number): PathNode[] {
+  const step = (Math.PI * 2) / 16;
+  const k = (4 / 3) * Math.tan(step / 4);
+  const nodes: PathNode[] = [];
+  for (let index = 0; index < 16; index += 1) {
+    const angle = index * step;
+    const point = {
+      x: x + w / 2 + (w / 2) * Math.cos(angle),
+      y: y + h / 2 + (h / 2) * Math.sin(angle)
+    };
+    const dx = (-w / 2) * Math.sin(angle) * k;
+    const dy = (h / 2) * Math.cos(angle) * k;
+    nodes.push({
+      point,
+      handle_in: { x: point.x - dx, y: point.y - dy },
+      handle_out: { x: point.x + dx, y: point.y + dy }
+    });
+  }
+  return nodes;
+}
+
+function curvedEllipse(shape: Shape, rotation: number): Shape {
+  if (shape.kind === "Group") {
+    return {
+      kind: "Group",
+      children: shape.children.map((child) => curvedEllipse(child, rotation))
+    };
+  }
+  if (shape.kind === "Ellipse" && rotation % 90 !== 0) {
+    return {
+      kind: "Path",
+      nodes: ellipseNodes(shape.x, shape.y, shape.w, shape.h),
+      closed: true,
+      fill: shape.fill,
+      stroke: shape.stroke,
+      width: shape.width,
+      gradient: rotatedGradient(shape.gradient, rotation)
+    };
+  }
+  return structuredClone(shape);
+}
+
+function bakeShape(shape: Shape, matrix: Affine): Shape | null {
+  const sx = Math.sqrt(matrix.a * matrix.a + matrix.b * matrix.b);
+  const sy = Math.sqrt(matrix.c * matrix.c + matrix.d * matrix.d);
+  const rotation = (Math.atan2(matrix.b, matrix.a) * 180) / Math.PI;
+  const source = curvedEllipse(shape, rotation);
+  try {
+    return transformShape(source, matrix, sx, sy, rotation);
+  } catch {
+    return null;
+  }
+}
+
+function layerMatrix(place: Transform): Affine {
+  return affineFrom({ x: 0, y: 0 }, place.x, place.y, place.scale, place.scale, place.rotation);
+}
+
+function colorAlpha(value: string): [string, number] {
+  const digits = value.trim().replace(/^#/, "").toLowerCase();
+  if (/[^0-9a-f]/.test(digits)) {
+    return ["#000000", 1];
+  }
+  if (digits.length === 3 || digits.length === 4) {
+    const nibble = (index: number) =>
+      (parseInt(digits.charAt(index), 16) * 17).toString(16).padStart(2, "0");
+    const alpha = digits.length === 4 ? parseInt(nibble(3), 16) / 255 : 1;
+    return [`#${nibble(0)}${nibble(1)}${nibble(2)}`, alpha];
+  }
+  if (digits.length === 6 || digits.length === 8) {
+    const alpha = digits.length === 8 ? parseInt(digits.slice(6, 8), 16) / 255 : 1;
+    return [`#${digits.slice(0, 6)}`, alpha];
+  }
+  return ["#000000", 1];
+}
+
+function shadeColor(value: string, opacity: number): string {
+  if (opacity >= 0.999 || !value.startsWith("#")) {
+    return value;
+  }
+  const [hex, alpha] = colorAlpha(value);
+  const byte = Math.round(alpha * Math.min(1, Math.max(0, opacity)) * 255);
+  return `${hex}${byte.toString(16).padStart(2, "0")}`;
+}
+
+function tintShape(shape: Shape, opacity: number): Shape {
+  const out = structuredClone(shape);
+  if (opacity >= 0.999) {
+    return out;
+  }
+  switch (out.kind) {
+    case "Stroke":
+    case "Text":
+      out.color = shadeColor(out.color, opacity);
+      break;
+    case "Rect":
+    case "Ellipse":
+    case "Polygon":
+    case "Path":
+      out.fill = shadeColor(out.fill, opacity);
+      out.stroke = shadeColor(out.stroke, opacity);
+      for (const stop of out.gradient?.stops ?? []) {
+        stop.color = shadeColor(stop.color, opacity);
+      }
+      break;
+    case "Group":
+      out.children = out.children.map((child) => tintShape(child, opacity));
+      break;
+    case "Figure":
+      for (const bone of out.figure.bones) {
+        bone.color = shadeColor(bone.color, opacity);
+        bone.art = bone.art.map((item) => tintShape(item, opacity));
+      }
+      break;
+  }
+  return out;
+}
+
+function expandShapes(
+  shapes: Shape[],
+  elapsed: number,
+  symbols: SymbolDef[],
+  book: Map<string, Shape[]>
+): Shape[] {
+  return shapes.flatMap((shape) => expandShape(shape, elapsed, symbols, book));
+}
+
+function expandShape(
+  shape: Shape,
+  elapsed: number,
+  symbols: SymbolDef[],
+  book: Map<string, Shape[]>
+): Shape[] {
+  if (shape.kind === "Group") {
+    return [{ ...shape, children: expandShapes(shape.children, elapsed, symbols, book) }];
+  }
+  if (shape.kind !== "Instance") {
+    return [structuredClone(shape)];
+  }
+  if (!shape.visible) {
+    return [];
+  }
+  const index = symbols.findIndex((item) => item.id === shape.symbol);
+  if (index < 0) {
+    return [structuredClone(shape)];
+  }
+  const local = localFrame(
+    symbolLength(symbols[index]),
+    shape.looping,
+    shape.firstFrame,
+    elapsed
+  );
+  const matrix = shape.matrix ?? { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  return [
+    {
+      kind: "Group",
+      children: symbolShapes(index, local, symbols, book).map(
+        (item) => bakeShape(item, matrix) ?? item
+      )
+    }
+  ];
+}
+
+function symbolShapes(
+  index: number,
+  frame: number,
+  symbols: SymbolDef[],
+  book: Map<string, Shape[]>
+): Shape[] {
+  const symbol = symbols[index];
+  if (!symbol) {
+    return [];
+  }
+  const key = `${symbol.id}:${frame}`;
+  const memo = book.get(key);
+  if (memo) {
+    return [...memo];
+  }
+  book.set(key, []);
+  const out = symbolLayers(symbol.layers, frame, 1, symbols, book);
+  book.set(key, out);
+  return [...out];
+}
+
+function symbolLayers(
+  layers: Layer[],
+  frame: number,
+  opacity: number,
+  symbols: SymbolDef[],
+  book: Map<string, Shape[]>
+): Shape[] {
+  const out: Shape[] = [];
+  for (const layer of layers) {
+    if (layer.folder) {
+      out.push(...symbolLayers(layer.children, frame, opacity * layer.opacity, symbols, book));
+      continue;
+    }
+    const item = evaluateLayer(layer, frame);
+    if (!item) {
+      continue;
+    }
+    const ink = Math.min(1, Math.max(0, opacity * item.opacity));
+    const elapsed = Math.max(0, frame - heldFrame(layer, frame));
+    const place = layerMatrix(item.transform);
+    for (const shape of expandShapes(item.shapes, elapsed, symbols, book)) {
+      out.push(tintShape(bakeShape(shape, place) ?? shape, ink));
+    }
+  }
+  return out;
+}
+
 function evaluateLayer(layer: Layer, frame: number): EvalLayer | null {
   if (!layer.visible || frame >= layer.length) {
     return null;
@@ -1493,11 +1737,16 @@ function evaluateLayer(layer: Layer, frame: number): EvalLayer | null {
   };
 }
 
-function evaluateFolder(folder: Layer, frame: number): EvalLayer | null {
+function evaluateFolder(
+  folder: Layer,
+  frame: number,
+  symbols: SymbolDef[],
+  book: Map<string, Shape[]>
+): EvalLayer | null {
   if (!folder.visible) {
     return null;
   }
-  const children = evaluateLayers(folder.children, frame);
+  const children = evaluateLayers(folder.children, frame, symbols, book);
   if (children.length === 0) {
     return null;
   }
@@ -1514,15 +1763,26 @@ function evaluateFolder(folder: Layer, frame: number): EvalLayer | null {
   };
 }
 
-function evaluateLayers(layers: Layer[], frame: number): EvalLayer[] {
+function evaluateLayers(
+  layers: Layer[],
+  frame: number,
+  symbols: SymbolDef[] = [],
+  book: Map<string, Shape[]> = new Map()
+): EvalLayer[] {
   const evaluated: EvalLayer[] = [];
   layers.forEach((item, position) => {
-    const evaluatedLayer = item.folder ? evaluateFolder(item, frame) : evaluateLayer(item, frame);
+    const evaluatedLayer = item.folder
+      ? evaluateFolder(item, frame, symbols, book)
+      : evaluateLayer(item, frame);
     if (!evaluatedLayer) {
       return;
     }
+    if (!item.folder) {
+      const elapsed = Math.max(0, frame - heldFrame(item, frame));
+      evaluatedLayer.shapes = expandShapes(evaluatedLayer.shapes, elapsed, symbols, book);
+    }
     if (item.masked && position > 0) {
-      evaluatedLayer.mask = maskFrom(layers[position - 1], frame);
+      evaluatedLayer.mask = maskFrom(layers[position - 1], frame, symbols, book);
     }
     evaluated.push(evaluatedLayer);
   });
@@ -2467,9 +2727,13 @@ mockIPC(
           throw new Error("frame range is invalid");
         }
         const target = scene(current.doc, a.sceneId as string);
+        const symbols = current.doc.symbols ?? [];
         const frames: EvalFrame[] = [];
         for (let frame = start; frame <= end; frame += 1) {
-          frames.push({ frame, layers: evaluateLayers(target.layers, frame) });
+          frames.push({
+            frame,
+            layers: evaluateLayers(target.layers, frame, symbols, new Map())
+          });
         }
         return frames;
       }
