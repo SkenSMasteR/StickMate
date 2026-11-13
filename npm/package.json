@@ -1,6 +1,6 @@
 {
   "name": "stickmate",
-  "version": "0.1.0",
+  "version": "0.1.31",
   "description": "Install the StickMate desktop app for your platform.",
   "type": "module",
   "bin": {
