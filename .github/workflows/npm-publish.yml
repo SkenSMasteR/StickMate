@@ -27,7 +27,6 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
       - name: Update npm
         run: npm install -g npm@latest
       - name: Resolve version
@@ -50,5 +49,3 @@ jobs:
             *-*) npm publish --provenance --access public --tag next ;;
             *) npm publish --provenance --access public ;;
           esac
-        env:
-          NODE_AUTH_TOKEN: ""
