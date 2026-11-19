@@ -50,6 +50,8 @@ jobs:
           echo "OIDC URL set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
           echo "OIDC token set: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}"
       - name: Publish
+        env:
+          NPM_CONFIG_LOGLEVEL: verbose
         run: |
           set -euo pipefail
           case "${{ steps.version.outputs.value }}" in
