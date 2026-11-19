@@ -44,6 +44,11 @@ jobs:
       - name: Set package version
         run: npm version "${{ steps.version.outputs.value }}" --no-git-tag-version --allow-same-version
       - name: Publish
-        run: npm publish --provenance --access public
+        run: |
+          set -euo pipefail
+          case "${{ steps.version.outputs.value }}" in
+            *-*) npm publish --provenance --access public --tag next ;;
+            *) npm publish --provenance --access public ;;
+          esac
         env:
           NODE_AUTH_TOKEN: ""
