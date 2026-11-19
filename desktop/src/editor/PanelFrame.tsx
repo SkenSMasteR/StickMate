@@ -24,10 +24,79 @@ export const PANEL_TITLE_KEYS: Record<PanelId, string> = {
 
 const menuItem = "rounded-none text-xs";
 
+export function PanelMenu({
+  panel,
+  detached = false,
+  onDetach,
+  onReattach,
+  onHide,
+  onMove
+}: {
+  panel: PanelId;
+  detached?: boolean;
+  onDetach?: () => void;
+  onReattach?: () => void;
+  onHide?: () => void;
+  onMove?: (zone: ZoneId) => void;
+}) {
+  const { t } = useI18n();
+  const menuLabel = `${t(PANEL_TITLE_KEYS[panel])} ${t("panel.menu")}`;
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={menuLabel}
+          title={menuLabel}
+          className="flex h-6 w-6 shrink-0 items-center justify-center text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-44 rounded-none">
+        {detached ? (
+          <DropdownMenuItem className={menuItem} onSelect={() => onReattach?.()}>
+            {t("panel.reattach")}
+          </DropdownMenuItem>
+        ) : (
+          <>
+            {onDetach && (
+              <DropdownMenuItem className={menuItem} onSelect={onDetach}>
+                {t("panel.detach")}
+              </DropdownMenuItem>
+            )}
+            {onHide && (
+              <DropdownMenuItem className={menuItem} onSelect={onHide}>
+                {t("panel.hide")}
+              </DropdownMenuItem>
+            )}
+            {onMove && (
+              <>
+                <DropdownMenuSeparator />
+                {ZONE_IDS.map((zone) => (
+                  <DropdownMenuItem
+                    key={zone}
+                    className={menuItem}
+                    onSelect={() => onMove(zone)}
+                  >
+                    {t(`panel.dock.${zone}`)}
+                  </DropdownMenuItem>
+                ))}
+              </>
+            )}
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 export default function PanelFrame({
   panel,
   compact = false,
   detached = false,
+  tabs,
   children,
   onDetach,
   onReattach,
@@ -38,6 +107,7 @@ export default function PanelFrame({
   panel: PanelId;
   compact?: boolean;
   detached?: boolean;
+  tabs?: ReactNode;
   children: ReactNode;
   onDetach?: () => void;
   onReattach?: () => void;
@@ -47,7 +117,6 @@ export default function PanelFrame({
 }) {
   const { t } = useI18n();
   const title = t(PANEL_TITLE_KEYS[panel]);
-  const menuLabel = `${title} ${t("panel.menu")}`;
 
   const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!onDragStart || detached) {
@@ -66,61 +135,24 @@ export default function PanelFrame({
         onPointerDown={startDrag}
         className={cn(
           "flex shrink-0 items-center border-b border-border bg-muted/40",
-          compact ? "h-6 justify-center" : "h-7 gap-1 px-2",
+          compact ? "h-6 justify-center" : tabs ? "h-7" : "h-7 gap-1 px-2",
           onDragStart && !detached && "cursor-grab select-none"
         )}
       >
-        {!compact && (
-          <span className="min-w-0 flex-1 truncate text-[10px] uppercase tracking-wide text-muted-foreground">
-            {title}
-          </span>
-        )}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              aria-label={menuLabel}
-              title={menuLabel}
-              className="flex h-6 w-6 shrink-0 items-center justify-center text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            >
-              <MoreHorizontal className="h-4 w-4" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-44 rounded-none">
-            {detached ? (
-              <DropdownMenuItem className={menuItem} onSelect={() => onReattach?.()}>
-                {t("panel.reattach")}
-              </DropdownMenuItem>
-            ) : (
-              <>
-                {onDetach && (
-                  <DropdownMenuItem className={menuItem} onSelect={onDetach}>
-                    {t("panel.detach")}
-                  </DropdownMenuItem>
-                )}
-                {onHide && (
-                  <DropdownMenuItem className={menuItem} onSelect={onHide}>
-                    {t("panel.hide")}
-                  </DropdownMenuItem>
-                )}
-                {onMove && (
-                  <>
-                    <DropdownMenuSeparator />
-                    {ZONE_IDS.map((zone) => (
-                      <DropdownMenuItem
-                        key={zone}
-                        className={menuItem}
-                        onSelect={() => onMove(zone)}
-                      >
-                        {t(`panel.dock.${zone}`)}
-                      </DropdownMenuItem>
-                    ))}
-                  </>
-                )}
-              </>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {tabs ??
+          (!compact && (
+            <span className="min-w-0 flex-1 truncate text-[10px] uppercase tracking-wide text-muted-foreground">
+              {title}
+            </span>
+          ))}
+        <PanelMenu
+          panel={panel}
+          detached={detached}
+          onDetach={onDetach}
+          onReattach={onReattach}
+          onHide={onHide}
+          onMove={onMove}
+        />
       </div>
       <div
         className={cn(

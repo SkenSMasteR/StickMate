@@ -11,7 +11,7 @@ import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { movePanel, visiblePanels, ZONE_IDS } from "@/lib/workspace-presets";
 import type { DockLayout, PanelId, ZoneId } from "@/lib/workspace-presets";
-import PanelFrame, { PANEL_TITLE_KEYS } from "./PanelFrame";
+import PanelFrame, { PANEL_TITLE_KEYS, PanelMenu } from "./PanelFrame";
 
 interface DropTarget {
   zone: ZoneId;
@@ -180,13 +180,20 @@ export function useDock(): DockValue {
   return context;
 }
 
+export interface BareChrome {
+  handle: PanelId;
+  leading: ReactNode | null;
+  trailing: ReactNode;
+  onHandlePointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
+}
+
 export function DockZone({
   zone,
   render,
   className
 }: {
   zone: ZoneId;
-  render: (panel: PanelId) => ReactNode;
+  render: (panel: PanelId, bare: BareChrome | null) => ReactNode;
   className?: string;
 }) {
   const dock = useDock();
@@ -197,6 +204,81 @@ export function DockZone({
   }
   const active = dock.activeIn(zone) ?? visible[0];
   const targeted = dock.drag !== null && dock.dropTarget?.zone === zone;
+  const bare =
+    (zone === "top" && active === "scenes") ||
+    (zone === "left" && active === "tools") ||
+    (zone === "bottom" && active === "timeline");
+  const multi = visible.length > 1;
+  const standalone = bare && multi && zone !== "top";
+
+  const tabsNode = multi ? (
+    <div
+      role="tablist"
+      className={cn(
+        "flex items-stretch",
+        standalone
+          ? "shrink-0 border-b border-border bg-muted/40"
+          : bare
+            ? "shrink-0 self-stretch"
+            : "min-w-0 flex-1 self-stretch"
+      )}
+    >
+      {visible.map((id, index) => (
+        <button
+          key={id}
+          type="button"
+          role="tab"
+          aria-selected={id === active}
+          data-panel-tab={id}
+          onClick={() => dock.setActive(zone, id)}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            dock.beginDrag(id, event);
+          }}
+          onPointerMove={(event) => {
+            if (dock.drag !== null) {
+              event.stopPropagation();
+              dock.hover({ zone, index });
+            }
+          }}
+          className={cn(
+            "cursor-grab select-none border-r border-border px-2 text-xs",
+            standalone && "h-7",
+            id === active
+              ? "bg-background text-foreground"
+              : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          )}
+        >
+          {t(PANEL_TITLE_KEYS[id])}
+        </button>
+      ))}
+    </div>
+  ) : null;
+
+  const bareChrome: BareChrome | null = bare
+    ? {
+        handle: active,
+        leading: zone === "top" ? tabsNode : null,
+        trailing: (
+          <PanelMenu
+            panel={active}
+            onDetach={() => dock.onDetach(active)}
+            onHide={() => dock.onHide(active)}
+            onMove={(target) => dock.onMove(active, target)}
+          />
+        ),
+        onHandlePointerDown: (event) => {
+          if (
+            (event.target as HTMLElement).closest(
+              "button, input, select, textarea, [contenteditable]"
+            )
+          ) {
+            return;
+          }
+          dock.beginDrag(active, event);
+        }
+      }
+    : null;
 
   return (
     <div
@@ -215,57 +297,28 @@ export function DockZone({
       className={cn(
         "flex min-h-0 min-w-0 flex-col",
         targeted && "bg-accent/40 outline outline-1 -outline-offset-1 outline-ring",
+        zone === "top" && !bare && "h-56",
         className
       )}
     >
-      {visible.length > 1 && (
-        <div
-          role="tablist"
-          className="flex shrink-0 items-stretch border-b border-border bg-muted/40"
-        >
-          {visible.map((id, index) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={id === active}
-              data-panel-tab={id}
-              onClick={() => dock.setActive(zone, id)}
-              onPointerDown={(event) => {
-                event.stopPropagation();
-                dock.beginDrag(id, event);
-              }}
-              onPointerMove={(event) => {
-                if (dock.drag !== null) {
-                  event.stopPropagation();
-                  dock.hover({ zone, index });
-                }
-              }}
-              className={cn(
-                "h-7 cursor-grab select-none border-r border-border px-2 text-xs",
-                id === active
-                  ? "bg-background text-foreground"
-                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-              )}
-            >
-              {t(PANEL_TITLE_KEYS[id])}
-            </button>
-          ))}
+      {standalone && tabsNode}
+      {bare ? (
+        render(active, bareChrome)
+      ) : (
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <PanelFrame
+            key={active}
+            panel={active}
+            tabs={tabsNode}
+            onDragStart={(event) => dock.beginDrag(active, event)}
+            onDetach={() => dock.onDetach(active)}
+            onHide={() => dock.onHide(active)}
+            onMove={(target) => dock.onMove(active, target)}
+          >
+            {render(active, null)}
+          </PanelFrame>
         </div>
       )}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <PanelFrame
-          key={active}
-          panel={active}
-          compact={active === "tools"}
-          onDragStart={(event) => dock.beginDrag(active, event)}
-          onDetach={() => dock.onDetach(active)}
-          onHide={() => dock.onHide(active)}
-          onMove={(target) => dock.onMove(active, target)}
-        >
-          {render(active)}
-        </PanelFrame>
-      </div>
     </div>
   );
 }

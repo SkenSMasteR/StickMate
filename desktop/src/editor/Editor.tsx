@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { useI18n } from "@/i18n";
 import { useConfirm } from "@/lib/confirm";
 import { usePrefs } from "@/lib/prefs";
+import { cn } from "@/lib/utils";
 import {
   cloneLayout,
   defaultLayout,
@@ -28,7 +29,7 @@ import {
 import Canvas from "./Canvas";
 import CommandPalette from "./CommandPalette";
 import { DockProvider, DockZone } from "./DockLayout";
-import type { PanelFocus } from "./DockLayout";
+import type { BareChrome, PanelFocus } from "./DockLayout";
 import ExportDialog from "./ExportDialog";
 import FileMenu from "./FileMenu";
 import HistoryPanel from "./HistoryPanel";
@@ -323,7 +324,7 @@ export default function Editor() {
     return null;
   }
 
-  const renderPanel = (panel: PanelId): ReactNode => {
+  const renderPanel = (panel: PanelId, bare: BareChrome | null): ReactNode => {
     if (panel === "tools") {
       return (
         <div className="flex min-h-0 flex-1">
@@ -331,15 +332,16 @@ export default function Editor() {
             onShortcuts={() => setShortcutsOpen(true)}
             onExport={() => setExportOpen(true)}
             onPalette={() => openPalette()}
+            bare={bare}
           />
         </div>
       );
     }
     if (panel === "scenes") {
-      return <ScenesBar />;
+      return <ScenesBar bare={bare} />;
     }
     if (panel === "timeline") {
-      return <Timeline />;
+      return <Timeline bare={bare} />;
     }
     if (panel === "history") {
       return <HistoryPanel />;
@@ -353,7 +355,9 @@ export default function Editor() {
     return <SidePanel />;
   };
 
-  const leftVisible = visiblePanels(layout, "left").length > 0;
+  const leftPanels = visiblePanels(layout, "left");
+  const leftVisible = leftPanels.length > 0;
+  const leftToolsOnly = leftPanels.length === 1 && leftPanels[0] === "tools";
   const rightVisible = visiblePanels(layout, "right").length > 0;
   const bottomVisible = visiblePanels(layout, "bottom").length > 0;
 
@@ -382,11 +386,14 @@ export default function Editor() {
         </div>
         <div className="flex min-h-0 flex-1">
           {leftVisible && (
-            <div className="flex shrink-0" style={{ width: layout.sizes.left }}>
+            <div
+              className={cn("flex shrink-0", leftToolsOnly && "border-r border-border")}
+              style={{ width: leftToolsOnly ? 40 : layout.sizes.left }}
+            >
               <DockZone zone="left" render={renderPanel} className="flex-1" />
             </div>
           )}
-          {leftVisible && (
+          {leftVisible && !leftToolsOnly && (
             <div
               data-resize="left"
               onPointerDown={(event) => beginResize("left", event)}
@@ -432,7 +439,7 @@ export default function Editor() {
               <DockZone
                 zone="right"
                 render={renderPanel}
-                className="flex-1 border-l border-border bg-background"
+                className="flex-1 bg-background"
               />
             </div>
           )}

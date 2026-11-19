@@ -32,6 +32,7 @@ import { useI18n } from "@/i18n";
 import type { Layer } from "@/lib/document";
 import { visibleRows } from "@/lib/document";
 import { cn } from "@/lib/utils";
+import type { BareChrome } from "./DockLayout";
 import ToolButton from "./ToolButton";
 import { useWorkspace } from "./workspace";
 
@@ -87,7 +88,7 @@ function cellsOf(layer: Layer, from: number, to: number): Cell[] {
   return cells;
 }
 
-export default function Timeline() {
+export default function Timeline({ bare }: { bare?: BareChrome | null }) {
   const { doc, scene, layer, tab, frame, total, actions } = useWorkspace();
   const { t } = useI18n();
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -210,8 +211,15 @@ export default function Timeline() {
   })();
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col border-t border-border bg-background">
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-1">
+    <div className="flex min-h-0 flex-1 flex-col bg-background">
+      <div
+        data-panel-handle={bare?.handle}
+        onPointerDown={bare?.onHandlePointerDown}
+        className={cn(
+          "flex h-9 shrink-0 items-center gap-1 border-b border-border px-1",
+          bare && "cursor-grab select-none"
+        )}
+      >
         <ToolButton
           icon={tab.playing ? Pause : Play}
           label={t("command.play")}
@@ -254,6 +262,7 @@ export default function Timeline() {
         />
         <span className="px-1 text-xs text-muted-foreground">/ {total}</span>
         <span className="px-1 text-xs text-muted-foreground">{doc.fps} fps</span>
+        {bare?.trailing}
       </div>
 
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-1">

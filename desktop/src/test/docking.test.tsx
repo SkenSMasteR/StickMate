@@ -100,15 +100,23 @@ describe("dock resizing", () => {
     expect(sizedWrapper("bottom").style.height).toBe("320px");
   }, 30000);
 
-  test("dragging the left handle resizes the tools zone", async () => {
+  test("the left zone is a fixed tool strip until another panel joins it", async () => {
     await renderEditor();
-    expect(sizedWrapper("left").style.width).toBe("40px");
+    expect(resizeHandle("left")).toBeNull();
+    expect(zoneEl("left")?.parentElement?.style.width).toBe("40px");
+    await panelMenu("side");
+    await choose(en["panel.dock.left"]);
+    expect(sizedWrapper("left").style.width).toBe("264px");
     await drag(resizeHandle("left"), [
-      [40, 300],
-      [90, 300],
-      [140, 300]
+      [264, 300],
+      [314, 300],
+      [364, 300]
     ]);
-    expect(sizedWrapper("left").style.width).toBe("140px");
+    expect(sizedWrapper("left").style.width).toBe("364px");
+    await panelMenu("side");
+    await choose(en["panel.dock.right"]);
+    expect(resizeHandle("left")).toBeNull();
+    expect(zoneEl("left")?.parentElement?.style.width).toBe("40px");
   }, 30000);
 });
 

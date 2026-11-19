@@ -3,9 +3,10 @@ import { ChevronLeft, ChevronRight, Copy, MoreHorizontal, Plus, Trash2 } from "l
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { sceneLength } from "@/lib/document";
+import type { BareChrome } from "./DockLayout";
 import { useWorkspace } from "./workspace";
 
-export default function ScenesBar() {
+export default function ScenesBar({ bare }: { bare?: BareChrome | null }) {
   const { doc, scene, actions } = useWorkspace();
   const { t } = useI18n();
   const barRef = useRef<HTMLDivElement | null>(null);
@@ -49,8 +50,14 @@ export default function ScenesBar() {
   return (
     <div
       ref={barRef}
-      className="relative z-30 flex h-9 shrink-0 items-center gap-1 border-b border-border bg-muted/40 px-1"
+      data-panel-handle={bare?.handle}
+      onPointerDown={bare?.onHandlePointerDown}
+      className={cn(
+        "relative z-30 flex h-9 shrink-0 items-center gap-1 border-b border-border bg-muted/40 px-1",
+        bare && "cursor-grab select-none"
+      )}
     >
+      {bare?.leading}
       {doc.scenes.map((item, index) => {
         const active = item.id === scene.id;
         return (
@@ -170,6 +177,8 @@ export default function ScenesBar() {
       >
         <Plus className="h-4 w-4" />
       </button>
+      {bare && <div className="flex-1" />}
+      {bare?.trailing}
     </div>
   );
 }

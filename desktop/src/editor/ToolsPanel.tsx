@@ -23,7 +23,9 @@ import {
 import { useI18n } from "@/i18n";
 import { usePrefs } from "@/lib/prefs";
 import { formatCombo } from "@/lib/shortcuts";
+import { cn } from "@/lib/utils";
 import { buildCommands } from "./commands";
+import type { BareChrome } from "./DockLayout";
 import ToolButton from "./ToolButton";
 import { useWorkspace } from "./workspace";
 import type { Tool } from "./workspace";
@@ -48,11 +50,13 @@ const tools: Array<{ id: Tool; icon: typeof Pencil }> = [
 export default function ToolsPanel({
   onShortcuts,
   onExport,
-  onPalette
+  onPalette,
+  bare
 }: {
   onShortcuts: () => void;
   onExport: () => void;
   onPalette?: () => void;
+  bare?: BareChrome | null;
 }) {
   const { tab, actions } = useWorkspace();
   const { t } = useI18n();
@@ -68,7 +72,14 @@ export default function ToolsPanel({
   ];
 
   return (
-    <div className="flex w-10 shrink-0 flex-col items-center gap-1 border-r border-border bg-background py-1">
+    <div
+      data-panel-handle={bare?.handle}
+      onPointerDown={bare?.onHandlePointerDown}
+      className={cn(
+        "flex w-10 shrink-0 flex-col items-center gap-1 bg-background py-1",
+        bare && "cursor-grab select-none"
+      )}
+    >
       {tools.map((tool) => {
         const command = commands.find((item) => item.id === `tool.${tool.id}`);
         const label = command?.label ?? tool.id;
@@ -97,6 +108,7 @@ export default function ToolsPanel({
             />
           );
         })}
+        {bare?.trailing}
       </div>
     </div>
   );
