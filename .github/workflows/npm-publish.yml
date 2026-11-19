@@ -42,6 +42,13 @@ jobs:
           fi
       - name: Set package version
         run: npm version "${{ steps.version.outputs.value }}" --no-git-tag-version --allow-same-version
+      - name: Diagnostics
+        run: |
+          node --version
+          npm --version
+          npm config get registry
+          echo "OIDC URL set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
+          echo "OIDC token set: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}"
       - name: Publish
         run: |
           set -euo pipefail
