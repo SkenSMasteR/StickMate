@@ -1,0 +1,47 @@
+name: NPM Unpublish
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to unpublish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  unpublish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Update npm
+        run: npm install -g npm@latest
+      - name: Exchange OIDC token
+        id: token
+        run: |
+          set -euo pipefail
+          ID_TOKEN=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=npm:registry.npmjs.org" | jq -r .value)
+          TOKEN=$(curl -fsS -X POST -H "Authorization: Bearer $ID_TOKEN" "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/stickmate" | jq -r .token)
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "token exchange returned no token"
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+      - name: Unpublish
+        env:
+          NPM_TOKEN: ${{ steps.token.outputs.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+          npm unpublish "stickmate@$VERSION" --force
+          if [ "$(npm dist-tag ls stickmate | awk '/^next:/ {print $2}')" = "$VERSION" ]; then
+            npm dist-tag rm stickmate next
+          fi
