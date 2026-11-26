@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -8,7 +9,6 @@ use tauri_plugin_opener::OpenerExt;
 use crate::document::{DocStore, Document, Scene};
 
 const RUNTIME: &str = include_str!("../../src/export/runtime.js");
-const PROJECT_LIMIT: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -63,11 +63,23 @@ pub struct ExportResult {
 
 #[derive(Debug)]
 struct Package {
-    json: String,
+    project: WebProject,
     width: u32,
     height: u32,
     fps: u32,
     frames: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebProject {
+    #[serde(flatten)]
+    document: Document,
+    #[serde(rename = "loop")]
+    looping: bool,
+    scale: f64,
+    start_frame: u32,
+    end_frame: Option<u32>,
 }
 
 fn scene_length(scene: &Scene) -> u32 {
@@ -80,19 +92,18 @@ fn scene_length(scene: &Scene) -> u32 {
         .max(1)
 }
 
-fn build_package(doc: &Document, options: &ExportOptions) -> Result<Package, String> {
+fn build_package(mut export: Document, options: &ExportOptions) -> Result<Package, String> {
     if options.fps == 0 || options.fps > 120 {
         return Err("frame rate must be between 1 and 120".to_string());
     }
     if !options.scale.is_finite() || !(0.25..=4.0).contains(&options.scale) {
         return Err("resolution scale must be between 0.25 and 4".to_string());
     }
-    let width = (doc.width as f64 * options.scale).round().max(1.0) as u32;
-    let height = (doc.height as f64 * options.scale).round().max(1.0) as u32;
+    let width = (export.width as f64 * options.scale).round().max(1.0) as u32;
+    let height = (export.height as f64 * options.scale).round().max(1.0) as u32;
     if width > 16384 || height > 16384 {
         return Err("export resolution is too large".to_string());
     }
-    let mut export = doc.clone();
     export.width = width;
     export.height = height;
     export.fps = options.fps;
@@ -108,12 +119,12 @@ fn build_package(doc: &Document, options: &ExportOptions) -> Result<Package, Str
         }
         ExportRange::Scene { scene_id } => {
             let index = export.scene_index(scene_id)?;
-            export.scenes = vec![export.scenes[index].clone()];
+            export.scenes = vec![export.scenes.swap_remove(index)];
             frames = scene_length(&export.scenes[0]);
         }
         ExportRange::Frames { scene_id, start, end } => {
             let index = export.scene_index(scene_id)?;
-            let scene = export.scenes[index].clone();
+            let scene = export.scenes.swap_remove(index);
             if end < start || *end >= scene_length(&scene) {
                 return Err("frame range is invalid".to_string());
             }
@@ -123,18 +134,14 @@ fn build_package(doc: &Document, options: &ExportOptions) -> Result<Package, Str
             frames = end - start + 1;
         }
     }
-    let mut value = serde_json::to_value(&export).map_err(|error| error.to_string())?;
-    let object = value.as_object_mut().expect("document is an object");
-    object.insert("loop".to_string(), serde_json::json!(options.looping));
-    object.insert("scale".to_string(), serde_json::json!(options.scale));
-    object.insert("startFrame".to_string(), serde_json::json!(start_frame));
-    object.insert("endFrame".to_string(), serde_json::json!(end_frame));
-    let json = serde_json::to_string(&value).map_err(|error| error.to_string())?;
-    if json.len() > PROJECT_LIMIT {
-        return Err("project is too large to export".to_string());
-    }
     Ok(Package {
-        json,
+        project: WebProject {
+            document: export,
+            looping: options.looping,
+            scale: options.scale,
+            start_frame,
+            end_frame,
+        },
         width,
         height,
         fps: options.fps,
@@ -173,12 +180,27 @@ fn sanitize_folder(value: &str) -> String {
     trimmed.to_string()
 }
 
-fn html_page(name: &str, json: &str, width: u32, height: u32) -> String {
+struct HtmlJson;
+
+impl serde_json::ser::Formatter for HtmlJson {
+    fn write_string_fragment<W: ?Sized + Write>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()> {
+        for (index, part) in fragment.split('<').enumerate() {
+            if index > 0 {
+                writer.write_all(b"\\u003c")?;
+            }
+            writer.write_all(part.as_bytes())?;
+        }
+        Ok(())
+    }
+}
+
+fn html_page(mut writer: impl Write, name: &str, package: &Package) -> io::Result<()> {
     let title = escape_html(name);
-    let embedded = json.replace('<', "\\u003c");
-    format!(
-        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>{title}</title>\n<style>body{{margin:0;display:flex;flex-direction:column;align-items:center;gap:12px;background:#18181b;color:#fafafa;font-family:system-ui,sans-serif}}h1{{font-size:16px;font-weight:600;margin:12px 0 0}}canvas{{border:1px solid #3f3f46;max-width:100%}}</style>\n</head>\n<body>\n<h1>{title}</h1>\n<canvas id=\"stage\" width=\"{width}\" height=\"{height}\"></canvas>\n<script id=\"stickmate-project\" type=\"application/json\">{embedded}</script>\n<script src=\"stickmate.js\"></script>\n<script>\nconst player = StickMate.load(JSON.parse(document.getElementById(\"stickmate-project\").textContent));\nplayer.mount(document.getElementById(\"stage\"));\nplayer.play();\n</script>\n</body>\n</html>\n"
-    )
+    let width = package.width;
+    let height = package.height;
+    write!(writer, "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>{title}</title>\n<style>body{{margin:0;display:flex;flex-direction:column;align-items:center;gap:12px;background:#18181b;color:#fafafa;font-family:system-ui,sans-serif}}h1{{font-size:16px;font-weight:600;margin:12px 0 0}}canvas{{border:1px solid #3f3f46;max-width:100%}}</style>\n</head>\n<body>\n<h1>{title}</h1>\n<canvas id=\"stage\" width=\"{width}\" height=\"{height}\"></canvas>\n<script id=\"stickmate-project\" type=\"application/json\">")?;
+    package.project.serialize(&mut serde_json::Serializer::with_formatter(&mut writer, HtmlJson))?;
+    writer.write_all(b"</script>\n<script src=\"stickmate.js\"></script>\n<script>\nconst player = StickMate.load(JSON.parse(document.getElementById(\"stickmate-project\").textContent));\nplayer.mount(document.getElementById(\"stage\"));\nplayer.play();\n</script>\n</body>\n</html>\n")
 }
 
 fn write_package(
@@ -191,11 +213,14 @@ fn write_package(
     let dir = root.join(folder);
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     fs::write(dir.join("stickmate.js"), RUNTIME).map_err(|error| error.to_string())?;
-    fs::write(dir.join("project.json"), &package.json).map_err(|error| error.to_string())?;
+    let create = |file: &str| fs::File::create(dir.join(file)).map(BufWriter::new).map_err(|error| error.to_string());
+    let mut json = create("project.json")?;
+    serde_json::to_writer(&mut json, &package.project).map_err(|error| error.to_string())?;
+    json.flush().map_err(|error| error.to_string())?;
     let mut files = vec!["stickmate.js".to_string(), "project.json".to_string()];
     if format == ExportFormat::Html5 {
-        let page = html_page(name, &package.json, package.width, package.height);
-        fs::write(dir.join("index.html"), page).map_err(|error| error.to_string())?;
+        let mut page = create("index.html")?;
+        html_page(&mut page, name, package).and_then(|()| page.flush()).map_err(|error| error.to_string())?;
         files.push("index.html".to_string());
     }
     Ok((dir, files))
@@ -210,14 +235,15 @@ pub fn export_web(
     options: ExportOptions,
 ) -> Result<ExportResult, String> {
     let doc = store.get(&id)?;
-    let package = build_package(&doc, &options)?;
+    let name = doc.name.clone();
+    let package = build_package(doc, &options)?;
     let root = app
         .path()
         .download_dir()
         .map_err(|error| error.to_string())?
         .join("StickMate");
-    let folder = format!("{}-{}", sanitize_folder(&doc.name), format.suffix());
-    let (dir, files) = write_package(&root, &folder, format, &package, &doc.name)?;
+    let folder = format!("{}-{}", sanitize_folder(&name), format.suffix());
+    let (dir, files) = write_package(&root, &folder, format, &package, &name)?;
     let path = dir.to_string_lossy().into_owned();
     app.opener()
         .open_path(path.clone(), None::<&str>)
@@ -230,6 +256,68 @@ pub fn export_web(
         fps: package.fps,
         frames: package.frames,
     })
+}
+
+struct VideoFile {
+    file: tempfile::NamedTempFile,
+    destination: PathBuf,
+}
+
+#[derive(Default)]
+pub struct VideoExports(std::sync::Mutex<std::collections::HashMap<String, VideoFile>>);
+
+#[derive(Serialize)]
+pub struct VideoStart {
+    token: String,
+    project: WebProject,
+}
+
+#[tauri::command]
+pub fn video_start(
+    app: AppHandle,
+    store: State<'_, DocStore>,
+    videos: State<'_, VideoExports>,
+    id: String,
+    mut options: ExportOptions,
+) -> Result<VideoStart, String> {
+    options.transparent = false;
+    let doc = store.get(&id)?;
+    let name = sanitize_folder(&doc.name);
+    let package = build_package(doc, &options)?;
+    let dir = app.path().download_dir().map_err(|e| e.to_string())?
+        .join("StickMate").join(format!("{name}-mp4"));
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let file = tempfile::NamedTempFile::new_in(&dir).map_err(|e| e.to_string())?;
+    let destination = dir.join(format!("{name}.mp4"));
+    let token = crate::document::new_id("video");
+    videos.0.lock().map_err(|e| e.to_string())?.insert(token.clone(), VideoFile { file, destination });
+    Ok(VideoStart { token, project: package.project })
+}
+
+#[tauri::command]
+pub fn video_write(videos: State<'_, VideoExports>, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom};
+    let headers = request.headers();
+    let token = headers.get("video-token").and_then(|v| v.to_str().ok()).ok_or("missing video token")?;
+    let offset: u64 = headers.get("video-offset").and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok()).ok_or("invalid video offset")?;
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("invalid video data".to_string());
+    };
+    let mut active = videos.0.lock().map_err(|e| e.to_string())?;
+    let video = active.get_mut(token).ok_or("unknown video export")?;
+    video.file.seek(SeekFrom::Start(offset)).and_then(|_| video.file.write_all(bytes)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn video_close(app: AppHandle, videos: State<'_, VideoExports>, token: String, publish: bool) -> Result<String, String> {
+    let video = videos.0.lock().map_err(|e| e.to_string())?.remove(&token).ok_or("unknown video export")?;
+    if publish {
+        video.file.persist(&video.destination).map_err(|e| e.to_string())?;
+        let dir = video.destination.parent().ok_or("missing export directory")?;
+        app.opener().open_path(dir.to_string_lossy().into_owned(), None::<&str>).map_err(|e| e.to_string())?;
+    }
+    Ok(video.destination.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -254,7 +342,7 @@ mod tests {
     }
 
     fn value(package: &Package) -> serde_json::Value {
-        serde_json::from_str(&package.json).expect("json")
+        serde_json::to_value(&package.project).expect("json")
     }
 
     fn temp_root() -> PathBuf {
@@ -271,8 +359,10 @@ mod tests {
         assert!(!escaped.contains('<'));
         assert!(!escaped.contains('>'));
         assert_eq!(escape_html("a&b\"c'd"), "a&amp;b&quot;c&#39;d");
-        let package = build_package(&doc(), &options(ExportRange::Whole)).expect("package");
-        let page = html_page(name, &package.json, 1280, 720);
+        let package = build_package(doc(), &options(ExportRange::Whole)).expect("package");
+        let mut bytes = Vec::new();
+        html_page(&mut bytes, name, &package).unwrap();
+        let page = String::from_utf8(bytes).unwrap();
         assert!(page.contains("<title>&lt;script&gt;alert(1)&lt;/script&gt;</title>"));
         assert!(page.contains("<h1>&lt;script&gt;alert(1)&lt;/script&gt;</h1>"));
         assert!(!page.contains("<script>alert(1)"));
@@ -282,8 +372,10 @@ mod tests {
     fn embedded_json_cannot_break_out_of_the_script_tag() {
         let mut hostile = doc();
         hostile.name = "</script><script>alert(1)</script>".to_string();
-        let package = build_package(&hostile, &options(ExportRange::Whole)).expect("package");
-        let page = html_page(&hostile.name, &package.json, 1280, 720);
+        let package = build_package(hostile.clone(), &options(ExportRange::Whole)).expect("package");
+        let mut bytes = Vec::new();
+        html_page(&mut bytes, &hostile.name, &package).unwrap();
+        let page = String::from_utf8(bytes).unwrap();
         assert!(!page.contains("</script><script>alert(1)"));
         let start = page.find("type=\"application/json\">").expect("json tag") + 24;
         let end = page[start..].find("</script>").expect("close tag") + start;
@@ -316,7 +408,7 @@ mod tests {
 
     #[test]
     fn whole_project_keeps_every_scene() {
-        let package = build_package(&doc(), &options(ExportRange::Whole)).expect("package");
+        let package = build_package(doc(), &options(ExportRange::Whole)).expect("package");
         assert_eq!(package.frames, 30);
         let json = value(&package);
         assert_eq!(json["scenes"].as_array().expect("scenes").len(), 2);
@@ -329,7 +421,7 @@ mod tests {
     #[test]
     fn scene_range_keeps_only_that_scene() {
         let package = build_package(
-            &doc(),
+            doc(),
             &options(ExportRange::Scene { scene_id: "s1".to_string() }),
         )
         .expect("package");
@@ -339,7 +431,7 @@ mod tests {
         assert_eq!(scenes.len(), 1);
         assert_eq!(scenes[0]["id"], "s1");
         assert!(build_package(
-            &doc(),
+            doc(),
             &options(ExportRange::Scene { scene_id: "nope".to_string() })
         )
         .is_err());
@@ -348,7 +440,7 @@ mod tests {
     #[test]
     fn frame_range_records_its_bounds() {
         let package = build_package(
-            &doc(),
+            doc(),
             &options(ExportRange::Frames {
                 scene_id: "s0".to_string(),
                 start: 4,
@@ -368,7 +460,7 @@ mod tests {
         for (start, end) in [(16, 4), (0, 25), (0, 99)] {
             assert_eq!(
                 build_package(
-                    &doc(),
+                    doc(),
                     &options(ExportRange::Frames {
                         scene_id: "s0".to_string(),
                         start,
@@ -383,28 +475,28 @@ mod tests {
 
     #[test]
     fn scale_fps_loop_and_transparency_change_the_output() {
-        let base = build_package(&doc(), &options(ExportRange::Whole)).expect("base");
+        let base = build_package(doc(), &options(ExportRange::Whole)).expect("base");
         let mut scaled_options = options(ExportRange::Whole);
         scaled_options.scale = 0.5;
-        let scaled = build_package(&doc(), &scaled_options).expect("scaled");
+        let scaled = build_package(doc(), &scaled_options).expect("scaled");
         assert_eq!((scaled.width, scaled.height), (640, 360));
         assert_eq!(value(&scaled)["scale"], 0.5);
-        assert_ne!(base.json, scaled.json);
+        assert_ne!(value(&base), value(&scaled));
         scaled_options.scale = 2.0;
-        let doubled = build_package(&doc(), &scaled_options).expect("doubled");
+        let doubled = build_package(doc(), &scaled_options).expect("doubled");
         assert_eq!((doubled.width, doubled.height), (2560, 1440));
         let mut fast = options(ExportRange::Whole);
         fast.fps = 60;
-        let fast = build_package(&doc(), &fast).expect("fast");
+        let fast = build_package(doc(), &fast).expect("fast");
         assert_eq!(fast.fps, 60);
         assert_eq!(value(&fast)["fps"], 60);
         let mut once = options(ExportRange::Whole);
         once.looping = false;
-        assert_eq!(value(&build_package(&doc(), &once).expect("once"))["loop"], false);
+        assert_eq!(value(&build_package(doc(), &once).expect("once"))["loop"], false);
         let mut clear = options(ExportRange::Whole);
         clear.transparent = true;
         assert_eq!(
-            value(&build_package(&doc(), &clear).expect("clear"))["background"],
+            value(&build_package(doc(), &clear).expect("clear"))["background"],
             ""
         );
         assert_eq!(value(&base)["background"], "#ffffff");
@@ -420,7 +512,7 @@ mod tests {
             .expect("symbol"),
         );
         let package = build_package(
-            &film,
+            film,
             &options(ExportRange::Scene {
                 scene_id: "s1".to_string(),
             }),
@@ -439,7 +531,7 @@ mod tests {
             let mut bad = options(ExportRange::Whole);
             bad.scale = scale;
             assert_eq!(
-                build_package(&doc(), &bad).expect_err("scale"),
+                build_package(doc(), &bad).expect_err("scale"),
                 "resolution scale must be between 0.25 and 4"
             );
         }
@@ -447,7 +539,7 @@ mod tests {
             let mut bad = options(ExportRange::Whole);
             bad.fps = fps;
             assert_eq!(
-                build_package(&doc(), &bad).expect_err("fps"),
+                build_package(doc(), &bad).expect_err("fps"),
                 "frame rate must be between 1 and 120"
             );
         }
@@ -456,18 +548,18 @@ mod tests {
         let mut wide = doc();
         wide.width = 8192;
         assert_eq!(
-            build_package(&wide, &huge).expect_err("resolution"),
+            build_package(wide, &huge).expect_err("resolution"),
             "export resolution is too large"
         );
     }
 
     #[test]
-    fn oversized_projects_are_capped() {
+    fn large_projects_export_to_disk() {
         let mut heavy = doc();
         heavy.scenes[0].layers[0].keys[0].shapes = vec![crate::document::Shape::Text {
             x: 0.0,
             y: 0.0,
-            text: "x".repeat(PROJECT_LIMIT + 1),
+            text: "x".repeat(8 * 1024 * 1024 + 1),
             size: 12.0,
             family: "Segoe UI".to_string(),
             color: "#000000".to_string(),
@@ -476,16 +568,19 @@ mod tests {
             align: crate::document::TextAlign::Left,
             matrix: None,
         }];
-        assert_eq!(
-            build_package(&heavy, &options(ExportRange::Whole)).expect_err("size"),
-            "project is too large to export"
-        );
+        let package = build_package(heavy, &options(ExportRange::Whole)).expect("package");
+        let root = temp_root();
+        let (dir, _) = write_package(&root, "large", ExportFormat::Html5, &package, "large").expect("write");
+        for file in ["index.html", "project.json"] {
+            assert!(fs::metadata(dir.join(file)).unwrap().len() > 8 * 1024 * 1024);
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn html5_package_contains_a_runnable_page() {
         let root = temp_root();
-        let package = build_package(&doc(), &options(ExportRange::Whole)).expect("package");
+        let package = build_package(doc(), &options(ExportRange::Whole)).expect("package");
         let (dir, files) =
             write_package(&root, "Export test-html5", ExportFormat::Html5, &package, "Export test")
                 .expect("write");
@@ -497,7 +592,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.join("project.json")).expect("json"),
-            package.json
+            serde_json::to_string(&package.project).unwrap()
         );
         let page = fs::read_to_string(dir.join("index.html")).expect("page");
         assert!(page.contains("<title>Export test</title>"));
@@ -510,7 +605,7 @@ mod tests {
     #[test]
     fn canvasjs_package_has_no_page() {
         let root = temp_root();
-        let package = build_package(&doc(), &options(ExportRange::Whole)).expect("package");
+        let package = build_package(doc(), &options(ExportRange::Whole)).expect("package");
         let (dir, files) = write_package(
             &root,
             "Export test-canvasjs",
@@ -536,7 +631,7 @@ mod tests {
         fs::create_dir_all(&dir).expect("existing folder");
         fs::write(dir.join("keep.txt"), "unrelated").expect("unrelated file");
         fs::write(dir.join("index.html"), "stale page").expect("stale page");
-        let package = build_package(&doc(), &options(ExportRange::Whole)).expect("package");
+        let package = build_package(doc(), &options(ExportRange::Whole)).expect("package");
         let (written, files) =
             write_package(&root, &folder, ExportFormat::Html5, &package, "../../my film")
                 .expect("write");

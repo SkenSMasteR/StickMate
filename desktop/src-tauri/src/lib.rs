@@ -31,6 +31,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(export::VideoExports::default())
         .manage(tokens::TokenCache::default())
         .setup(|app| {
             let recovery = app
@@ -137,6 +138,9 @@ pub fn run() {
             media::media_sequence,
             media::media_gif,
             export::export_web,
+            export::video_start,
+            export::video_write,
+            export::video_close,
             fla::project_export_fla,
             fla::project_import_fla,
             app_version

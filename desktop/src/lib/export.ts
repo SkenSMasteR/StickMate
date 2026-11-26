@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type ExportFormat = "html5" | "canvasjs";
+export type ExportFormat = "html5" | "canvasjs" | "mp4";
 
 export type ExportRangeKind = "whole" | "scene" | "frames";
 
@@ -21,7 +21,7 @@ export interface ExportSettings {
   transparent: boolean;
 }
 
-export const EXPORT_FORMATS: ExportFormat[] = ["html5", "canvasjs"];
+export const EXPORT_FORMATS: ExportFormat[] = ["html5", "canvasjs", "mp4"];
 
 export const EXPORT_RANGE_KINDS: ExportRangeKind[] = ["whole", "scene", "frames"];
 
@@ -74,5 +74,8 @@ export function exportWeb(
   format: ExportFormat,
   options: ExportOptions
 ): Promise<ExportResult> {
+  if (format === "mp4") {
+    return import("./export-video").then(({ exportVideo }) => exportVideo(id, options));
+  }
   return invoke<ExportResult>("export_web", { id, format, options });
 }

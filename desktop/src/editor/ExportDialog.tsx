@@ -220,6 +220,7 @@ export default function ExportDialog({
               onChange={(event) => setFormat(event.target.value as ExportFormat)}
             >
               <option value="html5">{t("export.html5")}</option>
+              <option value="mp4">MP4</option>
               <option value="canvasjs">{t("export.canvasjs")}</option>
             </select>
           </label>
@@ -316,13 +317,14 @@ export default function ExportDialog({
         </div>
         <div className="flex items-center justify-between text-xs">
           <span>{t("export.loop")}</span>
-          <Switch aria-label={t("export.loop")} checked={loop} onCheckedChange={setLoop} />
+          <Switch aria-label={t("export.loop")} disabled={format === "mp4"} checked={format !== "mp4" && loop} onCheckedChange={setLoop} />
         </div>
         <div className="flex items-center justify-between text-xs">
           <span>{t("export.transparent")}</span>
           <Switch
             aria-label={t("export.transparent")}
-            checked={transparent}
+            disabled={format === "mp4"}
+            checked={format !== "mp4" && transparent}
             onCheckedChange={setTransparent}
           />
         </div>

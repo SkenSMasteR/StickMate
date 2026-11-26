@@ -1056,9 +1056,7 @@
     return out;
   }
 
-  const images = new Map();
-
-  function imageFor(source) {
+  function imageFor(images, source) {
     const found = images.get(source);
     if (found) {
       return found;
@@ -1116,10 +1114,10 @@
     return out;
   }
 
-  function drawShape(ctx, shape) {
+  function drawShape(ctx, shape, images) {
     if (shape.kind === "Group") {
       for (const child of shape.children) {
-        drawShape(ctx, child);
+        drawShape(ctx, child, images);
       }
       return;
     }
@@ -1144,7 +1142,7 @@
           ctx.stroke();
         }
         for (const child of bone.art) {
-          drawShape(ctx, child);
+          drawShape(ctx, child, images);
         }
         ctx.restore();
       }
@@ -1212,7 +1210,7 @@
       return;
     }
     if (shape.kind === "Bitmap") {
-      const image = imageFor(shape.source);
+      const image = imageFor(images, shape.source);
       if (!image.complete) {
         return;
       }
@@ -1248,6 +1246,7 @@
   }
 
   function load(project) {
+    const images = new Map();
     const scenes = project.scenes;
     const scale = project.scale;
     const width = project.width;
@@ -1274,7 +1273,7 @@
     let sctx = null;
     const surfaces = [];
     for (const source of projectSources(project)) {
-      const image = imageFor(source);
+      const image = imageFor(images, source);
       if (!image.complete) {
         image.addEventListener("load", render);
       }
@@ -1337,7 +1336,7 @@
         bctx.rotate((layer.transform.rotation * Math.PI) / 180);
         bctx.scale(layer.transform.scale, layer.transform.scale);
         for (const shape of layer.shapes) {
-          drawShape(bctx, shape);
+          drawShape(bctx, shape, images);
         }
         let source = buffer;
         if (layer.mask) {
@@ -1348,7 +1347,7 @@
           sctx.rotate((layer.mask.transform.rotation * Math.PI) / 180);
           sctx.scale(layer.mask.transform.scale, layer.mask.transform.scale);
           for (const shape of layer.mask.shapes) {
-            drawShape(sctx, shape);
+            drawShape(sctx, shape, images);
           }
           sctx.setTransform(1, 0, 0, 1, 0, 0);
           sctx.globalCompositeOperation = "source-in";
@@ -1387,6 +1386,9 @@
     }
 
     const player = {
+      async ready() {
+        await Promise.all([...new Set(projectSources(project))].map(source => imageFor(images, source).decode()));
+      },
       mount(target) {
         canvas = target;
         canvas.width = project.width;

@@ -4,7 +4,6 @@ import type { Document, Scene } from "@/lib/document";
 import type { ExportOptions, ExportResult } from "@/lib/export";
 import type { MockExtension } from "../backend";
 
-const PROJECT_LIMIT = 8 * 1024 * 1024;
 const ROOT = "C:/Users/Test/Downloads/StickMate";
 
 export const disk = new Map<string, string>();
@@ -124,9 +123,6 @@ function buildPayload(doc: Document, options: ExportOptions): Payload {
     startFrame,
     endFrame
   });
-  if (json.length > PROJECT_LIMIT) {
-    throw new Error("project is too large to export");
-  }
   return { json, width, height, fps: options.fps, frames };
 }
 

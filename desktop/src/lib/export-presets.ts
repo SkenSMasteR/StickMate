@@ -36,7 +36,7 @@ export function newPresetId(): string {
 }
 
 export function defaultPresetName(settings: ExportSettings): string {
-  const format = settings.format === "html5" ? "HTML5" : "Canvas JS";
+  const format = { html5: "HTML5", canvasjs: "Canvas JS", mp4: "MP4" }[settings.format];
   const range =
     settings.rangeKind === "whole"
       ? "Whole"
@@ -44,7 +44,7 @@ export function defaultPresetName(settings: ExportSettings): string {
         ? "Scene"
         : `Frames ${settings.start} to ${settings.end}`;
   const parts = [format, range, `${Math.round(settings.scale * 100)}%`, `${settings.fps} fps`];
-  if (settings.transparent) {
+  if (settings.transparent && settings.format !== "mp4") {
     parts.push("alpha");
   }
   return parts.join(" · ").slice(0, MAX_NAME_LENGTH);
