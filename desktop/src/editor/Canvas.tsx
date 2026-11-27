@@ -134,7 +134,7 @@ function makeShape(tool: Tool, from: Point, to: Point, tab: TabState): Shape {
       kind: "Stroke",
       points: tool === "line" ? [from, to] : [from],
       color: tab.stroke,
-      width: tab.strokeWidth
+      width: tool === "brush" && !tab.brushWeight ? 1 : tab.strokeWidth
     };
   }
   const box = {
@@ -717,7 +717,7 @@ function LayerContent({
 }
 
 export default function Canvas() {
-  const { doc, layer, tab, frames, transform, actions, setTab } = useWorkspace();
+  const { doc, layer, tab, frame, frames, transform, actions, setTab } = useWorkspace();
   const { t } = useI18n();
   const prefs = usePrefs();
   const view = prefs.prefs.view;
@@ -814,8 +814,8 @@ export default function Canvas() {
       ? Math.min((host.width - 48) / doc.width, (host.height - 48) / doc.height)
       : 1;
   const scale = Math.max(0.02, fit * tab.zoom);
-  const current = frames.length > 0 ? frames[frames.length - 1] : null;
-  const onion = tab.onion ? frames.slice(0, -1) : [];
+  const current = frames.find((item) => item.frame === frame);
+  const onion = tab.onion ? frames.filter((item) => item.frame !== frame && (item.frame < frame || tab.futureOnion)) : [];
   const erasing = tab.tool === "eraser";
   const cursor = erasing
     ? "none"
@@ -1501,13 +1501,18 @@ export default function Canvas() {
     const end = SNAP_DRAW_TOOLS.includes(tab.tool) ? snapDrawPoint(point) : point;
     setDraft((prev) => {
       if ((tab.tool === "pencil" || tab.tool === "brush") && prev && prev.kind === "Stroke") {
-        return { ...prev, points: [...prev.points, point] };
+        const last = prev.points[prev.points.length - 1];
+        const follow = 1 / (1 + tab.stabilization / 12);
+        const sample = tab.tool === "brush" && tab.stabilize
+          ? { x: last.x + (point.x - last.x) * follow, y: last.y + (point.y - last.y) * follow }
+          : point;
+        return { ...prev, points: [...prev.points, sample] };
       }
       return makeShape(tab.tool, drag.start, end, tab);
     });
   };
 
-  const onPointerUp = () => {
+  const onPointerUp = (event: ReactPointerEvent<SVGSVGElement>) => {
     const drag = dragRef.current;
     dragRef.current = null;
     setSnapLines(NO_SNAP_LINES);
@@ -1521,7 +1526,11 @@ export default function Canvas() {
       return;
     }
     if (drag.mode === "draw" && draft) {
-      const shape = finishDraft(draft, tab);
+      const stroke = tab.tool === "brush" && tab.stabilize && draft.kind === "Stroke" &&
+        event.type === "pointerup" && draft.points.length > 1
+        ? { ...draft, points: [...draft.points, toDoc(event.clientX, event.clientY)] }
+        : draft;
+      const shape = finishDraft(stroke, tab);
       setDraft(null);
       if (isWorthwhile(shape)) {
         actions.draw(shape);
@@ -1792,7 +1801,7 @@ export default function Canvas() {
             />
           )}
           {onion.map((item) => (
-            <g key={item.frame} data-onion-mode={view.onionMode}>
+            <g key={item.frame} data-onion-mode={view.onionMode} data-onion-direction={item.frame < frame ? "past" : "future"} pointerEvents="none">
               {renderLayers(item.layers, true)}
             </g>
           ))}

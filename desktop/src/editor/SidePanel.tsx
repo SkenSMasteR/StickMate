@@ -1066,7 +1066,14 @@ export default function SidePanel() {
           {usesFill && (
             <ColorField label={t("editor.fill")} value={tab.fill} onChange={(fill) => setTab({ fill })} />
           )}
-          {usesWidth && (
+          {tool === "brush" && (
+            <label className="flex items-center gap-2 text-xs">
+              <input type="checkbox" checked={tab.brushWeight}
+                onChange={(event) => setTab({ brushWeight: event.target.checked })} />
+              {t("editor.brushWeight")}
+            </label>
+          )}
+          {usesWidth && (tool !== "brush" || tab.brushWeight) && (
             <NumberField
               label={t("editor.strokeWidth")}
               value={tab.strokeWidth}
@@ -1085,6 +1092,20 @@ export default function SidePanel() {
               step={5}
               onCommit={(smoothing) => setTab({ smoothing })}
             />
+          )}
+          {tool === "brush" && (
+            <>
+              <label className="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={tab.stabilize}
+                  onChange={(event) => setTab({ stabilize: event.target.checked })} />
+                {t("editor.stabilizer")}
+              </label>
+              {tab.stabilize && (
+                <NumberField label={t("editor.stabilization")} value={tab.stabilization}
+                  min={0} max={100} step={5}
+                  onCommit={(stabilization) => setTab({ stabilization })} />
+              )}
+            </>
           )}
           {tool === "polygon" && (
             <NumberField

@@ -121,6 +121,7 @@ export interface TabState {
   loop: boolean;
   onion: boolean;
   onionRange: number;
+  futureOnion: boolean;
   selected: number[];
   pivot: Point | null;
   selectedNode: number | null;
@@ -130,6 +131,9 @@ export interface TabState {
   fill: string;
   strokeWidth: number;
   smoothing: number;
+  brushWeight: boolean;
+  stabilize: boolean;
+  stabilization: number;
   sides: number;
   eraserWidth: number;
   fontSize: number;
@@ -160,6 +164,7 @@ function firstTab(doc: Document): TabState {
     loop: true,
     onion: false,
     onionRange: 2,
+    futureOnion: true,
     selected: [],
     pivot: null,
     selectedNode: null,
@@ -169,6 +174,9 @@ function firstTab(doc: Document): TabState {
     fill: "#3b82f6",
     strokeWidth: 3,
     smoothing: 30,
+    brushWeight: true,
+    stabilize: false,
+    stabilization: 50,
     sides: 5,
     eraserWidth: 20,
     fontSize: 32,
@@ -347,10 +355,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       : null;
   const total = scene ? sceneLength(scene) : 1;
   const frame = tab ? clamp(tab.frame, 0, total - 1) : 0;
-  const evaluated =
-    frames.length > 0 && layer
-      ? findLayer(frames[frames.length - 1].layers, layer.id) ?? undefined
-      : undefined;
+  const currentFrame = frames.find((item) => item.frame === frame);
+  const evaluated = currentFrame && layer ? findLayer(currentFrame.layers, layer.id) : undefined;
   const transform =
     evaluated?.transform ??
     (layer
@@ -493,7 +499,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
     let cancelled = false;
     const start = tab.onion ? Math.max(0, frame - tab.onionRange) : frame;
-    docEvaluate(doc.id, scene.id, start, frame)
+    const end = tab.onion && tab.futureOnion ? Math.min(total - 1, frame + tab.onionRange) : frame;
+    docEvaluate(doc.id, scene.id, start, end)
       .then((next) => {
         if (!cancelled) {
           setFrames(next);
@@ -507,7 +514,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [doc, frame, scene, tab]);
+  }, [doc, frame, scene, tab, total]);
 
   useEffect(() => {
     if (!doc || !tab?.playing) {

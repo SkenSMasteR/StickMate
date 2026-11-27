@@ -146,5 +146,10 @@ describe("view panel", () => {
     await waitFor(() =>
       expect(onionGroup()?.querySelector("g")?.getAttribute("opacity")).toBe("0.6")
     );
+    await seek("1");
+    await waitFor(() => expect(document.querySelector('[data-onion-direction="future"]')).toBeTruthy());
+    expect(document.querySelector('[data-onion-direction="past"]')).toBeNull();
+    await clickToggle("future-onion");
+    await waitFor(() => expect(onionGroup()).toBeNull());
   });
 });

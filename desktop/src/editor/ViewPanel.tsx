@@ -37,7 +37,7 @@ function Toggle({
 
 export default function ViewPanel() {
   const { t } = useI18n();
-  const { tab, actions } = useWorkspace();
+  const { tab, actions, setTab } = useWorkspace();
   const prefs = usePrefs();
   const view = prefs.prefs.view;
 
@@ -49,6 +49,12 @@ export default function ViewPanel() {
           label={t("view.onion")}
           active={tab?.onion ?? false}
           onToggle={actions.toggleOnion}
+        />
+        <Toggle
+          id="future-onion"
+          label={t("view.futureOnion")}
+          active={tab?.futureOnion ?? true}
+          onToggle={() => setTab({ futureOnion: !tab?.futureOnion })}
         />
         <Toggle
           id="trace"
