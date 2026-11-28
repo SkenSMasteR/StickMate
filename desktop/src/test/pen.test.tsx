@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as documents from "@/lib/document";
 import { act, fireEvent, waitFor } from "@testing-library/react";
 import { flattenPath } from "@/lib/document";
 import type { Shape } from "@/lib/document";
@@ -72,6 +73,34 @@ async function penClicks(points: Array<[number, number]>): Promise<void> {
 const base = { pointerId: 1, button: 0, buttons: 1, bubbles: true };
 
 describe("pen tool", () => {
+  it("keeps a lifted stylus stroke visible while drawing the next stroke", async () => {
+    const { doc } = await renderEditor();
+    const save = documents.docDraw;
+    let resume!: () => void;
+    const delay = new Promise<void>((resolve) => { resume = resolve; });
+    const pending = vi.spyOn(documents, "docDraw").mockImplementation(async (...args) => {
+      await delay;
+      return save(...args);
+    });
+    try {
+      const svg = getCanvas();
+      await drag(svg, [[10, 10], [30, 30]]);
+      expect(shapes(doc.id)).toHaveLength(0);
+      expect(svg.querySelector('polyline[points="10,10 30,30"]')).toBeTruthy();
+      fireEvent.pointerDown(svg, { ...base, pointerType: "pen", clientX: 40, clientY: 40 });
+      fireEvent.pointerMove(svg, { ...base, pointerType: "pen", clientX: 60, clientY: 60 });
+      fireEvent.pointerUp(svg, { ...base, pointerId: 2, pointerType: "touch" });
+      expect(svg.querySelector('polyline[points="40,40 60,60"]')).toBeTruthy();
+      fireEvent.pointerUp(svg, { ...base, pointerType: "pen", clientX: 60, clientY: 60 });
+      await act(async () => { resume(); });
+      await waitFor(() => expect(shapes(doc.id)).toHaveLength(2));
+      expect(svg.querySelectorAll("polyline")).toHaveLength(2);
+    } finally {
+      resume();
+      pending.mockRestore();
+    }
+  });
+
   it("places nodes and commits one path with one undo entry on Enter", async () => {
     const { doc } = await renderEditor();
     await penClicks([

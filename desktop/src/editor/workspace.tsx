@@ -220,6 +220,14 @@ function frameRange(start: number, count: number): number[] {
   return Array.from({ length: count }, (_, index) => start + index);
 }
 
+interface PendingInk {
+  docId: string;
+  sceneId: string;
+  layerId: string;
+  frame: number;
+  shape: Shape;
+}
+
 interface WorkspaceValue {
   ids: string[];
   activeId: string | null;
@@ -231,6 +239,7 @@ interface WorkspaceValue {
   frame: number;
   total: number;
   frames: EvalFrame[];
+  pendingInk: PendingInk[];
   transform: Transform;
   create: (input: NewDocument) => Promise<string | null>;
   open: (id: string) => Promise<boolean>;
@@ -340,6 +349,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [ids, setIds] = useState<string[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tabs, setTabs] = useState<Record<string, TabState>>({});
+  const [pendingInk, setPendingInk] = useState<PendingInk[]>([]);
+  const acceptedInk = useRef(new WeakSet<PendingInk>());
+  const inkRef = useRef<PendingInk[]>([]);
+  const removeInk = useCallback((finished: Set<PendingInk>) => {
+    inkRef.current = inkRef.current.filter((entry) => !finished.has(entry));
+    setPendingInk(inkRef.current);
+  }, []);
   const [frames, setFrames] = useState<EvalFrame[]>([]);
   const shapeClipboard = useRef<Promise<ShapeClip | null>>(Promise.resolve(null));
 
@@ -500,10 +516,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     const start = tab.onion ? Math.max(0, frame - tab.onionRange) : frame;
     const end = tab.onion && tab.futureOnion ? Math.min(total - 1, frame + tab.onionRange) : frame;
+    const finished = new Set(inkRef.current.filter((entry) =>
+      entry.docId === doc.id && acceptedInk.current.has(entry)
+    ));
     docEvaluate(doc.id, scene.id, start, end)
       .then((next) => {
         if (!cancelled) {
           setFrames(next);
+          if (finished.size) removeInk(finished);
         }
       })
       .catch((error) => {
@@ -757,7 +777,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     },
     zoomBy: (factor) => setTab({ zoom: clamp((tab?.zoom ?? 1) * factor, 0.1, 8) }),
     zoomFit: () => setTab({ zoom: 1 }),
-    draw: (shape) => edit((d, s, l) => docDraw(d.id, s.id, l.id, frame, shape)),
+    draw: (shape) => edit((d, s, l) => {
+      const entry = { docId: d.id, sceneId: s.id, layerId: l.id, frame, shape };
+      inkRef.current = [...inkRef.current, entry];
+      setPendingInk(inkRef.current);
+      return docDraw(d.id, s.id, l.id, frame, shape).then((next) => {
+        acceptedInk.current.add(entry);
+        return next;
+      }).catch((error) => {
+        removeInk(new Set([entry]));
+        throw error;
+      });
+    }),
     drawFigure: (x, y) => {
       if (!doc || !layer || layer.locked) {
         return;
@@ -1125,6 +1156,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         frame,
         total,
         frames,
+        pendingInk,
         transform,
         create,
         open,

@@ -717,12 +717,13 @@ function LayerContent({
 }
 
 export default function Canvas() {
-  const { doc, layer, tab, frame, frames, transform, actions, setTab } = useWorkspace();
+  const { doc, layer, tab, frame, frames, pendingInk, transform, actions, setTab } = useWorkspace();
   const { t } = useI18n();
   const prefs = usePrefs();
   const view = prefs.prefs.view;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const inkPointer = useRef<number | null>(null);
   const dragRef = useRef<Drag | null>(null);
   const eraseRef = useRef<Point[]>([]);
   const actionsRef = useRef(actions);
@@ -781,6 +782,8 @@ export default function Canvas() {
     setSelPreview(null);
     setSnapLines(NO_SNAP_LINES);
     dragRef.current = null;
+    inkPointer.current = null;
+    setDraft(null);
   }, [doc?.id, tab?.sceneId, tab?.layerId, tab?.frame]);
 
   useEffect(() => () => commitRef.current(false), [tab?.tool]);
@@ -826,7 +829,13 @@ export default function Canvas() {
     tab.tool === "select" ? "move" : tab.tool === "text" ? "text" : "crosshair";
 
   const toDoc = (clientX: number, clientY: number): Point => {
-    const rect = svgRef.current?.getBoundingClientRect();
+    const svg = svgRef.current;
+    const matrix = svg?.getScreenCTM?.();
+    if (matrix) {
+      const point = new DOMPoint(clientX, clientY).matrixTransform(matrix.inverse());
+      return { x: point.x, y: point.y };
+    }
+    const rect = svg?.getBoundingClientRect();
     if (!rect) {
       return { x: 0, y: 0 };
     }
@@ -1229,6 +1238,7 @@ export default function Canvas() {
   };
 
   const onPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (inkPointer.current !== null) return;
     if (event.button === 1) {
       dragRef.current = {
         mode: "pan",
@@ -1292,7 +1302,7 @@ export default function Canvas() {
       return;
     }
     if (tab.tool === "pen") {
-      const placed = snapDrawPoint(point);
+      const placed = toShape(snapDrawPoint(point));
       const nodes = penRef.current;
       const first = nodes[0];
       if (
@@ -1303,6 +1313,7 @@ export default function Canvas() {
         commitPen(true);
         return;
       }
+      inkPointer.current = event.pointerId;
       const next = [...nodes, { point: placed, handle_in: null, handle_out: null }];
       penRef.current = next;
       setPenNodes(next);
@@ -1328,7 +1339,8 @@ export default function Canvas() {
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
     }
-    const start = SNAP_DRAW_TOOLS.includes(tab.tool) ? snapDrawPoint(point) : point;
+    inkPointer.current = event.pointerId;
+    const start = toShape(SNAP_DRAW_TOOLS.includes(tab.tool) ? snapDrawPoint(point) : point);
     dragRef.current = {
       mode: "draw",
       start,
@@ -1341,12 +1353,13 @@ export default function Canvas() {
   };
 
   const onPointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (inkPointer.current !== null && inkPointer.current !== event.pointerId) return;
     const point = toDoc(event.clientX, event.clientY);
     if (erasing) {
       setHover(point);
     }
     if (tab.tool === "pen" && penRef.current.length > 0) {
-      setPenHover(point);
+      setPenHover(toShape(point));
     }
     const drag = dragRef.current;
     if (!drag) {
@@ -1441,7 +1454,8 @@ export default function Canvas() {
       return;
     }
     if (drag.mode === "pen") {
-      if (Math.hypot(point.x - drag.start.x, point.y - drag.start.y) > 2) {
+      const local = toShape(point);
+      if (Math.hypot(local.x - drag.start.x, local.y - drag.start.y) > 2) {
         const nodes = penRef.current;
         const index = nodes.length - 1;
         const node = nodes[index];
@@ -1450,10 +1464,10 @@ export default function Canvas() {
             position === index
               ? {
                   ...item,
-                  handle_out: point,
+                  handle_out: local,
                   handle_in: {
-                    x: 2 * item.point.x - point.x,
-                    y: 2 * item.point.y - point.y
+                    x: 2 * item.point.x - local.x,
+                    y: 2 * item.point.y - local.y
                   }
                 }
               : item
@@ -1498,14 +1512,14 @@ export default function Canvas() {
       });
       return;
     }
-    const end = SNAP_DRAW_TOOLS.includes(tab.tool) ? snapDrawPoint(point) : point;
+    const end = toShape(SNAP_DRAW_TOOLS.includes(tab.tool) ? snapDrawPoint(point) : point);
     setDraft((prev) => {
       if ((tab.tool === "pencil" || tab.tool === "brush") && prev && prev.kind === "Stroke") {
         const last = prev.points[prev.points.length - 1];
         const follow = 1 / (1 + tab.stabilization / 12);
         const sample = tab.tool === "brush" && tab.stabilize
-          ? { x: last.x + (point.x - last.x) * follow, y: last.y + (point.y - last.y) * follow }
-          : point;
+          ? { x: last.x + (end.x - last.x) * follow, y: last.y + (end.y - last.y) * follow }
+          : end;
         return { ...prev, points: [...prev.points, sample] };
       }
       return makeShape(tab.tool, drag.start, end, tab);
@@ -1513,6 +1527,8 @@ export default function Canvas() {
   };
 
   const onPointerUp = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (inkPointer.current !== null && inkPointer.current !== event.pointerId) return;
+    inkPointer.current = null;
     const drag = dragRef.current;
     dragRef.current = null;
     setSnapLines(NO_SNAP_LINES);
@@ -1528,7 +1544,7 @@ export default function Canvas() {
     if (drag.mode === "draw" && draft) {
       const stroke = tab.tool === "brush" && tab.stabilize && draft.kind === "Stroke" &&
         event.type === "pointerup" && draft.points.length > 1
-        ? { ...draft, points: [...draft.points, toDoc(event.clientX, event.clientY)] }
+        ? { ...draft, points: [...draft.points, toShape(toDoc(event.clientX, event.clientY))] }
         : draft;
       const shape = finishDraft(stroke, tab);
       setDraft(null);
@@ -1664,7 +1680,60 @@ export default function Canvas() {
             onDown={(index, event) =>
               onShapeDown(index, item.shapes[index], event)
             }
-          />
+          >
+            {!faded && pendingInk.filter((entry) => entry.docId === doc.id &&
+              entry.sceneId === tab.sceneId && entry.layerId === item.id && entry.frame === frame
+            ).map((entry, index) => (
+              <ShapeNode key={index} shape={entry.shape} uid={`ink-${index}`}
+                interactive={false} cursor={shapeCursor} selected={false} onDown={() => undefined} />
+            ))}
+            {isActive && !faded && shown && (
+              <ShapeNode shape={shown} uid="draft" interactive={false} cursor={shapeCursor}
+                selected={false} onDown={() => undefined} />
+            )}
+            {isActive && !faded && tab.tool === "pen" && penNodes.length > 0 && (
+              <g pointerEvents="none">
+                <ShapeNode
+                  shape={{
+                    kind: "Path",
+                    nodes: penNodes,
+                    closed: false,
+                    fill: tab.fill,
+                    stroke: tab.stroke,
+                    width: tab.strokeWidth
+                  }}
+                  uid="pen"
+                  interactive={false}
+                  cursor="crosshair"
+                  selected={false}
+                  onDown={() => undefined}
+                />
+                {penNodes.map((node, index) => (
+                  <rect
+                    key={index}
+                    x={node.point.x - 3}
+                    y={node.point.y - 3}
+                    width={6}
+                    height={6}
+                    fill="#3b82f6"
+                  />
+                ))}
+                {penHover && (
+                  <line
+                    data-pen-preview
+                    x1={penNodes[penNodes.length - 1].point.x}
+                    y1={penNodes[penNodes.length - 1].point.y}
+                    x2={penHover.x}
+                    y2={penHover.y}
+                    stroke="#3b82f6"
+                    strokeWidth={1}
+                    strokeDasharray="4 3"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                )}
+              </g>
+            )}
+          </LayerContent>
           {previewing && matrix && (
             <g
               transform={`translate(${item.transform.x} ${item.transform.y}) rotate(${item.transform.rotation}) scale(${item.transform.scale})`}
@@ -1738,7 +1807,22 @@ export default function Canvas() {
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
+          onLostPointerCapture={(event) => {
+            if (inkPointer.current === event.pointerId) {
+              inkPointer.current = null;
+              dragRef.current = null;
+              setDraft(null);
+            }
+          }}
+          onPointerCancel={(event) => {
+            if (inkPointer.current === event.pointerId) {
+              inkPointer.current = null;
+              dragRef.current = null;
+              setDraft(null);
+            } else if (inkPointer.current === null) {
+              onPointerUp(event);
+            }
+          }}
           onPointerLeave={() => {
             setHover(null);
             setPenHover(null);
@@ -1963,16 +2047,6 @@ export default function Canvas() {
               />
             </g>
           )}
-          {shown && (
-            <ShapeNode
-              shape={shown}
-              uid="draft"
-              interactive={false}
-              cursor="crosshair"
-              selected={false}
-              onDown={() => undefined}
-            />
-          )}
           {view.snap && (snapLines.x !== null || snapLines.y !== null) && (
             <g data-snap-lines pointerEvents="none">
               {snapLines.x !== null && (
@@ -1996,48 +2070,6 @@ export default function Canvas() {
                   y2={snapLines.y}
                   stroke="#f43f5e"
                   strokeWidth={1}
-                  vectorEffect="non-scaling-stroke"
-                />
-              )}
-            </g>
-          )}
-          {tab.tool === "pen" && penNodes.length > 0 && (
-            <g pointerEvents="none">
-              <ShapeNode
-                shape={{
-                  kind: "Path",
-                  nodes: penNodes,
-                  closed: false,
-                  fill: tab.fill,
-                  stroke: tab.stroke,
-                  width: tab.strokeWidth
-                }}
-                uid="pen"
-                interactive={false}
-                cursor="crosshair"
-                selected={false}
-                onDown={() => undefined}
-              />
-              {penNodes.map((node, index) => (
-                <rect
-                  key={index}
-                  x={node.point.x - 3}
-                  y={node.point.y - 3}
-                  width={6}
-                  height={6}
-                  fill="#3b82f6"
-                />
-              ))}
-              {penHover && (
-                <line
-                  data-pen-preview
-                  x1={penNodes[penNodes.length - 1].point.x}
-                  y1={penNodes[penNodes.length - 1].point.y}
-                  x2={penHover.x}
-                  y2={penHover.y}
-                  stroke="#3b82f6"
-                  strokeWidth={1}
-                  strokeDasharray="4 3"
                   vectorEffect="non-scaling-stroke"
                 />
               )}
